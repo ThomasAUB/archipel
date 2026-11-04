@@ -14,7 +14,7 @@ same change in several repos with a clear per-repo report.
 | Area | State |
 |---|---|
 | Core (projects, dashboard, live updates, batch ops, multi-repo commit, undo/redo, graph, stats, themes) | implemented, tested headless |
-| Desktop UI (GPUI) | `crates/archipel-ui` |
+| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch |
 | Packaging (MSI / AppImage) | not yet |
 
 ## Measured budgets
@@ -30,6 +30,8 @@ generated fixtures (20-repo project, 100k-commit history). Windows 11, 16 CPUs:
 | Idle RAM < 150 MB (20-repo project, core) | ~25 MiB |
 | 100k-commit graph, first rows < 500 ms | ~160 ms cold, ~7 ms cached |
 | RAM flat while scrolling the whole history | +7 MiB (bounded by the LRU budget) |
+| Desktop app idle, 20-repo project (release) | 111 MiB, flat |
+| Desktop app start → window | ~1.1 s (GPUI init; target 1 s) |
 
 ## Workspace
 

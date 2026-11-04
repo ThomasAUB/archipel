@@ -29,6 +29,22 @@ expected around 85–95 MiB, under the 150 MB target.
 The Tauri spike was not built: the decision rule only calls for it when GPUI
 misses a criterion, and a WebView2 alone is documented at 80–150 MB.
 
+## Full application (release build)
+
+`archipel.exe` with a 20-repo project open (Windows 11, warm runs):
+
+| Measurement | Value | Spec target |
+|---|---:|---|
+| Idle RSS, sampled every 5 s for 30 s | 111 MiB, flat | < 150 MB, no growth |
+| Process start → window shown | ~1.1 s (1.9 s first ever launch) | < 1 s |
+| of which: project painted from cached summaries | 2 ms | |
+| bare GPUI spike, same measurement | 1.0–1.3 s | |
+
+The start time is GPUI's window and GPU device initialization on Windows:
+the core adds nothing measurable. It misses the 1 s target by ~10 %.
+Follow-ups: measure with the window created before `compose` finishes
+(show a skeleton, compose on a thread), and on Linux.
+
 ## Decision
 
 - GPUI through **`gpui-kit` 0.9** (a pinned GPUI snapshot, `gpui-pre`
