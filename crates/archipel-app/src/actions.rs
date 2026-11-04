@@ -1,0 +1,289 @@
+//! Actions (palette, menus, batch bar, shortcuts) and the commands they send.
+//!
+//! Extension point: [`Action`], registered in [`ActionRegistry`]. Every
+//! built-in action is registered there too; the keymap refers to actions by id.
+
+use std::sync::Arc;
+
+use archipel_model::RepoId;
+
+/// A request to the application, executed by `App::dispatch`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    /// Recompute every summary of the current project.
+    RefreshAll,
+    /// Recompute one repo.
+    RefreshRepo(RepoId),
+    /// Fetch the given repos (all when empty).
+    Fetch(Vec<RepoId>),
+    /// Pull the given repos (all when empty).
+    Pull(Vec<RepoId>),
+    /// Check out a branch on the given repos (all when empty).
+    CheckoutAll(String, Vec<RepoId>),
+    /// Create a branch on the given repos.
+    CreateBranchAll(String, Vec<RepoId>),
+    /// Create a lightweight tag on the given repos.
+    CreateTagAll(String, Vec<RepoId>),
+    /// Undo the last operation of a repo.
+    Undo(RepoId),
+    /// Redo the last undone operation of a repo.
+    Redo(RepoId),
+    /// Toggle a dashboard filter.
+    ToggleFilter(String),
+    /// Sort the dashboard by a column (toggles direction when already sorted).
+    SortBy(String),
+    /// Select a repo in the dashboard / sidebar.
+    Select(Option<RepoId>),
+    /// Open (or focus) a repo tab.
+    OpenRepoTab(RepoId),
+    /// Close a tab (the dashboard tab cannot be closed).
+    CloseTab(usize),
+    /// Activate the next (`true`) or previous tab.
+    CycleTab(bool),
+    /// Show or hide the operations drawer.
+    ToggleDrawer,
+    /// UI-only commands (palettes, dialogs) the frontend handles itself.
+    Ui(String),
+}
+
+/// What an action can see to decide availability and build its command.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActionContext {
+    /// A project is open.
+    pub project_open: bool,
+    /// Repos selected in the dashboard (or the active repo tab).
+    pub selected: Vec<RepoId>,
+    /// The repo of the active tab, if it is a repo tab.
+    pub active_repo: Option<RepoId>,
+}
+
+/// An action of the palette.
+pub trait Action: Send + Sync {
+    /// Stable id (keymap, menus).
+    fn id(&self) -> &str;
+    /// Label in the palette.
+    fn label(&self) -> &str;
+    /// Whether it can run now.
+    fn is_available(&self, ctx: &ActionContext) -> bool;
+    /// The command to dispatch (`None`: nothing to do).
+    fn command(&self, ctx: &ActionContext) -> Option<Command>;
+}
+
+/// Builds the command of a [`SimpleAction`].
+pub type CommandBuilder = dyn Fn(&ActionContext) -> Option<Command> + Send + Sync;
+
+/// An action defined by closures; handy for built-ins and forks.
+pub struct SimpleAction {
+    id: String,
+    label: String,
+    available: fn(&ActionContext) -> bool,
+    build: Box<CommandBuilder>,
+}
+
+impl SimpleAction {
+    /// Creates an action.
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        available: fn(&ActionContext) -> bool,
+        build: impl Fn(&ActionContext) -> Option<Command> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            available,
+            build: Box::new(build),
+        }
+    }
+}
+
+impl Action for SimpleAction {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn is_available(&self, ctx: &ActionContext) -> bool {
+        (self.available)(ctx)
+    }
+    fn command(&self, ctx: &ActionContext) -> Option<Command> {
+        (self.build)(ctx)
+    }
+}
+
+fn always(_: &ActionContext) -> bool {
+    true
+}
+fn with_project(ctx: &ActionContext) -> bool {
+    ctx.project_open
+}
+fn with_repo(ctx: &ActionContext) -> bool {
+    ctx.project_open && (ctx.active_repo.is_some() || ctx.selected.len() == 1)
+}
+
+fn target_repo(ctx: &ActionContext) -> Option<RepoId> {
+    ctx.active_repo
+        .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]))
+}
+
+/// All actions, by id.
+#[derive(Clone, Default)]
+pub struct ActionRegistry {
+    actions: Vec<Arc<dyn Action>>,
+}
+
+impl ActionRegistry {
+    /// The built-in actions.
+    #[must_use]
+    pub fn with_builtins() -> Self {
+        let mut r = Self::default();
+        let ui = |id: &'static str, label: &'static str, available: fn(&ActionContext) -> bool| {
+            Arc::new(SimpleAction::new(id, label, available, move |_| {
+                Some(Command::Ui(id.to_owned()))
+            }))
+        };
+        r.register(ui("palette.projects", "Switch project…", always));
+        r.register(ui("palette.actions", "Show all actions…", always));
+        r.register(ui("project.new", "New project…", always));
+        r.register(ui("project.add_repos", "Add repositories…", with_project));
+        r.register(ui(
+            "project.clone",
+            "Clone a repository into the project…",
+            with_project,
+        ));
+        r.register(ui("commit.open", "Commit on several repos…", with_project));
+        r.register(ui("commit.submit", "Commit", with_project));
+        r.register(ui(
+            "repos.checkout_all",
+            "Check out a branch on selected repos…",
+            with_project,
+        ));
+        r.register(ui(
+            "repos.branch_all",
+            "Create a branch on selected repos…",
+            with_project,
+        ));
+        r.register(ui(
+            "repos.tag_all",
+            "Create a tag on selected repos…",
+            with_project,
+        ));
+        r.register(ui("settings.appearance", "Appearance and themes…", always));
+        r.register(ui("app.copy_diagnostics", "Copy diagnostics", always));
+        r.register(Arc::new(SimpleAction::new(
+            "repos.refresh",
+            "Refresh",
+            with_project,
+            |_| Some(Command::RefreshAll),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "repos.fetch_all",
+            "Fetch selected repos (all when none)",
+            with_project,
+            |c| Some(Command::Fetch(c.selected.clone())),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "repos.pull_all",
+            "Pull selected repos (all when none)",
+            with_project,
+            |c| Some(Command::Pull(c.selected.clone())),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "history.undo",
+            "Undo last operation",
+            with_repo,
+            |c| target_repo(c).map(Command::Undo),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "history.redo",
+            "Redo",
+            with_repo,
+            |c| target_repo(c).map(Command::Redo),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "tabs.next",
+            "Next tab",
+            with_project,
+            |_| Some(Command::CycleTab(true)),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "tabs.previous",
+            "Previous tab",
+            with_project,
+            |_| Some(Command::CycleTab(false)),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "drawer.toggle",
+            "Toggle operations drawer",
+            always,
+            |_| Some(Command::ToggleDrawer),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "repo.open",
+            "Open repository tab",
+            with_repo,
+            |c| target_repo(c).map(Command::OpenRepoTab),
+        )));
+        r
+    }
+
+    /// Adds an action or replaces the one with the same id.
+    pub fn register(&mut self, action: Arc<dyn Action>) {
+        match self.actions.iter().position(|a| a.id() == action.id()) {
+            Some(i) => self.actions[i] = action,
+            None => self.actions.push(action),
+        }
+    }
+
+    /// An action by id.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Arc<dyn Action>> {
+        self.actions.iter().find(|a| a.id() == id)
+    }
+
+    /// Actions available in `ctx`, for the palette.
+    #[must_use]
+    pub fn available(&self, ctx: &ActionContext) -> Vec<&Arc<dyn Action>> {
+        self.actions
+            .iter()
+            .filter(|a| a.is_available(ctx))
+            .collect()
+    }
+
+    /// Every action.
+    #[must_use]
+    pub fn all(&self) -> &[Arc<dyn Action>] {
+        &self.actions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap::Keymap;
+
+    #[test]
+    fn every_default_shortcut_has_an_action() {
+        let actions = ActionRegistry::with_builtins();
+        for (key, id) in Keymap::defaults().iter() {
+            assert!(actions.get(id).is_some(), "{key} → {id} has no action");
+        }
+    }
+
+    #[test]
+    fn availability_depends_on_context() {
+        let actions = ActionRegistry::with_builtins();
+        let undo = actions.get("history.undo").unwrap();
+        let none = ActionContext::default();
+        assert!(!undo.is_available(&none));
+        let ctx = ActionContext {
+            project_open: true,
+            selected: vec![RepoId(4)],
+            active_repo: None,
+        };
+        assert!(undo.is_available(&ctx));
+        assert_eq!(undo.command(&ctx), Some(Command::Undo(RepoId(4))));
+        assert!(actions.available(&none).len() < actions.all().len());
+    }
+}
