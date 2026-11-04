@@ -28,6 +28,16 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - The definition is stored in a readable file (`archipel.toml`), so it can be versioned and shared with the team.
 - P2: import from submodules, `repo` manifest, VS Code workspace.
 
+**The project file is strictly cross-platform — P0**
+> Implemented except: a repo on another Windows drive is still written as an absolute path, and names are not yet checked for portability.
+
+An `archipel.toml` written on any OS opens unchanged on Windows, Linux and macOS, and saving it from another OS produces no spurious diff.
+- UTF-8 TOML; written with LF line endings and no BOM, read with either line ending and with or without a BOM.
+- Repo paths are relative to the file's folder and written with `/`; `\` is accepted on read. An absolute path is never written: a repo with no relative path from the file (e.g. another Windows drive) cannot be added to a shared project file, and the user is told why.
+- Paths and names must be valid on every OS: no characters or names Windows forbids (`<>:"|?*`, `CON`, `NUL`…, trailing dot or space), and no two entries that differ only by case. Such an entry is refused when added, and reported (not silently dropped) when loading a file written by hand.
+- Nothing OS-specific is stored: no drive letters, environment variables, shell commands or platform-only settings. Anything machine-specific belongs in the personal state kept in the user data dir.
+- Output is deterministic: same key order, repo order and formatting on every OS, so the file only changes when the project does.
+
 **Launch from a directory — P1**
 > Implemented: `archipel <dir>`. Not yet: the file-manager "Open with Archipel" entry (needs the installer, see Packaging in the README).
 
