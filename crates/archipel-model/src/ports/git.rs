@@ -212,16 +212,21 @@ pub trait RefWriter: Send + Sync {
 /// Stash operations.
 pub trait StashWriter: Send + Sync {
     /// Pushes a new stash; returns `false` when there was nothing to stash.
-    fn push(&self, repo: &RepoPath, request: &StashRequest) -> Result<bool, GitError>;
+    fn stash_push(&self, repo: &RepoPath, request: &StashRequest) -> Result<bool, GitError>;
     /// Applies (or pops) the stash at `index`.
-    fn apply(&self, repo: &RepoPath, index: u32, mode: StashApplyMode) -> Result<(), GitError>;
+    fn stash_apply(
+        &self,
+        repo: &RepoPath,
+        index: u32,
+        mode: StashApplyMode,
+    ) -> Result<(), GitError>;
     /// Drops the stash at `index`.
     fn drop_stash(&self, repo: &RepoPath, index: u32) -> Result<(), GitError>;
     /// Stores a stash commit back into the stash list (undo of drop).
-    fn store(&self, repo: &RepoPath, oid: Oid, message: &str) -> Result<(), GitError>;
+    fn stash_store(&self, repo: &RepoPath, oid: Oid, message: &str) -> Result<(), GitError>;
     /// Snapshots the worktree into a dangling stash commit without touching
     /// the stash list (`git stash create`); `None` when there is nothing to save.
-    fn snapshot(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError>;
+    fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError>;
 }
 
 /// Network operations.

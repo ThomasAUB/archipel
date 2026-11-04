@@ -1,0 +1,471 @@
+//! Writer traits implemented with the CLI (the only write path, by design).
+
+use std::path::Path;
+
+use archipel_model::ports::{
+    BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolLauncher, RefReader,
+    RefWriter, RemoteOps, StashWriter, TagWriter,
+};
+use archipel_model::requests::{
+    CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
+    PatchDirection, PullMode, PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest,
+    TagRequest, UntrackedMode,
+};
+use archipel_model::{CancelToken, GitError, Oid, ProgressSink, RepoOp, RepoPath};
+
+use super::GitCli;
+use super::runner::{Cmd, CmdKind};
+use crate::gitdir::GitDirs;
+
+impl GitCli {
+    fn write(&self, repo: &RepoPath, args: &[&str]) -> Result<String, GitError> {
+        Ok(self
+            .runner
+            .run(Cmd::new(repo.as_path(), CmdKind::Write, args))?
+            .stdout_text())
+    }
+
+    fn head(&self, repo: &RepoPath) -> Result<Oid, GitError> {
+        self.resolve(repo, "HEAD")?
+            .ok_or_else(|| GitError::InvalidRequest("HEAD has no commit".into()))
+    }
+
+    /// Splits paths into tracked and untracked ones.
+    fn partition_tracked(
+        &self,
+        repo: &RepoPath,
+        paths: &[String],
+    ) -> Result<(Vec<String>, Vec<String>), GitError> {
+        let out = self.runner.run(
+            Cmd::new(repo.as_path(), CmdKind::Read, &["ls-files", "-z", "--"])
+                .args(paths.iter().map(String::as_str)),
+        )?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let tracked: Vec<&str> = text.split('\0').filter(|s| !s.is_empty()).collect();
+        Ok(paths.iter().cloned().partition(|p| {
+            tracked.iter().any(|t| {
+                t == p
+                    || t.strip_prefix(p.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            })
+        }))
+    }
+}
+
+impl CommitWriter for GitCli {
+    fn commit(&self, repo: &RepoPath, request: &CommitRequest) -> Result<Oid, GitError> {
+        // The message goes through stdin (`-F -`) so hooks and signing run normally.
+        let mut cmd = Cmd::new(repo.as_path(), CmdKind::Write, &["commit", "-F", "-"])
+            .stdin(request.message.clone());
+        if request.mode == CommitMode::Amend {
+            cmd = cmd.arg("--amend");
+        }
+        self.runner.run(cmd)?;
+        self.head(repo)
+    }
+}
+
+impl IndexWriter for GitCli {
+    fn stage(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
+        self.runner.run(
+            Cmd::new(repo.as_path(), CmdKind::Write, &["add", "-A", "--"])
+                .args(paths.iter().map(String::as_str)),
+        )?;
+        Ok(())
+    }
+
+    fn unstage(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
+        let args: &[&str] = if self.resolve(repo, "HEAD")?.is_some() {
+            &["restore", "--staged", "--"]
+        } else {
+            // No commit yet: there is nothing to restore from.
+            &["rm", "--cached", "-r", "-q", "--"]
+        };
+        self.runner.run(
+            Cmd::new(repo.as_path(), CmdKind::Write, args).args(paths.iter().map(String::as_str)),
+        )?;
+        Ok(())
+    }
+
+    fn apply_patch(
+        &self,
+        repo: &RepoPath,
+        patch: &str,
+        direction: PatchDirection,
+    ) -> Result<(), GitError> {
+        let mut cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Write,
+            &["apply", "--cached", "--whitespace=nowarn", "-"],
+        )
+        .stdin(patch.to_owned());
+        if direction == PatchDirection::Reverse {
+            cmd = cmd.arg("--reverse");
+        }
+        self.runner.run(cmd)?;
+        Ok(())
+    }
+
+    fn discard(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
+        let (tracked, untracked) = self.partition_tracked(repo, paths)?;
+        if !tracked.is_empty() {
+            self.runner.run(
+                Cmd::new(
+                    repo.as_path(),
+                    CmdKind::Write,
+                    &["restore", "--worktree", "--"],
+                )
+                .args(tracked.iter().map(String::as_str)),
+            )?;
+        }
+        if !untracked.is_empty() {
+            self.runner.run(
+                Cmd::new(
+                    repo.as_path(),
+                    CmdKind::Write,
+                    &["clean", "-f", "-d", "-q", "--"],
+                )
+                .args(untracked.iter().map(String::as_str)),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl BranchWriter for GitCli {
+    fn checkout(&self, repo: &RepoPath, target: &CheckoutTarget) -> Result<(), GitError> {
+        match target {
+            CheckoutTarget::Branch(name) => self.write(repo, &["switch", "--no-guess", name]),
+            CheckoutTarget::TrackRemote(remote) => self.write(repo, &["switch", "--track", remote]),
+            CheckoutTarget::Detached(oid) => {
+                self.write(repo, &["switch", "--detach", &oid.to_hex()])
+            }
+        }
+        .map(drop)
+    }
+
+    fn create_branch(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        start: Option<&str>,
+    ) -> Result<(), GitError> {
+        let mut args = vec!["branch", "--no-track", "--end-of-options", name];
+        args.extend(start);
+        self.write(repo, &args).map(drop)
+    }
+
+    fn rename_branch(&self, repo: &RepoPath, old: &str, new: &str) -> Result<(), GitError> {
+        self.write(repo, &["branch", "-m", "--end-of-options", old, new])
+            .map(drop)
+    }
+
+    fn delete_branch(&self, repo: &RepoPath, name: &str, mode: DeleteMode) -> Result<(), GitError> {
+        let flag = if mode == DeleteMode::Force {
+            "-D"
+        } else {
+            "-d"
+        };
+        self.write(repo, &["branch", flag, "--end-of-options", name])
+            .map(drop)
+    }
+
+    fn set_upstream(
+        &self,
+        repo: &RepoPath,
+        branch: &str,
+        upstream: Option<&str>,
+    ) -> Result<(), GitError> {
+        match upstream {
+            Some(up) => self.write(
+                repo,
+                &["branch", &format!("--set-upstream-to={up}"), branch],
+            ),
+            None => self.write(repo, &["branch", "--unset-upstream", branch]),
+        }
+        .map(drop)
+    }
+}
+
+impl TagWriter for GitCli {
+    fn create_tag(&self, repo: &RepoPath, request: &TagRequest) -> Result<(), GitError> {
+        let mut cmd = Cmd::new(repo.as_path(), CmdKind::Write, &["tag"]);
+        if let Some(message) = &request.message {
+            cmd = cmd.args(["-a", "-F", "-"]).stdin(message.clone());
+        }
+        cmd = cmd.args(["--end-of-options", request.name.as_str()]);
+        if let Some(target) = &request.target {
+            cmd = cmd.arg(target);
+        }
+        self.runner.run(cmd).map(drop)
+    }
+
+    fn delete_tag(&self, repo: &RepoPath, name: &str) -> Result<(), GitError> {
+        self.write(repo, &["tag", "-d", name]).map(drop)
+    }
+}
+
+impl RefWriter for GitCli {
+    fn update_ref(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        new: Option<Oid>,
+        expected_old: Option<Oid>,
+    ) -> Result<(), GitError> {
+        let old = expected_old.map(|o| o.to_hex());
+        let mut args = match new {
+            Some(_) => vec!["update-ref", "-m", "archipel: undo", name],
+            None => vec!["update-ref", "-d", name],
+        };
+        let new_hex = new.map(|o| o.to_hex());
+        args.extend(new_hex.as_deref());
+        args.extend(old.as_deref());
+        self.write(repo, &args).map(drop)
+    }
+
+    fn set_symbolic_head(&self, repo: &RepoPath, branch_ref: &str) -> Result<(), GitError> {
+        self.write(repo, &["symbolic-ref", "HEAD", branch_ref])
+            .map(drop)
+    }
+
+    fn reset(&self, repo: &RepoPath, target: &str, mode: ResetMode) -> Result<(), GitError> {
+        let flag = match mode {
+            ResetMode::Soft => "--soft",
+            ResetMode::Mixed => "--mixed",
+            ResetMode::Hard => "--hard",
+            ResetMode::Keep => "--keep",
+        };
+        self.write(repo, &["reset", "-q", flag, target, "--"])
+            .map(drop)
+    }
+}
+
+impl StashWriter for GitCli {
+    fn stash_push(&self, repo: &RepoPath, request: &StashRequest) -> Result<bool, GitError> {
+        let before = self.resolve(repo, "refs/stash")?;
+        let mut args = vec!["stash", "push", "-q"];
+        if request.untracked == UntrackedMode::Include {
+            args.push("--include-untracked");
+        }
+        if let Some(m) = &request.message {
+            args.extend(["-m", m]);
+        }
+        self.write(repo, &args)?;
+        Ok(self.resolve(repo, "refs/stash")? != before)
+    }
+
+    fn stash_apply(
+        &self,
+        repo: &RepoPath,
+        index: u32,
+        mode: StashApplyMode,
+    ) -> Result<(), GitError> {
+        let verb = if mode == StashApplyMode::Pop {
+            "pop"
+        } else {
+            "apply"
+        };
+        self.write(repo, &["stash", verb, "-q", &format!("stash@{{{index}}}")])
+            .map(drop)
+    }
+
+    fn drop_stash(&self, repo: &RepoPath, index: u32) -> Result<(), GitError> {
+        self.write(
+            repo,
+            &["stash", "drop", "-q", &format!("stash@{{{index}}}")],
+        )
+        .map(drop)
+    }
+
+    fn stash_store(&self, repo: &RepoPath, oid: Oid, message: &str) -> Result<(), GitError> {
+        self.write(repo, &["stash", "store", "-m", message, &oid.to_hex()])
+            .map(drop)
+    }
+
+    fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError> {
+        let text = self.write(repo, &["stash", "create"])?;
+        if text.is_empty() {
+            Ok(None)
+        } else {
+            Oid::from_hex(&text).map(Some).map_err(|_| GitError::Parse {
+                what: "git stash create",
+                detail: text,
+            })
+        }
+    }
+}
+
+impl RemoteOps for GitCli {
+    fn fetch(
+        &self,
+        repo: &RepoPath,
+        request: &FetchRequest,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        let mut cmd = Cmd::new(repo.as_path(), CmdKind::Network, &["fetch", "--progress"])
+            .cancel(cancel)
+            .progress(progress);
+        if request.prune {
+            cmd = cmd.arg("--prune");
+        }
+        cmd = match &request.remote {
+            Some(remote) => cmd.arg(remote),
+            None => cmd.arg("--all"),
+        };
+        self.runner.run(cmd).map(drop)
+    }
+
+    fn pull(
+        &self,
+        repo: &RepoPath,
+        mode: PullMode,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        let flag = match mode {
+            PullMode::FastForwardOnly => "--ff-only",
+            PullMode::Rebase => "--rebase",
+            PullMode::Merge => "--no-rebase",
+        };
+        let cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Network,
+            &["pull", "--progress", flag],
+        )
+        .cancel(cancel)
+        .progress(progress);
+        self.runner.run(cmd).map(drop)
+    }
+
+    fn push(
+        &self,
+        repo: &RepoPath,
+        request: &PushRequest,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        let mut cmd = Cmd::new(repo.as_path(), CmdKind::Network, &["push", "--progress"])
+            .cancel(cancel)
+            .progress(progress);
+        if request.set_upstream {
+            cmd = cmd.arg("--set-upstream");
+        }
+        if request.tags {
+            cmd = cmd.arg("--tags");
+        }
+        if let ForceMode::WithLease(expected) = &request.force {
+            cmd = match (expected, &request.refspec) {
+                (Some(oid), Some(refspec)) => {
+                    let dst = refspec.rsplit(':').next().unwrap_or(refspec);
+                    cmd.arg(format!("--force-with-lease={dst}:{oid}"))
+                }
+                _ => cmd.arg("--force-with-lease"),
+            };
+        }
+        cmd = cmd.arg(request.remote.as_deref().unwrap_or("origin"));
+        if let Some(refspec) = &request.refspec {
+            cmd = cmd.arg(refspec);
+        }
+        self.runner.run(cmd).map(drop)
+    }
+
+    fn clone_repo(
+        &self,
+        url: &str,
+        dest: &Path,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<RepoPath, GitError> {
+        let parent = dest.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|e| GitError::Io {
+            path: parent.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let cmd = Cmd::new(
+            parent,
+            CmdKind::Network,
+            &["clone", "--progress", "--end-of-options", url],
+        )
+        .arg(dest.as_os_str())
+        .cancel(cancel)
+        .progress(progress);
+        self.runner.run(cmd)?;
+        Ok(RepoPath::new(dest))
+    }
+}
+
+impl HistoryRewriter for GitCli {
+    fn merge(&self, repo: &RepoPath, rev: &str, mode: MergeMode) -> Result<(), GitError> {
+        let mut args = vec!["merge", "--no-edit"];
+        match mode {
+            MergeMode::Auto => {}
+            MergeMode::FastForwardOnly => args.push("--ff-only"),
+            MergeMode::NoFastForward => args.push("--no-ff"),
+        }
+        args.extend(["--end-of-options", rev]);
+        self.write(repo, &args).map(drop)
+    }
+
+    fn rebase(&self, repo: &RepoPath, onto: &str) -> Result<(), GitError> {
+        self.write(repo, &["rebase", "--end-of-options", onto])
+            .map(drop)
+    }
+
+    fn cherry_pick(&self, repo: &RepoPath, commits: &[Oid]) -> Result<(), GitError> {
+        let cmd = Cmd::new(repo.as_path(), CmdKind::Write, &["cherry-pick"])
+            .args(commits.iter().map(Oid::to_hex));
+        self.runner.run(cmd).map(drop)
+    }
+
+    fn revert(&self, repo: &RepoPath, commit: Oid) -> Result<(), GitError> {
+        self.write(repo, &["revert", "--no-edit", &commit.to_hex()])
+            .map(drop)
+    }
+
+    fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError> {
+        let op = GitDirs::locate(repo.as_path())?
+            .in_progress()
+            .ok_or_else(|| GitError::InvalidRequest("no operation in progress".into()))?;
+        let verb = match op {
+            RepoOp::Merge => "merge",
+            RepoOp::Rebase => "rebase",
+            RepoOp::CherryPick => "cherry-pick",
+            RepoOp::Revert => "revert",
+            RepoOp::ApplyMailbox => "am",
+            RepoOp::Bisect => return Err(GitError::Unsupported("continue/abort a bisect")),
+        };
+        let flag = match action {
+            SequenceAction::Continue => "--continue",
+            SequenceAction::Abort => "--abort",
+            SequenceAction::Skip if op == RepoOp::Merge => {
+                return Err(GitError::InvalidRequest("a merge cannot be skipped".into()));
+            }
+            SequenceAction::Skip => "--skip",
+        };
+        self.write(repo, &[verb, flag]).map(drop)
+    }
+}
+
+impl MergeToolLauncher for GitCli {
+    fn launch(
+        &self,
+        repo: &RepoPath,
+        path: Option<&str>,
+        tool: Option<&str>,
+    ) -> Result<(), GitError> {
+        let mut cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Write,
+            &["mergetool", "--no-prompt"],
+        );
+        if let Some(tool) = tool {
+            cmd = cmd.arg(format!("--tool={tool}"));
+        }
+        if let Some(path) = path {
+            cmd = cmd.arg("--").arg(path);
+        }
+        self.runner.run(cmd).map(drop)
+    }
+}

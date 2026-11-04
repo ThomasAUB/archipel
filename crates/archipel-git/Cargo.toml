@@ -1,0 +1,27 @@
+[package]
+name = "archipel-git"
+description = "Git adapters for Archipel: gix-based readers and git-CLI readers/writers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+archipel-model.workspace = true
+gix = { workspace = true, features = ["status", "revision", "max-performance", "sha1", "parallel", "index", "dirwalk"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+archipel-fixtures.workspace = true
+criterion = "0.8"
+rayon.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "read_backends"
+harness = false
+
+[lints]
+workspace = true

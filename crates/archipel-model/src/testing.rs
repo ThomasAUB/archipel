@@ -509,7 +509,7 @@ impl RefWriter for FakeGit {
 }
 
 impl StashWriter for FakeGit {
-    fn push(&self, repo: &RepoPath, request: &StashRequest) -> Result<bool, GitError> {
+    fn stash_push(&self, repo: &RepoPath, request: &StashRequest) -> Result<bool, GitError> {
         self.record(
             "stash_push",
             repo,
@@ -531,7 +531,12 @@ impl StashWriter for FakeGit {
         });
         Ok(true)
     }
-    fn apply(&self, repo: &RepoPath, index: u32, mode: StashApplyMode) -> Result<(), GitError> {
+    fn stash_apply(
+        &self,
+        repo: &RepoPath,
+        index: u32,
+        mode: StashApplyMode,
+    ) -> Result<(), GitError> {
         self.record("stash_apply", repo, format!("{index}:{mode:?}"))?;
         if mode == StashApplyMode::Pop {
             self.with_repo(repo, |r| remove_stash(r, index));
@@ -543,7 +548,7 @@ impl StashWriter for FakeGit {
         self.with_repo(repo, |r| remove_stash(r, index));
         Ok(())
     }
-    fn store(&self, repo: &RepoPath, oid: Oid, message: &str) -> Result<(), GitError> {
+    fn stash_store(&self, repo: &RepoPath, oid: Oid, message: &str) -> Result<(), GitError> {
         self.record("stash_store", repo, message)?;
         self.with_repo(repo, |r| {
             for s in &mut r.stashes {
@@ -560,7 +565,7 @@ impl StashWriter for FakeGit {
         });
         Ok(())
     }
-    fn snapshot(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError> {
+    fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError> {
         self.record("stash_snapshot", repo, "")?;
         Ok(Some(self.fresh_oid()))
     }

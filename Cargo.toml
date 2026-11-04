@@ -56,6 +56,8 @@ panic = "deny"
 module_name_repetitions = "allow"
 # - missing_errors_doc: every fallible fn returns a typed error documented on the enum.
 missing_errors_doc = "allow"
+# - assert_is_empty: `assert!(x.is_empty())` reads naturally in tests.
+assert_is_empty = "allow"
 
 [profile.release]
 debug = "line-tables-only"
