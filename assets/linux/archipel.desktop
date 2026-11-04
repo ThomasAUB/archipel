@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Archipel
+GenericName=Git Client
+Comment=Git client for projects spanning several repositories
+Exec=archipel %f
+Icon=archipel
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;repository;
+StartupWMClass=archipel

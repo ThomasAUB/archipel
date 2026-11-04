@@ -15,11 +15,13 @@
 .EXAMPLE
   cargo build --release -p archipel-ui
   ./tools/bench-startup.ps1 -ArchipelHome C:\path\to\archipel-home -Runs 9
+  pwsh ./tools/bench-startup.ps1 -ArchipelHome ~/archipel-home   # Linux / macOS
 #>
 param(
   [Parameter(Mandatory = $true)][string]$ArchipelHome,
   [int]$Runs = 7,
-  [string]$Exe = (Join-Path $PSScriptRoot "..\target\release\archipel.exe")
+  # `$IsWindows` is unset in Windows PowerShell 5, set in PowerShell 7 (also on Linux / macOS).
+  [string]$Exe = (Join-Path $PSScriptRoot ("../target/release/archipel" + $(if ($IsWindows -ne $false) { ".exe" } else { "" })))
 )
 $env:ARCHIPEL_HOME = $ArchipelHome
 $env:ARCHIPEL_STARTUP_TRACE = "1"

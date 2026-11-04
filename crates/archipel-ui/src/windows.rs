@@ -21,6 +21,9 @@ use crate::workspace::Workspace;
 const WINDOW_WIDTH: f32 = 1280.0;
 /// Default height of a new window.
 const WINDOW_HEIGHT: f32 = 800.0;
+/// Wayland `app_id` / X11 `WM_CLASS`: matches `assets/linux/archipel.desktop`,
+/// so desktops group the windows under the Archipel icon.
+const APP_ID: &str = "archipel";
 
 /// The open windows and the core sessions behind them.
 pub struct Windows {
@@ -105,6 +108,7 @@ fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
     bounds.origin.y += offset;
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        app_id: Some(APP_ID.to_owned()),
         ..WindowOptions::default()
     };
     let window_core = core.clone();

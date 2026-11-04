@@ -86,7 +86,8 @@ a self-hosted instance with a personal access token (stored in the OS
 keychain, never in `.gitproject.toml`). The dashboard then shows each repo's
 open pull request with its CI and review state; "Create pull requests…" opens
 one per selected repo, linked together, and "Clone repositories from a forge
-account…" adds clones to the project. Linux builds need `libdbus-1-dev`.
+account…" adds clones to the project. On Linux the keychain is the Secret
+Service (GNOME Keyring, KWallet).
 
 ## Develop
 
@@ -111,3 +112,21 @@ cargo run --release -p archipel-cli -- tree path/to/folder-with-repos
 ```
 
 Requires `git` ≥ 2.40 on `PATH`. License: MIT.
+
+### Linux
+
+Runs on Wayland and X11. Building the desktop app needs the GPUI system
+libraries (Debian / Ubuntu names):
+
+```bash
+sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+  libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libasound2-dev pkg-config
+```
+
+For a launcher entry with the Archipel icon:
+
+```bash
+cargo install --path crates/archipel-ui
+install -Dm644 assets/linux/archipel.desktop ~/.local/share/applications/archipel.desktop
+install -Dm644 assets/logo/archipel.svg ~/.local/share/icons/hicolor/scalable/apps/archipel.svg
+```

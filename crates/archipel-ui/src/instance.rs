@@ -146,9 +146,25 @@ fn listen(file: &Path) -> io::Result<Listener> {
         std::fs::create_dir_all(parent)?;
     }
     let temp = file.with_extension("tmp");
-    std::fs::write(&temp, format!("{port} {token}\n"))?;
+    write_private(&temp, format!("{port} {token}\n").as_bytes())?;
     std::fs::rename(&temp, file)?;
     Ok(Listener { listener, token })
+}
+
+/// Writes a file only the current user can read. On Windows the per-user
+/// data directory already ensures it; on Unix `~/.local/share` is often
+/// world-readable, so the file itself is created `0600`.
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    // A leftover from a crashed launch may have other permissions: start fresh.
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    options.open(path)?.write_all(bytes)
 }
 
 fn handle(stream: TcpStream, token: &str) -> io::Result<Request> {
@@ -247,6 +263,19 @@ mod tests {
         let port = other.listener.local_addr().unwrap().port();
         other.serve(|_| panic!("must not be accepted"));
         assert!(forward(port, "wrong", &Request { dir: None }).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instance_file_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(INSTANCE_FILE);
+        // A leftover temp file with loose permissions is replaced, not reused.
+        std::fs::write(file.with_extension("tmp"), "old").unwrap();
+        listen(&file).unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

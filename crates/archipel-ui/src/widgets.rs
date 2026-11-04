@@ -76,11 +76,7 @@ pub fn chip(
 
 /// A small round status dot.
 pub fn dot(fill: Hsla) -> Div {
-    div()
-        .size(px(8.0))
-        .rounded_full()
-        .bg(fill)
-        .flex_none()
+    div().size(px(8.0)).rounded_full().bg(fill).flex_none()
 }
 
 /// A section title in panels.
