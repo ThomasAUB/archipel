@@ -46,6 +46,23 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - Each project keeps its own UI state (selected repo, filters, layout).
 - Switch in < 200 ms (state cached, refreshed in the background).
 
+**Several instances side by side — P1**
+> **Not in the current version.**
+
+- Several projects / directories can be open at the same time, each in its own window, behaving as an independent instance (own selected repo, filters, layout, background refresh).
+- **One process, many windows:** launching `archipel <dir>` while Archipel is running hands the request to the running process (local IPC), which opens a new window. An extra window costs only its project's data, not another GPU context, font set and caches — consistent with the RAM target.
+- Opening a directory / project that is already open focuses its window instead of creating a duplicate.
+- Shared state (settings, recent projects, on-disk caches) stays consistent when several windows write to it concurrently.
+
+**Recognizing a window at a glance — P1**
+> **Not in the current version.**
+
+- **Per-project accent color:** derived automatically from the project path (stable across launches), overridable by the user. Shown as a thin colored band at the top of the window, and on the selection and project name; built on the theme engine's accent-derived palette.
+- **Project name first in the window title** (`myproject — Archipel`), so the taskbar, Alt+Tab and window lists stay readable when titles are truncated.
+- **Taskbar badge:** a small dot in the project color with its initials, overlaid on the taskbar icon (native overlay on Windows; best effort on Linux), to tell grouped windows apart.
+- **Optional project icon / emoji**, chosen by the user, shown next to the name in the title bar and the project switcher.
+- Color and icon are personal: stored in the private project state, unless the team sets them in `.gitproject.toml` as a default.
+
 ### 3. Project dashboard — P0
 A minimal view, one row per repo:
 
