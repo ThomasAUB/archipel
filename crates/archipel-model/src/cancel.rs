@@ -27,6 +27,12 @@ impl CancelToken {
         self.0.load(Ordering::Relaxed)
     }
 
+    /// Whether `other` is a clone of this token (same flag).
+    #[must_use]
+    pub fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Returns `Err(GitError::Cancelled)` when cancellation was requested.
     pub fn check(&self) -> Result<(), GitError> {
         if self.is_cancelled() {

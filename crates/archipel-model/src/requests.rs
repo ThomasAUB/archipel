@@ -63,6 +63,17 @@ pub struct TagRequest {
     pub message: Option<String>,
 }
 
+/// A `git submodule update` request (spec §9).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmoduleUpdate {
+    /// Submodule paths relative to the parent; every submodule when empty.
+    pub paths: Vec<String>,
+    /// Initialize submodules that are not yet (`--init`).
+    pub init: bool,
+    /// Also update nested submodules (`--recursive`).
+    pub recursive: bool,
+}
+
 /// Mode of `git reset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResetMode {

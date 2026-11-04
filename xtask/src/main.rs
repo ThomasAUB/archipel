@@ -22,6 +22,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("archipel-cache", &["archipel-model"]),
     ("archipel-project", &["archipel-model"]),
     ("archipel-ops", &["archipel-model"]),
+    ("archipel-forge", &["archipel-model"]),
     ("archipel-stats", &["archipel-model"]),
     // The graph uses the pure LRU of archipel-cache (no SQLite types).
     ("archipel-graph", &["archipel-model", "archipel-cache"]),

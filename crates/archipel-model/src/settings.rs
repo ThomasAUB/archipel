@@ -55,6 +55,11 @@ pub struct Settings {
     pub min_git_version: (u32, u32),
     /// External merge tool name passed to `git mergetool --tool` (Git config when `None`).
     pub merge_tool: Option<String>,
+    /// Timeout of one forge API request (GitHub, GitLab, …), in seconds. Default 20.
+    pub forge_timeout_secs: u64,
+    /// Forge status (pull request, CI, review) older than this is re-read
+    /// when the window gets focus, in seconds. Default 300.
+    pub forge_refresh_secs: u64,
 }
 
 impl Default for Settings {
@@ -76,6 +81,8 @@ impl Default for Settings {
             recent_projects: 10,
             min_git_version: (2, 40),
             merge_tool: None,
+            forge_timeout_secs: 20,
+            forge_refresh_secs: 300,
         }
     }
 }

@@ -92,6 +92,10 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl-shift-f", "repos.fetch_all"),
     ("ctrl-k", "commit.open"),
     ("f5", "repos.refresh"),
+    ("ctrl-h", "repos.toggle_hidden"),
+    ("ctrl-shift-h", "repos.show_hidden"),
+    ("ctrl-shift-t", "view.dependency_tree"),
+    ("ctrl-shift-n", "window.new"),
 ];
 
 /// Problems found while loading a keymap file (never fatal).

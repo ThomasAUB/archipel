@@ -32,6 +32,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the repo dependency tree (nested submodules) of a project file
+    /// or of every repo below a folder.
+    Tree {
+        /// A `.gitproject.toml` or a folder to scan.
+        target: PathBuf,
+    },
     /// List the repositories found below a folder.
     Scan {
         /// Folder to scan.
@@ -81,6 +87,7 @@ fn main() -> Result<()> {
     match cli.command {
         Cmd::Dashboard { target, json } => commands::dashboard(dirs, &target, json),
         Cmd::Scan { root } => commands::scan(&root),
+        Cmd::Tree { target } => commands::tree(dirs, &target),
         Cmd::Fetch { target } => commands::fetch(dirs, &target),
         Cmd::Graph { repo, start, count } => commands::graph(dirs, &repo, start, count),
         Cmd::Stats { repo } => commands::stats(dirs, &repo),

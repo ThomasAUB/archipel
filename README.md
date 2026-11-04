@@ -14,7 +14,7 @@ same change in several repos with a clear per-repo report.
 | Area | State |
 |---|---|
 | Core (projects, dashboard, live updates, batch ops, multi-repo commit, undo/redo, graph, stats, themes) | implemented, tested headless |
-| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch |
+| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch, launch from a directory, hidden repos, several windows in one process with per-project color / icon / title, repo dependency tree, forge integration (GitHub / GitLab: pull request column, linked pull requests across repos, clone from an account) |
 | Packaging (MSI / AppImage) | not yet |
 
 ## Measured budgets
@@ -41,6 +41,7 @@ crates/
   archipel-git       gix readers + git CLI readers/writers, output parsers
   archipel-watch     file watching → fine-grained invalidations
   archipel-cache     byte-budgeted LRUs + SQLite store
+  archipel-forge     GitHub / GitLab REST clients, OS keychain tokens
   archipel-project   .gitproject.toml, folder scan, submodules
   archipel-ops       scheduler, journal, undo/redo, batch ops, multi-repo commit, line staging
   archipel-graph     on-disk topology cache, lane layout, paged history
@@ -53,6 +54,39 @@ crates/
 tools/fixtures       fixture generator (multi-repo projects, large histories)
 xtask                quality gates (dependency directions, theme tokens)
 ```
+
+## Use
+
+```bash
+archipel path/to/folder
+```
+
+Opens the folder's `.gitproject.toml`, or a private project listing the repos
+found around it (scanned in the background; launching from inside a repo opens
+the outermost repo). Launching again while Archipel runs opens another window
+in the same process, or focuses the window already showing that project
+(`--standalone` starts a separate process). Without a folder, the last project
+reopens.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+P` / `Ctrl+Shift+P` | switch project / all actions |
+| `Ctrl+click` | add a repo to the selection (batch actions apply to it) |
+| `Ctrl+H` / `Ctrl+Shift+H` | hide (or unhide) the selected repos / list hidden repos |
+| `Ctrl+Shift+T` | dependency tree (nested submodules) |
+| `Ctrl+Shift+N` | new window |
+
+Right-click a repo for its menu. The project color and icon are set from the
+action palette ("Set the project color…", "Set the project icon…"); a team can
+set defaults in `.gitproject.toml` (`[settings] accent = "#3b82f6"`,
+`icon = "🚀"`).
+
+Forges: "Forge accounts…" in the action palette signs in to GitHub, GitLab or
+a self-hosted instance with a personal access token (stored in the OS
+keychain, never in `.gitproject.toml`). The dashboard then shows each repo's
+open pull request with its CI and review state; "Create pull requests…" opens
+one per selected repo, linked together, and "Clone repositories from a forge
+account…" adds clones to the project. Linux builds need `libdbus-1-dev`.
 
 ## Develop
 
@@ -70,6 +104,10 @@ cargo xtask check-deps
 
 ```bash
 cargo run --release -p archipel-cli -- dashboard path/to/folder-with-repos
+```
+
+```bash
+cargo run --release -p archipel-cli -- tree path/to/folder-with-repos
 ```
 
 Requires `git` ≥ 2.40 on `PATH`. License: MIT.

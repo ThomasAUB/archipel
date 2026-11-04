@@ -31,8 +31,8 @@ Dependencies only point **inward**, toward the pure layers. No cycles, no shortc
                   /    |     |     \
      archipel-ops  archipel-graph  archipel-stats  archipel-project   ← features
             |         |      \         /
-      archipel-git  archipel-watch  archipel-cache    ← adapters (I/O: git, FS, SQLite)
-                  \       |       /
+      archipel-git  archipel-watch  archipel-cache  archipel-forge   ← adapters (I/O: git, FS, SQLite, HTTP + keychain)
+                  \       |       /       /
                     archipel-model                    ← pure types + port traits (no I/O)
 ```
 
@@ -40,7 +40,7 @@ Rules:
 
 - `archipel-model` depends on nothing in the workspace and does no I/O. It holds the shared data types **and the port traits** (the interfaces other crates implement or consume).
 - Feature crates (`ops`, `graph`, `stats`, `project`) depend on **traits** from `archipel-model`, not on concrete adapters. They never name `gix`, `rusqlite` or `notify` types.
-- Adapter crates (`git`, `watch`, `cache`) implement the traits. They never depend on feature crates.
+- Adapter crates (`git`, `watch`, `cache`, `forge`) implement the traits. They never depend on feature crates. `archipel-forge` (GitHub / GitLab REST clients, OS keychain, ADR 0003) is reached by `archipel-app` only through the forge ports, and only from scheduler jobs (network pool), never from the UI thread.
 - `archipel-app` knows use cases, not toolkits. `archipel-ui` is the only crate that depends on the UI toolkit, and it never depends on adapter crates directly.
 - Only the **composition roots** (`archipel-ui`'s `main`, `archipel-cli`) know which concrete implementation goes behind which trait. Both get their wiring from `archipel-compose`, the single shared `compose` module; the UI library code itself never names an adapter.
 - `archipel-theme` is a pure leaf crate (tokens, derivation, theme files) with no workspace dependency; `archipel-app` and `archipel-ui` use it.
@@ -50,7 +50,7 @@ A CI check (`cargo xtask check-deps`) fails the build if a crate depends on a cr
 
 ### 2.3 Third-party types stay inside their adapter
 
-`gix`, `rusqlite`, `notify`, `gpui` and similar types never appear in a public signature outside the crate that wraps them. Adapters convert to `archipel-model` types at the boundary. This is what makes a backend, a store or the UI toolkit replaceable.
+`gix`, `rusqlite`, `notify`, `ureq`, `keyring`, `gpui` and similar types never appear in a public signature outside the crate that wraps them. Adapters convert to `archipel-model` types at the boundary. This is what makes a backend, a store or the UI toolkit replaceable.
 
 ---
 
@@ -75,12 +75,15 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `StashWriter` | `push`, `apply`, `pop`, `drop`, `store` | repo actions, undo |
 | `RemoteOps` | `fetch`, `pull`, `push`, `clone` | batch ops |
 | `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `continue/abort` | drag & drop, repo actions |
+| `SubmoduleReader` | `submodules` (one level: initialized, pinned and checked-out commits) | dependency tree |
+| `SubmoduleWriter` | `update_submodules` (`--init`, `--recursive`) | dependency tree actions |
 
 One struct may implement several traits (the `gix` adapter implements all readers, the CLI adapter implements all writers and readers as a fallback), but **nobody depends on the struct**, only on the traits.
 
 The same principle applies everywhere else, for example:
 
 - storage: `SummaryStore`, `UiStateStore`, `JournalStore`, `StatsStore` rather than one `Database`;
+- forges: `PullRequestReader` (dashboard column), `PullRequestWriter` (create, link), `ForgeDirectory` (clone from an account), `ForgeSignIn` (verify a token, detect the provider), `CredentialStore` (OS keychain), `ForgeAccountStore` (signed-in hosts) rather than one `ForgeClient`;
 - project: `ProjectSource` (load/save a project definition) separate from `RepoDiscovery` (scan a folder);
 - watching: `ChangeSource` (emits invalidations) separate from the debouncing policy.
 
@@ -113,9 +116,11 @@ Extension is done through **registries** of trait objects, not through `match` s
 | Dashboard columns | `DashboardColumn` trait (header, value from `RepoSummary`, sort key, renderer hint) | `ColumnRegistry` |
 | Dashboard filters | `RepoFilter` trait | `FilterRegistry` |
 | Git backend per operation | the reader/writer traits of §3.1 | composition root / settings |
-| "Open in browser" links, later PR/CI | `ForgeProvider` trait (matches a remote URL, builds links) | `ForgeRegistry` |
+| "Open in browser" links | `ForgeProvider` trait (matches a remote URL, builds links) | `ForgeRegistry` |
+| Forge APIs (pull requests, CI, review, clone from an account) | `archipel_forge::provider::{ForgeApi, PullRequestApi, DirectoryApi}` | `ForgeClient::register` in `archipel_compose::forge_ports` |
 | Commit message helpers | `MessageTemplate`, `TicketPrefixExtractor` | per-project settings |
 | Project import (P2: submodules, `repo` manifest, VS Code workspace) | `ProjectImporter` trait | `ImporterRegistry` |
+| Repo dependency tree (submodules; later `repo` manifests, package managers) | `DependencySource` trait | `Extensions::dependencies` |
 | Statistics | `StatProvider` trait (incremental compute + view model) | `StatsRegistry` |
 | Persistence | the store traits of §3.1 | composition root |
 

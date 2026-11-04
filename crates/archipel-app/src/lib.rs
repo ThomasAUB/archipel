@@ -11,6 +11,11 @@
 //!   [`actions::Action`], [`forge::ForgeProvider`],
 //!   [`message::TicketPrefixExtractor`] / [`message::MessageTemplate`],
 //!   and the [`keymap::Keymap`].
+//! * [`forge`]: forge integration (spec §8): the "Pull request" dashboard
+//!   column, sign-in, pull requests across repos and clone from an account,
+//!   through the forge ports of [`forge::ForgePorts`].
+//! * [`deptree`]: the repo dependency tree view-model (spec §9), with the
+//!   [`deptree::DependencySource`] extension point.
 //! * [`settings`]: loading the settings file.
 //!
 //! Dependencies: `archipel-model` and the feature crates (`ops`, `project`,
@@ -23,6 +28,7 @@
 pub mod actions;
 mod app;
 pub mod dashboard;
+pub mod deptree;
 pub mod forge;
 pub mod fuzzy;
 pub mod keymap;
@@ -30,4 +36,8 @@ pub mod message;
 pub mod settings;
 
 pub use actions::{Action, ActionContext, ActionRegistry, Command};
-pub use app::{App, AppError, AppEvent, Extensions, Services};
+pub use app::{
+    App, AppError, AppEvent, CloneOutcome, CloneProtocol, DirectoryTarget, Extensions,
+    ProjectIdentity, PullRequestOutcome, PullRequestPlan, PullRequestTarget, Services,
+    directory_project_id, file_project_id, initials,
+};

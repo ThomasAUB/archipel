@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use archipel_model::RepoId;
+use archipel_model::{RepoId, RepoPath};
 
 /// A request to the application, executed by `App::dispatch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +14,8 @@ pub enum Command {
     RefreshAll,
     /// Recompute one repo.
     RefreshRepo(RepoId),
+    /// Re-read the forge status (pull request, CI, review) of every repo.
+    RefreshForge,
     /// Fetch the given repos (all when empty).
     Fetch(Vec<RepoId>),
     /// Pull the given repos (all when empty).
@@ -42,6 +44,41 @@ pub enum Command {
     CycleTab(bool),
     /// Show or hide the operations drawer.
     ToggleDrawer,
+    /// Add or remove a repo from the multi-selection (Ctrl+click).
+    ToggleSelect(RepoId),
+    /// Hide repos (spec §1): out of the dashboard, batches, watching.
+    HideRepos(Vec<RepoId>),
+    /// Unhide repos (every hidden repo when empty).
+    UnhideRepos(Vec<RepoId>),
+    /// Hide the given repos, or unhide them when they are all hidden.
+    ToggleHidden(Vec<RepoId>),
+    /// List hidden repos (dimmed) in the dashboard, or not.
+    ToggleShowHidden,
+    /// Stop the folder scan of a launch from a directory.
+    CancelScan,
+    /// Add repositories to the open project.
+    AddRepos(Vec<RepoPath>),
+    /// Show the repo dependency tree, or the flat list (spec §9).
+    ToggleDependencyTree,
+    /// Collapse or expand a node of the dependency tree (its path key).
+    ToggleTreeNode(String),
+    /// `git submodule update` in `parent` for `paths` (all when empty).
+    UpdateSubmodules {
+        /// Repository declaring the submodules.
+        parent: RepoPath,
+        /// Submodule paths relative to `parent`.
+        paths: Vec<String>,
+        /// Initialize them first.
+        init: bool,
+        /// Recurse into nested submodules.
+        recursive: bool,
+    },
+    /// Open a submodule as a repo tab (adding it to the project if needed).
+    OpenSubmodule(RepoPath),
+    /// Personal project accent color (`#rrggbb`; automatic when `None`).
+    SetAccent(Option<String>),
+    /// Personal project icon / emoji (`None`: team default or none).
+    SetIcon(Option<String>),
     /// UI-only commands (palettes, dialogs) the frontend handles itself.
     Ui(String),
 }
@@ -117,6 +154,9 @@ fn always(_: &ActionContext) -> bool {
 }
 fn with_project(ctx: &ActionContext) -> bool {
     ctx.project_open
+}
+fn with_selection(ctx: &ActionContext) -> bool {
+    ctx.project_open && !ctx.selected.is_empty()
 }
 fn with_repo(ctx: &ActionContext) -> bool {
     ctx.project_open && (ctx.active_repo.is_some() || ctx.selected.len() == 1)
@@ -219,6 +259,7 @@ impl ActionRegistry {
             always,
             |_| Some(Command::ToggleDrawer),
         )));
+        r.register_window_and_view_actions();
         r.register(Arc::new(SimpleAction::new(
             "repo.open",
             "Open repository tab",
@@ -226,6 +267,94 @@ impl ActionRegistry {
             |c| target_repo(c).map(Command::OpenRepoTab),
         )));
         r
+    }
+
+    /// Windows, hidden repos, dependency tree and project identity.
+    fn register_window_and_view_actions(&mut self) {
+        let r = self;
+        let ui = |id: &'static str, label: &'static str, available: fn(&ActionContext) -> bool| {
+            Arc::new(SimpleAction::new(id, label, available, move |_| {
+                Some(Command::Ui(id.to_owned()))
+            }))
+        };
+        r.register(ui("window.new", "New window", always));
+        r.register(ui(
+            "project.set_color",
+            "Set the project color…",
+            with_project,
+        ));
+        r.register(ui(
+            "project.set_icon",
+            "Set the project icon…",
+            with_project,
+        ));
+        r.register(Arc::new(SimpleAction::new(
+            "repos.toggle_hidden",
+            "Hide / unhide selected repos",
+            with_selection,
+            |c| Some(Command::ToggleHidden(c.selected.clone())),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "repos.show_hidden",
+            "Show / don't show hidden repos",
+            with_project,
+            |_| Some(Command::ToggleShowHidden),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "repos.unhide_all",
+            "Unhide every repo",
+            with_project,
+            |_| Some(Command::UnhideRepos(Vec::new())),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "view.dependency_tree",
+            "Toggle the repo dependency tree",
+            with_project,
+            |_| Some(Command::ToggleDependencyTree),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "project.cancel_scan",
+            "Stop scanning the folder",
+            with_project,
+            |_| Some(Command::CancelScan),
+        )));
+        r.register_forge_actions();
+    }
+
+    /// Forge integration (spec §8). The panels are frontend dialogs.
+    fn register_forge_actions(&mut self) {
+        let r = self;
+        let ui = |id: &'static str, label: &'static str, available: fn(&ActionContext) -> bool| {
+            Arc::new(SimpleAction::new(id, label, available, move |_| {
+                Some(Command::Ui(id.to_owned()))
+            }))
+        };
+        r.register(ui(
+            "forge.accounts",
+            "Forge accounts (GitHub, GitLab)…",
+            always,
+        ));
+        r.register(ui(
+            "forge.create_pull_requests",
+            "Create pull requests for selected repos (all when none)…",
+            with_project,
+        ));
+        r.register(ui(
+            "forge.clone",
+            "Clone repositories from a forge account…",
+            with_project,
+        ));
+        r.register(ui(
+            "forge.open_pull_request",
+            "Open the pull request in the browser",
+            with_repo,
+        ));
+        r.register(Arc::new(SimpleAction::new(
+            "forge.refresh",
+            "Refresh pull request status",
+            with_project,
+            |_| Some(Command::RefreshForge),
+        )));
     }
 
     /// Adds an action or replaces the one with the same id.

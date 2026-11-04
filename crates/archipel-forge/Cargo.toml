@@ -1,0 +1,34 @@
+[package]
+name = "archipel-forge"
+description = "Forge adapters (GitHub, GitLab): REST clients, OS keychain credentials, account list."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+archipel-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+# Blocking HTTP client, rustls, OS trust store (ADR 0003).
+ureq = { version = "3.5", features = ["platform-verifier"] }
+
+# OS keychain (ADR 0003): Credential Manager, Keychain, Secret Service.
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6", features = ["apple-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
+
+[dev-dependencies]
+archipel-model = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

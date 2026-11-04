@@ -1,7 +1,7 @@
 //! The project dashboard view-model (spec §3).
 //!
 //! Extension points: [`DashboardColumn`] (registered in [`ColumnRegistry`]) and
-//! [`RepoFilter`] (registered in [`FilterRegistry`]). The six built-in columns
+//! [`RepoFilter`] (registered in [`FilterRegistry`]). The built-in columns
 //! and the built-in filters use the same registries a fork would.
 
 use std::cmp::Ordering;
@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use archipel_model::ui_state::SortDirection;
 use archipel_model::{HeadState, RepoId, RepoOp, RepoPath, RepoSummary, Timestamp};
+
+use crate::forge::{CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter};
 
 /// Availability of a repository of the project.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +38,10 @@ pub struct DashboardRow {
     pub status: RepoStatus,
     /// Whether the summary comes from the cache and a refresh is pending.
     pub stale: bool,
+    /// Hidden by the user (only listed, dimmed, when "show hidden" is on).
+    pub hidden: bool,
+    /// Pull request, CI and review state on the forge (spec §8).
+    pub forge: ForgeStatus,
 }
 
 impl DashboardRow {
@@ -66,6 +72,10 @@ pub enum Tone {
     Conflict,
     /// Error.
     Error,
+    /// Passed, approved.
+    Success,
+    /// Waiting (CI running).
+    Warning,
 }
 
 /// A rendered cell: primary text, optional secondary text (e.g. the path
@@ -369,7 +379,7 @@ pub struct ColumnRegistry {
 }
 
 impl ColumnRegistry {
-    /// The six built-in columns of spec §3.
+    /// The six built-in columns of spec §3, then the forge status (§8).
     #[must_use]
     pub fn with_builtins() -> Self {
         let mut r = Self::default();
@@ -379,6 +389,7 @@ impl ColumnRegistry {
         r.register(Arc::new(ChangesColumn));
         r.register(Arc::new(VersionColumn));
         r.register(Arc::new(FetchColumn));
+        r.register(Arc::new(ForgeColumn));
         r
     }
 
@@ -467,6 +478,8 @@ impl FilterRegistry {
         r.register(f("problems", "Missing or failing", |row| {
             matches!(row.status, RepoStatus::Missing | RepoStatus::Error(_))
         }));
+        r.register(Arc::new(PullRequestOpenFilter));
+        r.register(Arc::new(CiFailingFilter));
         r
     }
 
@@ -538,6 +551,8 @@ mod tests {
             path,
             status: RepoStatus::Ready(s),
             stale: false,
+            hidden: false,
+            forge: ForgeStatus::Unknown,
         }
     }
 
@@ -547,7 +562,9 @@ mod tests {
         let ids: Vec<_> = cols.columns().iter().map(|c| c.id().to_owned()).collect();
         assert_eq!(
             ids,
-            ["repo", "branch", "sync", "changes", "version", "fetch"]
+            [
+                "repo", "branch", "sync", "changes", "version", "fetch", "forge"
+            ]
         );
         let r = row("app", |s| {
             s.upstream = Some(Upstream {
@@ -645,6 +662,6 @@ mod tests {
         let mut cols = ColumnRegistry::with_builtins();
         cols.register(Arc::new(Custom));
         assert_eq!(cols.columns()[4].header(), "Release");
-        assert_eq!(cols.columns().len(), 6);
+        assert_eq!(cols.columns().len(), 7);
     }
 }

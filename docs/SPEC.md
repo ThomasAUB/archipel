@@ -25,7 +25,7 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - P2: import from submodules, `repo` manifest, VS Code workspace.
 
 **Launch from a directory — P1**
-> **Not in the current version.** Today folder scanning exists in the CLI (`archipel-cli scan` / `add`); the desktop app does not take a directory at launch.
+> Implemented: `archipel <dir>`. Not yet: the file-manager "Open with Archipel" entry (needs the installer, see Packaging in the README).
 
 - `archipel <dir>` (or `archipel .`, or "Open with Archipel" from the file manager) opens the app on that directory.
 - If the directory holds a `.gitproject.toml`, that project is opened.
@@ -34,7 +34,6 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - No confirmation dialog: the list appears immediately and fills in as the scan progresses (cancellable).
 
 **Hidden repos — P1**
-> **Not in the current version.**
 
 - Any repo of a project can be hidden when it isn't wanted (context menu or keyboard), individually or in batch.
 - Hidden repos disappear from the dashboard, graph switcher, batch actions and multi-repo commit; they are neither watched nor refreshed (saves CPU and RAM).
@@ -47,7 +46,6 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - Switch in < 200 ms (state cached, refreshed in the background).
 
 **Several instances side by side — P1**
-> **Not in the current version.**
 
 - Several projects / directories can be open at the same time, each in its own window, behaving as an independent instance (own selected repo, filters, layout, background refresh).
 - **One process, many windows:** launching `archipel <dir>` while Archipel is running hands the request to the running process (local IPC), which opens a new window. An extra window costs only its project's data, not another GPU context, font set and caches — consistent with the RAM target.
@@ -55,7 +53,7 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - Shared state (settings, recent projects, on-disk caches) stays consistent when several windows write to it concurrently.
 
 **Recognizing a window at a glance — P1**
-> **Not in the current version.**
+> Implemented except the taskbar badge (it needs a native Windows API call, i.e. an `unsafe` exception and an ADR).
 
 - **Per-project accent color:** derived automatically from the project path (stable across launches), overridable by the user. Shown as a thin colored band at the top of the window, and on the selection and project name; built on the theme engine's accent-derived palette.
 - **Project name first in the window title** (`myproject — Archipel`), so the taskbar, Alt+Tab and window lists stay readable when titles are truncated.
@@ -106,7 +104,7 @@ Computed locally, per repo and aggregated per project. Three views in v1:
 Anything else waits for real usage.
 
 ### 8. Forge integration (GitHub, GitLab, …) — P2
-> **Not in the current version.** Today only "open in browser" links exist (see Resolved questions).
+> Implemented for GitHub (and GitHub Enterprise Server) and GitLab (gitlab.com and self-hosted): sign-in by personal access token, "Pull request" dashboard column, pull requests across repos, clone from an account (ADR 0003). Not yet: OAuth device flow (it needs an OAuth application registered on each forge), Gitea / Forgejo, Bitbucket and Azure DevOps providers (links only).
 
 Easy, low-friction integration with code hosting forges:
 - Providers: GitHub, GitLab (including self-hosted), then Gitea / Forgejo, Bitbucket, Azure DevOps — each as a pluggable provider behind one small trait, so a fork can add its own without patching the core.
@@ -117,7 +115,6 @@ Easy, low-friction integration with code hosting forges:
 - Still no built-in code review (see Non-goals): reviewing happens on the forge.
 
 ### 9. Repo dependency tree — P2
-> **Not in the current version.** Today submodules are only detected (badge) — see Resolved questions.
 
 Show how the repos of a project depend on each other, as a small tree:
 - Nested submodules at any depth (repo → submodule → submodule → …), with each node's state (initialized or not, pinned commit vs. checked-out commit, dirty).

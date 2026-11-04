@@ -1,0 +1,362 @@
+//! App behavior of the v1 additions against fakes: launch from a directory,
+//! hidden repos, sibling sessions (one per window), window identity and the
+//! repo dependency tree.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use archipel_app::{App, Command, Extensions, Services};
+use archipel_model::ports::Scope;
+use archipel_model::project::{
+    DiscoveredKind, DiscoveredRepo, ProjectDef, ProjectLocation, RepoEntry,
+};
+use archipel_model::settings::Settings;
+use archipel_model::submodule::SubmoduleInfo;
+use archipel_model::testing::{
+    FakeChangeSource, FakeDiscovery, FakeGit, FakeProjectSource, InMemoryStore, oid,
+};
+use archipel_model::{HeadState, ProjectId, RepoPath};
+use archipel_ops::GitPorts;
+
+struct Env {
+    _rt: tokio::runtime::Runtime,
+    git: Arc<FakeGit>,
+    watcher: Arc<FakeChangeSource>,
+    app: Arc<App>,
+    repos: Vec<RepoPath>,
+    dir: tempfile::TempDir,
+}
+
+/// Three repos `r0..r2` in a temp dir, a private project `p1` listing them,
+/// and a discovery that finds them (plus `extra`) when scanning.
+fn env(extra: &[&str]) -> Env {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let git = Arc::new(FakeGit::new());
+    let store = Arc::new(InMemoryStore::new());
+    let watcher = Arc::new(FakeChangeSource::default());
+    let mut names: Vec<String> = (0..3).map(|i| format!("r{i}")).collect();
+    names.extend(extra.iter().map(|s| (*s).to_owned()));
+    let all: Vec<RepoPath> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let p = dir.path().join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            let path = RepoPath::new(p);
+            git.with_repo(&path, |r| {
+                r.summary.head = HeadState::Branch("main".into());
+                r.refs.insert("refs/heads/main".into(), oid(i as u64));
+            });
+            path
+        })
+        .collect();
+    let discovery = FakeDiscovery {
+        repos: all
+            .iter()
+            .map(|p| DiscoveredRepo {
+                path: p.clone(),
+                kind: DiscoveredKind::GitDir,
+            })
+            .collect(),
+    };
+    let services = Services {
+        git: GitPorts::from_backend(git.clone()),
+        projects: Arc::new(FakeProjectSource::default()),
+        discovery: Arc::new(discovery),
+        registry: store.clone(),
+        summaries: store.clone(),
+        ui_state: store.clone(),
+        journal: store.clone(),
+        watcher: watcher.clone(),
+        diffs: git.clone(),
+        churn: git.clone(),
+        stats: store.clone(),
+        caches: Arc::new(archipel_cache::CacheRegistry::new()),
+        cache_dir: dir.path().join("cache"),
+        forge: archipel_app::forge::ForgePorts::disabled(),
+    };
+    let app = App::new(
+        services,
+        Settings::default(),
+        Extensions::default(),
+        rt.handle().clone(),
+    );
+    let repos: Vec<RepoPath> = all.into_iter().take(3).collect();
+    let def = ProjectDef {
+        name: "My product".into(),
+        repos: repos
+            .iter()
+            .map(|p| RepoEntry {
+                path: p.clone(),
+                alias: None,
+            })
+            .collect(),
+        settings: archipel_model::project::ProjectSettings::default(),
+    };
+    app.create_project(ProjectLocation::Private(ProjectId("p1".into())), &def)
+        .unwrap();
+    Env {
+        _rt: rt,
+        git,
+        watcher,
+        app,
+        repos,
+        dir,
+    }
+}
+
+fn wait_until(what: &str, cond: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !cond() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn open_fresh(e: &Env) {
+    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    wait_until("refresh", || e.app.rows().iter().all(|r| !r.stale));
+}
+
+#[test]
+fn hidden_repos_leave_dashboard_batches_and_refreshes() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let hidden = e.repos[1].id();
+    e.app.dispatch(Command::Select(Some(hidden))).unwrap();
+    e.app.dispatch(Command::ToggleHidden(vec![hidden])).unwrap();
+    assert_eq!(e.app.rows().len(), 2);
+    assert_eq!(e.app.visible_rows().len(), 2);
+    assert_eq!(e.app.hidden_count(), 1);
+    assert_eq!(e.app.ui_state().unwrap().selected_repo, None);
+
+    // Not refreshed on watcher events.
+    e.git
+        .with_repo(&e.repos[1], |r| r.summary.changes.modified = 9);
+    e.watcher.trigger(hidden, Scope::STATUS);
+    std::thread::sleep(Duration::from_millis(50));
+    let row = e
+        .app
+        .all_rows()
+        .into_iter()
+        .find(|r| r.id == hidden)
+        .unwrap();
+    assert_ne!(row.summary().unwrap().changes.modified, 9);
+
+    // Not targeted by batch actions ("all" = every non-hidden repo).
+    e.app.dispatch(Command::Fetch(Vec::new())).unwrap();
+    wait_until("fetch", || {
+        e.git.calls().iter().filter(|c| c.op == "fetch").count() == 2
+    });
+    std::thread::sleep(Duration::from_millis(30));
+    let fetched: Vec<String> = e
+        .git
+        .calls()
+        .into_iter()
+        .filter(|c| c.op == "fetch")
+        .map(|c| c.repo)
+        .collect();
+    assert_eq!(fetched.len(), 2);
+    assert!(!fetched.contains(&e.repos[1].as_path().display().to_string()));
+
+    // "Show hidden" lists it, flagged.
+    e.app.dispatch(Command::ToggleShowHidden).unwrap();
+    let visible = e.app.visible_rows();
+    assert_eq!(visible.len(), 3);
+    assert!(visible.iter().any(|r| r.id == hidden && r.hidden));
+
+    // Hiding is remembered in the private state.
+    e.app.close_project();
+    open_fresh(&e);
+    assert_eq!(e.app.rows().len(), 2);
+
+    // Unhide: back everywhere, and refreshed.
+    e.app.dispatch(Command::UnhideRepos(Vec::new())).unwrap();
+    assert_eq!(e.app.rows().len(), 3);
+    wait_until("refresh after unhide", || {
+        e.app
+            .rows()
+            .iter()
+            .any(|r| r.id == hidden && r.summary().is_some_and(|s| s.changes.modified == 9))
+    });
+}
+
+#[test]
+fn multi_selection_drives_batch_actions() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let (a, b) = (e.repos[0].id(), e.repos[2].id());
+    e.app.dispatch(Command::Select(Some(a))).unwrap();
+    e.app.dispatch(Command::ToggleSelect(b)).unwrap();
+    assert_eq!(e.app.action_context().selected, vec![a, b]);
+    e.app.dispatch(Command::ToggleSelect(a)).unwrap();
+    assert_eq!(e.app.action_context().selected, vec![b]);
+    e.app.dispatch(Command::Select(Some(a))).unwrap();
+    assert_eq!(e.app.action_context().selected, vec![a]);
+}
+
+#[test]
+fn open_directory_scans_then_never_re_adds_hidden_repos() {
+    let e = env(&["r3"]);
+    let id = e.app.open_directory(e.dir.path()).unwrap();
+    assert!(id.0.starts_with("dir:"));
+    assert_eq!(
+        e.app.project().unwrap().1.name,
+        e.dir.path().file_name().unwrap().to_string_lossy()
+    );
+    wait_until("scan", || e.app.all_rows().len() == 4 && !e.app.scanning());
+
+    let r3 = e.dir.path().join("r3");
+    let hidden = RepoPath::new(&r3).id();
+    e.app.dispatch(Command::HideRepos(vec![hidden])).unwrap();
+    e.app.close_project();
+
+    // Same directory again: same project, the hidden repo stays hidden.
+    let again = e.app.open_directory(e.dir.path()).unwrap();
+    assert_eq!(again, id);
+    wait_until("rescan", || !e.app.scanning());
+    assert_eq!(e.app.all_rows().len(), 4);
+    assert_eq!(e.app.rows().len(), 3);
+
+    // Launching from inside a repo opens the enclosing repo's project.
+    std::fs::create_dir_all(r3.join(".git")).unwrap();
+    std::fs::create_dir_all(r3.join("src")).unwrap();
+    let target = e.app.directory_target(&r3.join("src")).unwrap();
+    assert_eq!(target.scan_root, r3);
+    assert!(target.project_file.is_none());
+
+    // A folder holding a project file opens that file.
+    std::fs::write(
+        e.dir.path().join(".gitproject.toml"),
+        "version = 1\nname = \"x\"\n",
+    )
+    .unwrap();
+    let target = e.app.directory_target(e.dir.path()).unwrap();
+    assert!(target.project_file.is_some());
+    assert!(target.id.0.starts_with("file:"));
+}
+
+#[test]
+fn sibling_sessions_are_independent() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let other = e.app.sibling();
+    let dir_id = other.open_directory(e.repos[0].as_path()).unwrap();
+    assert_eq!(e.app.project().unwrap().0, ProjectId("p1".into()));
+    assert_eq!(other.project().unwrap().0, dir_id);
+    e.app
+        .dispatch(Command::Select(Some(e.repos[1].id())))
+        .unwrap();
+    assert_eq!(other.ui_state().unwrap().selected_repo, None);
+    // Both see the shared registry.
+    assert_eq!(other.projects().unwrap().len(), 2);
+}
+
+#[test]
+fn identity_is_automatic_then_personal() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let auto = e.app.identity().unwrap();
+    assert!(auto.automatic_accent);
+    assert_eq!(auto.initials, "MP");
+    assert_eq!(auto.window_title(), "My product — Archipel");
+    assert_eq!(e.app.identity().unwrap().accent, auto.accent);
+
+    e.app
+        .dispatch(Command::SetAccent(Some("ff8800".into())))
+        .unwrap();
+    e.app
+        .dispatch(Command::SetIcon(Some(" 🚀 ".into())))
+        .unwrap();
+    let mine = e.app.identity().unwrap();
+    assert!(!mine.automatic_accent);
+    assert_eq!(mine.accent.to_hex(), "#ff8800");
+    assert_eq!(mine.window_title(), "🚀 My product — Archipel");
+    assert!(
+        e.app
+            .dispatch(Command::SetAccent(Some("nope".into())))
+            .is_err()
+    );
+    e.app.dispatch(Command::SetAccent(None)).unwrap();
+    assert!(e.app.identity().unwrap().automatic_accent);
+}
+
+#[test]
+fn dependency_tree_nests_submodules_and_updates_them() {
+    let e = env(&[]);
+    // r0 has two submodules: r1 (also a project repo) and an uninitialized one.
+    let vendor = RepoPath::new(e.repos[0].as_path().join("vendor"));
+    e.git.with_repo(&e.repos[0], |r| {
+        r.submodules = vec![
+            SubmoduleInfo {
+                name: "r1".into(),
+                path: e.repos[1].clone(),
+                initialized: true,
+                pinned: Some(oid(1)),
+                checked_out: Some(oid(1)),
+            },
+            SubmoduleInfo {
+                name: "vendor".into(),
+                path: vendor.clone(),
+                initialized: false,
+                pinned: Some(oid(7)),
+                checked_out: None,
+            },
+        ];
+    });
+    open_fresh(&e);
+    assert!(e.app.dependency_tree().is_empty(), "off by default");
+    e.app.dispatch(Command::ToggleDependencyTree).unwrap();
+    wait_until("tree", || e.app.dependency_tree().len() == 4);
+    let tree = e.app.dependency_tree();
+    let lines: Vec<String> = tree
+        .iter()
+        .map(|r| format!("{}{}", r.prefix, r.name))
+        .collect();
+    assert_eq!(lines, ["r0", "├─ r1", "└─ vendor", "r2"]);
+    assert_eq!(tree[1].repo, Some(e.repos[1].id()));
+    let state = tree[2].state.clone().unwrap();
+    assert!(!state.initialized);
+
+    // Collapse r0.
+    e.app
+        .dispatch(Command::ToggleTreeNode(tree[0].key.clone()))
+        .unwrap();
+    assert_eq!(e.app.dependency_tree().len(), 2);
+    e.app
+        .dispatch(Command::ToggleTreeNode(tree[0].key.clone()))
+        .unwrap();
+
+    // Init the uninitialized one.
+    e.app
+        .dispatch(Command::UpdateSubmodules {
+            parent: state.parent,
+            paths: vec![state.rel_path],
+            init: true,
+            recursive: false,
+        })
+        .unwrap();
+    wait_until("init", || {
+        e.app
+            .dependency_tree()
+            .iter()
+            .any(|r| r.path == vendor && r.state.as_ref().is_some_and(|s| s.initialized))
+    });
+
+    // Open the submodule as a repo: added to the project, tab opened.
+    e.app
+        .dispatch(Command::OpenSubmodule(vendor.clone()))
+        .unwrap();
+    assert!(e.app.rows().iter().any(|r| r.path == vendor));
+    let ui = e.app.ui_state().unwrap();
+    assert_eq!(
+        ui.tabs[ui.active_tab],
+        archipel_model::ui_state::TabState::Repo(vendor.id())
+    );
+}

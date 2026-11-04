@@ -25,6 +25,7 @@ impl RepoEntry {
 
 /// Per-project settings that travel with the shared file.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProjectSettings {
     /// Refuse a multi-repo commit when repos are on different branches.
     pub require_same_branch: bool,
@@ -34,6 +35,11 @@ pub struct ProjectSettings {
     pub ticket_from_branch: Option<String>,
     /// Commit message templates.
     pub message_templates: Vec<MessageTemplateDef>,
+    /// Team default accent color of the project's windows (`#rrggbb`);
+    /// a personal choice in the private state wins (spec §2).
+    pub accent: Option<String>,
+    /// Team default project icon / emoji.
+    pub icon: Option<String>,
 }
 
 /// A named commit message template.

@@ -21,18 +21,24 @@ use crate::ports::{
     DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
     MergeToolLauncher, PrivateProjectStore, ProjectRegistry, ProjectSource, RefReader, RefWriter,
     RemoteInfo, RemoteOps, RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore,
-    StatusReader, SummaryStore, TagWriter, UiStateStore, WatchHandle,
+    StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, UiStateStore,
+    WatchHandle,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
 use crate::requests::{
     CheckoutTarget, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection, PullMode,
-    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, TagRequest,
+    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleUpdate,
+    TagRequest,
 };
 use crate::stats::{ActivityBucket, Hotspot, StatsDelta};
+use crate::submodule::SubmoduleInfo;
 use crate::summary::{HeadState, RepoSummary};
 use crate::time::Timestamp;
 use crate::ui_state::UiState;
+
+mod forge;
+pub use forge::{CreatedPullRequest, FakeForge, InMemoryCredentials};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -71,6 +77,8 @@ pub struct FakeRepo {
     pub refs: BTreeMap<String, Oid>,
     /// Where `HEAD` points.
     pub head: HeadRef,
+    /// Submodules (one level).
+    pub submodules: Vec<SubmoduleInfo>,
 }
 
 impl Default for FakeRepo {
@@ -87,6 +95,7 @@ impl Default for FakeRepo {
             diffs: HashMap::new(),
             refs: BTreeMap::new(),
             head: HeadRef::Symbolic("refs/heads/main".into()),
+            submodules: Vec::new(),
         }
     }
 }
@@ -651,6 +660,44 @@ impl HistoryRewriter for FakeGit {
     }
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError> {
         self.record("sequence", repo, format!("{action:?}"))
+    }
+}
+
+impl SubmoduleReader for FakeGit {
+    fn submodules(&self, repo: &RepoPath) -> Result<Vec<SubmoduleInfo>, GitError> {
+        self.read(repo, "submodules", |r| r.submodules.clone())
+    }
+}
+
+impl SubmoduleWriter for FakeGit {
+    fn update_submodules(
+        &self,
+        repo: &RepoPath,
+        request: &SubmoduleUpdate,
+        _p: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        cancel.check()?;
+        self.record(
+            "submodule_update",
+            repo,
+            format!(
+                "init={} recursive={} paths={}",
+                request.init,
+                request.recursive,
+                request.paths.join(",")
+            ),
+        )?;
+        self.with_repo(repo, |r| {
+            for s in &mut r.submodules {
+                let wanted = request.paths.is_empty() || request.paths.contains(&s.name);
+                if wanted && (s.initialized || request.init) {
+                    s.initialized = true;
+                    s.checked_out = s.pinned;
+                }
+            }
+        });
+        Ok(())
     }
 }
 

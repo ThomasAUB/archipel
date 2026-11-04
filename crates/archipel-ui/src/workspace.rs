@@ -5,20 +5,23 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use archipel_app::dashboard::RepoStatus;
-use archipel_app::{App as Core, AppEvent, Command};
+use archipel_app::dashboard::{DashboardRow, RepoStatus};
+use archipel_app::deptree::TreeRow;
+use archipel_app::{App as Core, AppEvent, Command, Extensions};
 use archipel_model::project::{ProjectDef, ProjectLocation, ProjectSettings, RepoEntry};
-use archipel_model::ui_state::{SortDirection, TabState};
+use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, RepoPath, Timestamp};
 use archipel_ops::OpEventKind;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Action, AnyElement, ClickEvent, Context, Entity, FocusHandle, PathPromptOptions, SharedString,
-    Subscription, Window, div, px,
+    Action, AnyElement, ClickEvent, Context, Entity, FocusHandle, MouseButton, MouseDownEvent,
+    PathPromptOptions, Pixels, Point, SharedString, Subscription, Window, anchored, deferred, div,
+    px,
 };
 
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
+use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::repo_view::RepoView;
 use crate::theme::{UiTheme, color, radius, row_height, text_size, tone, ui_font};
@@ -37,9 +40,19 @@ gpui_kit::actions!(
         Refresh,
         FetchAll,
         OpenCommit,
-        SubmitCommit
+        SubmitCommit,
+        ToggleHide,
+        ShowHidden,
+        ToggleTree,
+        NewWindow
     ]
 );
+
+/// Relative widths of the dashboard columns.
+const WIDTHS: [f32; 6] = [2.0, 1.4, 1.0, 1.2, 1.0, 0.8];
+
+/// Height of the project color band at the top of the window.
+const BAND_HEIGHT: f32 = 3.0;
 
 /// The GPUI action for an `archipel-app` action id (keymap bindings).
 pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
@@ -55,6 +68,10 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         "repos.fetch_all" => Box::new(FetchAll),
         "commit.open" => Box::new(OpenCommit),
         "commit.submit" => Box::new(SubmitCommit),
+        "repos.toggle_hidden" => Box::new(ToggleHide),
+        "repos.show_hidden" => Box::new(ShowHidden),
+        "view.dependency_tree" => Box::new(ToggleTree),
+        "window.new" => Box::new(NewWindow),
         _ => return None,
     })
 }
@@ -67,11 +84,14 @@ enum PaletteKind {
     Checkout,
     Branch,
     Tag,
+    Color,
+    Icon,
 }
 
 enum Overlay {
     Palette(Entity<Palette>),
     Commit(Entity<CommitPanel>),
+    Forge(Entity<ForgePanel>),
 }
 
 /// Lines kept in the operations drawer.
@@ -86,6 +106,12 @@ pub struct Workspace {
     log: VecDeque<(Timestamp, String, bool)>,
     notice: Option<String>,
     warnings: Vec<String>,
+    /// Open repo context menu: repo and mouse position.
+    row_menu: Option<(RepoId, Point<Pixels>)>,
+    /// Folder scan progress: repos found, still running.
+    scan: Option<(usize, bool)>,
+    /// Window title last set.
+    title: String,
 }
 
 impl Workspace {
@@ -101,8 +127,8 @@ impl Workspace {
         Self::pump_events(&core, cx);
         crate::startup::mark("workspace built");
         window.on_next_frame(|_, _| crate::startup::mark("first frame"));
-        window.on_window_should_close(cx, |_, cx| {
-            cx.quit();
+        window.on_window_should_close(cx, |window, cx| {
+            crate::windows::closed(cx, window.window_handle());
             true
         });
         Self {
@@ -113,6 +139,9 @@ impl Workspace {
             log: VecDeque::new(),
             notice: None,
             warnings,
+            row_menu: None,
+            scan: None,
+            title: String::new(),
         }
     }
 
@@ -180,8 +209,17 @@ impl Workspace {
                     repos.len()
                 ));
             }
-            AppEvent::ProjectOpened(_) => self.repo_views.clear(),
-            AppEvent::RowsChanged(_) | AppEvent::UiStateChanged | AppEvent::ProjectsChanged => {}
+            AppEvent::ProjectOpened(_) => {
+                self.repo_views.clear();
+                self.row_menu = None;
+                self.scan = None;
+            }
+            AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
+            AppEvent::RowsChanged(_)
+            | AppEvent::UiStateChanged
+            | AppEvent::ProjectsChanged
+            | AppEvent::TreeChanged
+            | AppEvent::ForgeAccountsChanged => {}
         }
         cx.notify();
     }
@@ -193,12 +231,9 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The batch selection (empty: every repo).
     fn selected_or_all(&self) -> Vec<RepoId> {
-        self.core
-            .ui_state()
-            .and_then(|ui| ui.selected_repo)
-            .into_iter()
-            .collect()
+        self.core.action_context().selected
     }
 
     // ----- overlays -----------------------------------------------------
@@ -218,14 +253,27 @@ impl Workspace {
                         detail: "shared project file".into(),
                     },
                 ];
+                let current = self.core.project().map(|(id, _)| id);
                 for p in self.core.projects().unwrap_or_default() {
-                    let detail = match &p.location {
+                    let mut detail = match &p.location {
                         ProjectLocation::SharedFile(f) => f.display().to_string(),
-                        ProjectLocation::Private(_) => "private".into(),
+                        ProjectLocation::Private(id) => {
+                            id.0.strip_prefix("dir:")
+                                .map_or_else(|| "private".into(), |d| format!("{d} (private)"))
+                        }
+                    };
+                    if current.as_ref() == Some(&p.id) {
+                        detail = format!("this window · {detail}");
+                    } else if crate::windows::is_open(window, cx, &p.id) {
+                        detail = format!("open in another window · {detail}");
+                    }
+                    let label = match self.core.project_icon(&p.id) {
+                        Some(icon) => format!("{icon}  {}", p.name),
+                        None => p.name,
                     };
                     items.push(PaletteItem {
                         id: p.id.0,
-                        label: p.name,
+                        label,
                         detail,
                     });
                 }
@@ -266,6 +314,12 @@ impl Workspace {
                 Vec::new(),
                 true,
             ),
+            PaletteKind::Color => (
+                "Project color: #rrggbb (empty: automatic, from the project path)",
+                Vec::new(),
+                true,
+            ),
+            PaletteKind::Icon => ("Project icon or emoji (empty: none)", Vec::new(), true),
         };
         let palette = cx.new(|cx| Palette::new(title, items, prompt, window, cx));
         let sub = cx.subscribe_in(
@@ -297,8 +351,12 @@ impl Workspace {
                 "+folder" => self.new_project_from_folder(cx),
                 "+file" => self.open_project_file(cx),
                 id => {
-                    if let Err(e) = self.core.open_project(&ProjectId(id.to_owned())) {
-                        self.notice = Some(e.to_string());
+                    let id = ProjectId(id.to_owned());
+                    // Already shown by another window: focus it, no duplicate.
+                    if !crate::windows::focus_project(cx, &id, Some(window.window_handle())) {
+                        if let Err(e) = self.core.open_project(&id) {
+                            self.notice = Some(e.to_string());
+                        }
                     }
                 }
             },
@@ -306,6 +364,8 @@ impl Workspace {
             PaletteKind::Checkout => self.dispatch(Command::CheckoutAll(value, targets), cx),
             PaletteKind::Branch => self.dispatch(Command::CreateBranchAll(value, targets), cx),
             PaletteKind::Tag => self.dispatch(Command::CreateTagAll(value, targets), cx),
+            PaletteKind::Color => self.dispatch(Command::SetAccent(Some(value)), cx),
+            PaletteKind::Icon => self.dispatch(Command::SetIcon(Some(value)), cx),
         }
     }
 
@@ -336,6 +396,16 @@ impl Workspace {
             "repos.tag_all" => self.open_palette(PaletteKind::Tag, window, cx),
             "settings.appearance" => self.cycle_theme(window, cx),
             "app.copy_diagnostics" => self.copy_diagnostics(cx),
+            "window.new" => crate::windows::open(cx, None),
+            "project.set_color" => self.open_palette(PaletteKind::Color, window, cx),
+            "project.set_icon" => self.open_palette(PaletteKind::Icon, window, cx),
+            "forge.accounts" => self.open_forge(ForgeTab::Accounts, window, cx),
+            "forge.create_pull_requests" => {
+                let ids = self.selected_or_all();
+                self.open_forge(ForgeTab::PullRequests(ids), window, cx);
+            }
+            "forge.clone" => self.open_forge(ForgeTab::Clone, window, cx),
+            "forge.open_pull_request" => self.open_pull_request(cx),
             other => self.notice = Some(format!("“{other}” is not available in this build")),
         }
         cx.notify();
@@ -364,6 +434,50 @@ impl Workspace {
         self.overlay = Some((Overlay::Commit(panel), sub));
     }
 
+    /// Opens the forge panel on `tab` (reusing it when already open).
+    fn open_forge(&mut self, tab: ForgeTab, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((Overlay::Forge(panel), _)) = &self.overlay {
+            panel.update(cx, |p, cx| p.show(tab, window, cx));
+            return;
+        }
+        let core = self.core.clone();
+        let panel = cx.new(|cx| ForgePanel::new(core, tab, window, cx));
+        let sub = cx.subscribe_in(
+            &panel,
+            window,
+            |this: &mut Self, _, event: &ForgePanelEvent, window, cx| {
+                match event {
+                    ForgePanelEvent::Closed => {
+                        this.overlay = None;
+                        this.focus.focus(window, cx);
+                    }
+                    ForgePanelEvent::Notice(text) => this.notice = Some(text.clone()),
+                }
+                cx.notify();
+            },
+        );
+        self.overlay = Some((Overlay::Forge(panel), sub));
+        cx.notify();
+    }
+
+    /// Opens the pull request of the active / selected repo in the browser.
+    fn open_pull_request(&mut self, cx: &mut Context<Self>) {
+        let ctx = self.core.action_context();
+        let target = ctx
+            .active_repo
+            .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]));
+        let url = self
+            .core
+            .rows()
+            .into_iter()
+            .find(|r| Some(r.id) == target)
+            .and_then(|r| r.forge.pull_request().map(|pr| pr.url.clone()));
+        match url {
+            Some(url) => cx.open_url(&url),
+            None => self.notice = Some("No open pull request for this repository".into()),
+        }
+    }
+
     fn cycle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let theme = cx.global::<UiTheme>();
         let ids: Vec<String> = theme.registry.ids().map(str::to_owned).collect();
@@ -375,6 +489,7 @@ impl Workspace {
         cx.global_mut::<UiTheme>().set(&next);
         self.notice = Some(format!("Theme: {}", cx.global::<UiTheme>().theme.name));
         window.refresh();
+        crate::windows::refresh_all(cx);
     }
 
     fn copy_diagnostics(&mut self, cx: &mut Context<Self>) {
@@ -447,7 +562,7 @@ impl Workspace {
                             .collect(),
                         settings: ProjectSettings::default(),
                     };
-                    let id = ProjectId(format!("dir:{}", dir.display()));
+                    let id = archipel_app::directory_project_id(&dir);
                     w.core
                         .create_project(ProjectLocation::Private(id.clone()), &def)
                         .map_err(|e| e.to_string())?;
@@ -493,9 +608,13 @@ impl Workspace {
     // ----- rendering ----------------------------------------------------
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = self.core.project();
+        let identity = self.core.identity();
         let rows = self.core.rows();
-        let selected = self.core.ui_state().and_then(|u| u.selected_repo);
+        let selected = self
+            .core
+            .ui_state()
+            .map(|u| u.batch_selection())
+            .unwrap_or_default();
         let hover = color(cx, T::BgHover);
         let selected_bg = color(cx, T::BgSelected);
         let repos = rows.into_iter().map(|row| {
@@ -532,16 +651,18 @@ impl Workspace {
                 .h(row_height(cx))
                 .rounded(radius(cx))
                 .cursor_pointer()
-                .when(selected == Some(id), |d| d.bg(selected_bg))
+                .when(selected.contains(&id), |d| d.bg(selected_bg))
                 .hover(move |s| s.bg(hover))
                 .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                    let command = if e.click_count() > 1 {
-                        Command::OpenRepoTab(id)
-                    } else {
-                        Command::Select(Some(id))
-                    };
-                    this.dispatch(command, cx);
+                    this.dispatch(row_click(id, e), cx);
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        this.row_menu = Some((id, e.position));
+                        cx.notify();
+                    }),
+                )
                 .child(dot(token, cx))
                 .child(div().flex_1().overflow_hidden().child(row.name))
                 .child(
@@ -580,10 +701,16 @@ impl Workspace {
                             .text_color(color(cx, T::FgSubtle))
                             .child("PROJECT  (Ctrl+P)"),
                     )
-                    .child(project.map_or_else(
-                        || "No project — open or create one".to_owned(),
-                        |(_, def)| def.name,
-                    )),
+                    .child(match identity {
+                        None => div().child("No project — open or create one"),
+                        Some(identity) => div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_color(color(cx, T::Accent))
+                            .children(identity.icon.clone())
+                            .child(div().truncate().child(identity.name)),
+                    }),
             )
             .child(section("REPOSITORIES", cx))
             .child(
@@ -674,12 +801,46 @@ impl Workspace {
             .children(tabs)
     }
 
-    fn render_dashboard_toolbar(
-        &mut self,
-        active: &[String],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_dashboard_toolbar(&mut self, ui: &UiState, cx: &mut Context<Self>) -> AnyElement {
+        let active = &ui.filters;
         let ext = self.core.extensions().clone();
+        let hidden = self.core.hidden_count();
+        let view_chips = div()
+            .flex()
+            .gap_1()
+            .child(
+                chip("view-tree", "Tree", ui.show_dependency_tree, cx).on_click(
+                    cx.listener(|this, _, _, cx| this.dispatch(Command::ToggleDependencyTree, cx)),
+                ),
+            )
+            .when(hidden > 0 || ui.show_hidden, |d| {
+                d.child(
+                    chip(
+                        "view-hidden",
+                        format!("Hidden ({hidden})"),
+                        ui.show_hidden,
+                        cx,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.dispatch(Command::ToggleShowHidden, cx)),
+                    ),
+                )
+            });
+        let scan = match self.scan {
+            Some((found, true)) => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(color(cx, T::FgMuted))
+                    .child(format!("Scanning the folder… {found} found"))
+                    .child(button("scan-stop", "Stop", cx).on_click(
+                        cx.listener(|this, _, _, cx| this.dispatch(Command::CancelScan, cx)),
+                    )),
+            ),
+            _ => None,
+        };
         let filters = ext.filters.filters().iter().map(|f| {
             let id = f.id().to_owned();
             let active = active.contains(&id);
@@ -724,12 +885,22 @@ impl Workspace {
                 );
         div()
             .flex()
+            .flex_wrap()
             .justify_between()
             .items_center()
             .gap_2()
             .px_3()
             .py_2()
-            .child(div().flex().gap_1().children(filters))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(div().flex().flex_wrap().gap_1().children(filters))
+                    .child(view_chips)
+                    .children(scan),
+            )
             .child(batch)
             .into_any_element()
     }
@@ -766,8 +937,8 @@ impl Workspace {
         let ext = self.core.extensions().clone();
         let rows = self.core.visible_rows();
         let now = Timestamp::now();
-        let toolbar = self.render_dashboard_toolbar(&ui.filters, cx);
-        let widths = [2.0_f32, 1.4, 1.0, 1.2, 1.0, 0.8];
+        let toolbar = self.render_dashboard_toolbar(&ui, cx);
+        let widths = WIDTHS;
         let header = div()
             .flex()
             .px_3()
@@ -795,56 +966,20 @@ impl Workspace {
                     }))
                     .child(format!("{}{arrow}", col.header().to_uppercase()))
             }));
-        let hover = color(cx, T::BgHover);
-        let selected_bg = color(cx, T::BgSelected);
-        let body = rows.iter().map(|row| {
-            let id = row.id;
-            div()
-                .id(SharedString::from(format!("dash-{id}")))
-                .flex()
-                .items_center()
-                .px_3()
-                .py_1()
-                .min_h(row_height(cx))
-                .border_b_1()
-                .border_color(color(cx, T::BorderSubtle))
-                .cursor_pointer()
-                .when(ui.selected_repo == Some(id), |d| d.bg(selected_bg))
-                .when(row.stale, |d| d.opacity(0.75))
-                .hover(move |s| s.bg(hover))
-                .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                    let command = if e.click_count() > 1 {
-                        Command::OpenRepoTab(id)
-                    } else {
-                        Command::Select(Some(id))
-                    };
-                    this.dispatch(command, cx);
-                }))
-                .children(ext.columns.columns().iter().enumerate().map(|(i, col)| {
-                    let cell = col.cell(row, now);
-                    div()
-                        .flex_grow(widths.get(i).copied().unwrap_or(1.0))
-                        .flex_basis(px(0.0))
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_color(tone(cx, cell.tone))
-                                .child(cell.text),
-                        )
-                        .when(i == 0, |d| {
-                            d.children(cell.detail.map(|t| {
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(color(cx, T::FgSubtle))
-                                    .child(t)
-                            }))
-                        })
-                }))
-        });
+        let selected = ui.batch_selection();
+        let body: Vec<AnyElement> = if ui.show_dependency_tree {
+            let tree = self.core.dependency_tree();
+            self.render_tree(&tree, &rows, &selected, cx)
+        } else {
+            rows.iter()
+                .map(|row| {
+                    let cells = row_cells(&ext, row, now, 0, cx);
+                    Self::row_shell(row, &selected, cx)
+                        .children(cells)
+                        .into_any_element()
+                })
+                .collect()
+        };
         div()
             .flex_1()
             .flex()
@@ -860,6 +995,355 @@ impl Workspace {
                     .children(body),
             )
             .into_any_element()
+    }
+
+    /// The clickable frame of a dashboard row (selection, dimming, menus).
+    fn row_shell(
+        row: &DashboardRow,
+        selected: &[RepoId],
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let id = row.id;
+        let hover = color(cx, T::BgHover);
+        let selected_bg = color(cx, T::BgSelected);
+        div()
+            .id(SharedString::from(format!("dash-{id}")))
+            .flex()
+            .items_center()
+            .px_3()
+            .py_1()
+            .min_h(row_height(cx))
+            .border_b_1()
+            .border_color(color(cx, T::BorderSubtle))
+            .cursor_pointer()
+            .when(selected.contains(&id), |d| d.bg(selected_bg))
+            .when(row.stale && !row.hidden, |d| d.opacity(0.75))
+            .when(row.hidden, |d| d.opacity(0.45))
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                this.dispatch(row_click(id, e), cx);
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    this.row_menu = Some((id, e.position));
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// The dependency tree (spec §9): project repos keep their dashboard
+    /// columns; other submodules show their state and actions.
+    fn render_tree(
+        &self,
+        tree: &[TreeRow],
+        rows: &[DashboardRow],
+        selected: &[RepoId],
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let ext = self.core.extensions().clone();
+        let now = Timestamp::now();
+        let by_id: HashMap<RepoId, &DashboardRow> = rows.iter().map(|r| (r.id, r)).collect();
+        let rest: f32 = WIDTHS[1..].iter().sum();
+        tree.iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let key = node.key.clone();
+                let arrow = match (node.has_children, node.collapsed) {
+                    (false, _) => " ",
+                    (true, true) => "▸",
+                    (true, false) => "▾",
+                };
+                let out_of_sync = node.state.as_ref().is_some_and(|s| s.out_of_sync);
+                let name = div()
+                    .flex_grow(WIDTHS[0])
+                    .flex_basis(px(0.0))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(crate::theme::mono_font(cx))
+                            .text_color(color(cx, T::FgSubtle))
+                            .child(node.prefix.clone()),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("tree-toggle-{i}")))
+                            .flex_none()
+                            .w(px(16.0))
+                            .text_color(color(cx, T::FgMuted))
+                            .when(node.has_children, gpui_kit::Styled::cursor_pointer)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.dispatch(Command::ToggleTreeNode(key.clone()), cx);
+                            }))
+                            .child(arrow),
+                    )
+                    .child(div().truncate().child(node.name.clone()))
+                    .when(out_of_sync, |d| {
+                        d.child(
+                            div()
+                                .ml_2()
+                                .text_xs()
+                                .text_color(color(cx, T::StatusConflict))
+                                .child("≠ pinned"),
+                        )
+                    });
+                match node.repo.and_then(|id| by_id.get(&id)) {
+                    Some(row) => {
+                        let cells = row_cells(&ext, row, now, 1, cx);
+                        Self::row_shell(row, selected, cx)
+                            .child(name)
+                            .children(cells)
+                            .into_any_element()
+                    }
+                    None => div()
+                        .id(SharedString::from(format!("tree-{i}")))
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .py_1()
+                        .min_h(row_height(cx))
+                        .border_b_1()
+                        .border_color(color(cx, T::BorderSubtle))
+                        .child(name)
+                        .child(
+                            div()
+                                .flex_grow(rest)
+                                .flex_basis(px(0.0))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .overflow_hidden()
+                                .child(Self::node_state(node, cx))
+                                .children(Self::node_actions(i, node, cx)),
+                        )
+                        .into_any_element(),
+                }
+            })
+            .collect()
+    }
+
+    fn node_state(node: &TreeRow, cx: &mut Context<Self>) -> AnyElement {
+        let Some(state) = &node.state else {
+            return div().into_any_element();
+        };
+        let short = |o: Option<archipel_model::Oid>| o.map_or_else(|| "?".into(), |o| o.short(8));
+        let (text, token) = if !state.initialized {
+            (
+                format!("not initialized · pins {}", short(state.pinned)),
+                T::FgMuted,
+            )
+        } else if state.out_of_sync {
+            (
+                format!(
+                    "checked out {} ≠ pinned {}",
+                    short(state.checked_out),
+                    short(state.pinned)
+                ),
+                T::StatusConflict,
+            )
+        } else {
+            (format!("at {}", short(state.checked_out)), T::FgMuted)
+        };
+        div()
+            .flex()
+            .gap_2()
+            .text_xs()
+            .child(div().truncate().text_color(color(cx, token)).child(text))
+            .when(state.dirty, |d| {
+                d.child(div().text_color(color(cx, T::StatusDirty)).child("dirty"))
+            })
+            .into_any_element()
+    }
+
+    fn node_actions(i: usize, node: &TreeRow, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(state) = node.state.clone() else {
+            return Vec::new();
+        };
+        let update = |label: &'static str, init: bool, recursive: bool, cx: &mut Context<Self>| {
+            let state = state.clone();
+            button(SharedString::from(format!("tree-{label}-{i}")), label, cx)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.dispatch(
+                        Command::UpdateSubmodules {
+                            parent: state.parent.clone(),
+                            paths: vec![state.rel_path.clone()],
+                            init,
+                            recursive,
+                        },
+                        cx,
+                    );
+                }))
+                .into_any_element()
+        };
+        let mut out = Vec::new();
+        if state.initialized {
+            out.push(update("Update", false, false, cx));
+            out.push(update("Update all", false, true, cx));
+            let path = node.path.clone();
+            out.push(
+                button(SharedString::from(format!("tree-open-{i}")), "Open", cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dispatch(Command::OpenSubmodule(path.clone()), cx);
+                    }))
+                    .into_any_element(),
+            );
+            let path = node.path.clone();
+            out.push(
+                button(
+                    SharedString::from(format!("tree-add-{i}")),
+                    "Add to project",
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.dispatch(Command::AddRepos(vec![path.clone()]), cx);
+                }))
+                .into_any_element(),
+            );
+        } else {
+            out.push(update("Init", true, false, cx));
+            out.push(update("Init all", true, true, cx));
+        }
+        out
+    }
+
+    /// The context menu of a repo row (right click).
+    /// Row menu entry: open the repo's pull request, or create pull requests
+    /// for the targeted repos (spec §8).
+    fn forge_menu_item(
+        &self,
+        id: RepoId,
+        targets: Vec<RepoId>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hover = color(cx, T::BgHover);
+        let open = self
+            .core
+            .rows()
+            .into_iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.forge.pull_request().map(|pr| (pr.number, pr.url.clone())));
+        let base = div()
+            .id("menu-forge")
+            .px_3()
+            .py_1()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover));
+        match open {
+            Some((number, url)) => base
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.row_menu = None;
+                    cx.open_url(&url);
+                    cx.notify();
+                }))
+                .child(format!("Open pull request #{number}"))
+                .into_any_element(),
+            None => base
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.row_menu = None;
+                    this.open_forge(ForgeTab::PullRequests(targets.clone()), window, cx);
+                }))
+                .child("Create pull request…")
+                .into_any_element(),
+        }
+    }
+
+    fn render_row_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (id, position) = self.row_menu?;
+        let ui = self.core.ui_state()?;
+        // Acting on a selected row acts on the whole selection.
+        let selection = ui.batch_selection();
+        let targets = if selection.contains(&id) {
+            selection
+        } else {
+            vec![id]
+        };
+        let all_hidden = targets.iter().all(|r| ui.is_hidden(*r));
+        let n = targets.len();
+        let hover = color(cx, T::BgHover);
+        let item = |eid: &'static str, label: String, command: Command, cx: &mut Context<Self>| {
+            div()
+                .id(eid)
+                .px_3()
+                .py_1()
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.row_menu = None;
+                    this.dispatch(command.clone(), cx);
+                }))
+                .child(label)
+        };
+        let plural = if n > 1 {
+            format!(" {n} repos")
+        } else {
+            String::new()
+        };
+        let hide_label = if all_hidden {
+            format!("Unhide{plural}")
+        } else {
+            format!("Hide{plural}    Ctrl+H")
+        };
+        let menu = div()
+            .occlude()
+            .min_w(px(200.0))
+            .py_1()
+            .flex()
+            .flex_col()
+            .text_size(text_size(cx))
+            .bg(color(cx, T::BgElevated))
+            .border_1()
+            .border_color(color(cx, T::Border))
+            .rounded(radius(cx))
+            .shadow_md()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.row_menu = None;
+                cx.notify();
+            }))
+            .child(item(
+                "menu-open",
+                "Open".into(),
+                Command::OpenRepoTab(id),
+                cx,
+            ))
+            .child(item(
+                "menu-hide",
+                hide_label,
+                Command::ToggleHidden(targets.clone()),
+                cx,
+            ))
+            .child(item(
+                "menu-fetch",
+                format!("Fetch{plural}"),
+                Command::Fetch(targets.clone()),
+                cx,
+            ))
+            .child(self.forge_menu_item(id, targets, cx))
+            .child(
+                div()
+                    .id("menu-remove")
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .text_color(color(cx, T::StatusError))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.row_menu = None;
+                        if let Err(e) = this.core.remove_repo(id) {
+                            this.notice = Some(e.to_string());
+                        }
+                        cx.notify();
+                    }))
+                    .child("Remove from project"),
+            );
+        Some(
+            deferred(anchored().position(position).snap_to_window().child(menu))
+                .with_priority(1)
+                .into_any_element(),
+        )
     }
 
     fn render_drawer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -889,7 +1373,7 @@ impl Workspace {
 
     fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let text = self.notice.clone().or_else(|| self.warnings.first().cloned()).unwrap_or_else(|| {
-            "Ctrl+P switch project · Ctrl+Shift+P actions · Ctrl+K commit · Ctrl+Z undo · Ctrl+J operations".into()
+            "Ctrl+P switch project · Ctrl+Shift+P actions · Ctrl+K commit · Ctrl+Z undo · Ctrl+H hide · Ctrl+Shift+N new window".into()
         });
         div()
             .id("status")
@@ -933,6 +1417,19 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Window identity (spec §2): this window's project accent for every
+        // view drawn below, and the project name first in the title.
+        let identity = self.core.identity();
+        crate::theme::apply_window_accent(cx, identity.as_ref().map(|i| i.accent));
+        let title = identity.as_ref().map_or_else(
+            || "Archipel".to_owned(),
+            archipel_app::ProjectIdentity::window_title,
+        );
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
+        let row_menu = self.render_row_menu(cx);
         let content: AnyElement = match self.active_repo_view(window, cx) {
             Some(view) => div()
                 .flex_1()
@@ -946,6 +1443,7 @@ impl Render for Workspace {
         let overlay: Option<AnyElement> = self.overlay.as_ref().map(|(o, _)| match o {
             Overlay::Palette(p) => p.clone().into_any_element(),
             Overlay::Commit(c) => c.clone().into_any_element(),
+            Overlay::Forge(f) => f.clone().into_any_element(),
         });
         div()
             .id("workspace")
@@ -982,6 +1480,16 @@ impl Render for Workspace {
                 this.dispatch(Command::Fetch(t), cx);
             }))
             .on_action(cx.listener(|this, _: &OpenCommit, w, cx| this.open_commit(w, cx)))
+            .on_action(cx.listener(|this, _: &ToggleHide, w, cx| {
+                this.run_action("repos.toggle_hidden", w, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowHidden, _, cx| {
+                this.dispatch(Command::ToggleShowHidden, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleTree, _, cx| {
+                this.dispatch(Command::ToggleDependencyTree, cx);
+            }))
+            .on_action(cx.listener(|_, _: &NewWindow, _, cx| crate::windows::open(cx, None)))
             .on_action(cx.listener(|this, _: &SubmitCommit, w, cx| this.open_commit(w, cx)))
             .on_action(cx.listener(|this, _: &Undo, _, cx| {
                 let ctx = this.core.action_context();
@@ -998,6 +1506,14 @@ impl Render for Workspace {
                     this.dispatch(Command::Redo(repo), cx);
                 }
             }))
+            .when(identity.is_some(), |d| {
+                d.child(
+                    div()
+                        .h(px(BAND_HEIGHT))
+                        .flex_none()
+                        .bg(color(cx, T::Accent)),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -1017,5 +1533,66 @@ impl Render for Workspace {
             .when(drawer_open, |d| d.child(self.render_drawer(cx)))
             .child(self.render_status(cx))
             .children(overlay)
+            .children(row_menu)
     }
+}
+
+/// Plain click selects, Ctrl+click adds to the selection, double click opens.
+fn row_click(id: RepoId, e: &ClickEvent) -> Command {
+    if e.click_count() > 1 {
+        Command::OpenRepoTab(id)
+    } else if e.modifiers().control || e.modifiers().platform {
+        Command::ToggleSelect(id)
+    } else {
+        Command::Select(Some(id))
+    }
+}
+
+/// The dashboard cells of a row, from column `from` on.
+fn row_cells(
+    ext: &Extensions,
+    row: &DashboardRow,
+    now: Timestamp,
+    from: usize,
+    cx: &gpui_kit::App,
+) -> Vec<AnyElement> {
+    ext.columns
+        .columns()
+        .iter()
+        .enumerate()
+        .skip(from)
+        .map(|(i, col)| {
+            let cell = col.cell(row, now);
+            let detail = if i == 0 && row.hidden {
+                Some(
+                    cell.detail
+                        .map_or_else(|| "hidden".to_owned(), |d| format!("hidden · {d}")),
+                )
+            } else {
+                cell.detail
+            };
+            div()
+                .flex_grow(WIDTHS.get(i).copied().unwrap_or(1.0))
+                .flex_basis(px(0.0))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(tone(cx, cell.tone))
+                        .child(cell.text),
+                )
+                .when(i == 0, |d| {
+                    d.children(detail.map(|t| {
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child(t)
+                    }))
+                })
+                .into_any_element()
+        })
+        .collect()
 }

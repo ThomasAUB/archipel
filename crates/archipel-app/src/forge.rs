@@ -1,11 +1,27 @@
-//! "Open in browser" links derived from remote URLs (spec: resolved questions).
+//! Forges (spec §8): "open in browser" links derived from remote URLs, and
+//! the forge integration (pull request status, creation, clone from an
+//! account) through [`ForgePorts`].
 //!
-//! Extension point: [`ForgeProvider`], registered in a [`ForgeRegistry`]. The
-//! built-ins (GitHub, GitLab, Bitbucket, Azure DevOps) are registered exactly
-//! as a fork would register its own provider (e.g. a self-hosted forge).
+//! Extension points: [`ForgeProvider`] (links), registered in a
+//! [`ForgeRegistry`]; the built-ins (GitHub, GitLab, Bitbucket, Azure
+//! DevOps) are registered exactly as a fork would register its own provider
+//! (e.g. a self-hosted forge). API providers live in the forge adapter and
+//! are reached through the ports of [`ForgePorts`]; the dashboard column
+//! [`ForgeColumn`] and the forge filters are ordinary registered columns.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+
+mod locate;
+mod ports;
+mod status;
+
+pub use locate::{Located, locate, pick_remote};
+pub use ports::ForgePorts;
+pub use status::{
+    CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter, ci_label, linked_description,
+    review_label,
+};
 
 /// A repository on a forge, parsed from a remote URL.
 #[derive(Clone, Debug, PartialEq, Eq)]

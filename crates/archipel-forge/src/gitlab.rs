@@ -1,0 +1,257 @@
+//! GitLab, gitlab.com or self-hosted (REST API v4). Merge requests are
+//! reported as pull requests.
+
+use archipel_model::ForgeError;
+use archipel_model::forge::{
+    CiState, ForgeKind, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef,
+    PullRequestStatus, RemoteRepo, ReviewState,
+};
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::http::{Api, Auth, Method, encode};
+use crate::provider::{DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+
+/// The GitLab provider.
+pub struct GitLab;
+
+fn api<'a>(at: &'a Endpoint<'a>) -> Api<'a> {
+    Api {
+        http: at.http,
+        host: at.host,
+        base: at.api_url,
+        token: at.token,
+        auth: Auth::PrivateToken,
+        extra_headers: &[],
+    }
+}
+
+#[derive(Deserialize)]
+struct User {
+    username: String,
+}
+
+#[derive(Deserialize)]
+struct MergeRequest {
+    iid: u64,
+    title: String,
+    web_url: String,
+    #[serde(default)]
+    draft: bool,
+    target_branch: String,
+    #[serde(default)]
+    detailed_merge_status: Option<String>,
+    #[serde(default)]
+    head_pipeline: Option<Pipeline>,
+}
+
+#[derive(Deserialize)]
+struct Pipeline {
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct Approvals {
+    #[serde(default)]
+    approved_by: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct Created {
+    iid: u64,
+    web_url: String,
+}
+
+#[derive(Deserialize)]
+struct Group {
+    full_path: String,
+}
+
+#[derive(Deserialize)]
+struct Project {
+    path_with_namespace: String,
+    path: String,
+    description: Option<String>,
+    http_url_to_repo: String,
+    ssh_url_to_repo: String,
+    default_branch: Option<String>,
+    #[serde(default)]
+    archived: bool,
+}
+
+fn ci_state(pipeline: Option<&Pipeline>) -> Option<CiState> {
+    match pipeline?.status.as_str() {
+        "success" => Some(CiState::Success),
+        "failed" | "canceled" => Some(CiState::Failure),
+        "skipped" => None,
+        _ => Some(CiState::Pending),
+    }
+}
+
+fn project(repo: &str) -> String {
+    format!("/projects/{}", encode(repo))
+}
+
+impl ForgeApi for GitLab {
+    fn kind(&self) -> ForgeKind {
+        ForgeKind::gitlab()
+    }
+
+    fn label(&self) -> &str {
+        "GitLab"
+    }
+
+    fn recognizes(&self, host: &str) -> bool {
+        host.split('.').any(|part| part == "gitlab")
+    }
+
+    fn api_url(&self, host: &str) -> String {
+        format!("https://{host}/api/v4")
+    }
+
+    fn current_user(&self, at: &Endpoint) -> Result<String, ForgeError> {
+        Ok(api(at).get::<User>("/user", "user")?.username)
+    }
+}
+
+impl PullRequestApi for GitLab {
+    fn for_branch(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Option<PullRequestStatus>, ForgeError> {
+        let api = api(at);
+        let base = project(repo);
+        let list: Vec<MergeRequest> = api.get(
+            &format!(
+                "{base}/merge_requests?state=opened&per_page=1&source_branch={}",
+                encode(branch)
+            ),
+            &format!("project {repo}"),
+        )?;
+        let Some(listed) = list.into_iter().next() else {
+            return Ok(None);
+        };
+        // The single-MR endpoint carries the head pipeline.
+        let mr: MergeRequest = api.get(
+            &format!("{base}/merge_requests/{}", listed.iid),
+            "merge request",
+        )?;
+        // Approvals may be unavailable (permissions): no approval then.
+        let approved = api
+            .get::<Approvals>(
+                &format!("{base}/merge_requests/{}/approvals", mr.iid),
+                "approvals",
+            )
+            .is_ok_and(|a| !a.approved_by.is_empty());
+        let review = if mr.detailed_merge_status.as_deref() == Some("requested_changes") {
+            ReviewState::ChangesRequested
+        } else if approved {
+            ReviewState::Approved
+        } else {
+            ReviewState::Pending
+        };
+        Ok(Some(PullRequestStatus {
+            number: mr.iid,
+            ci: ci_state(mr.head_pipeline.as_ref()),
+            title: mr.title,
+            url: mr.web_url,
+            draft: mr.draft,
+            target: mr.target_branch,
+            review,
+        }))
+    }
+
+    fn create(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        draft: &PullRequestDraft,
+    ) -> Result<PullRequestRef, ForgeError> {
+        let title = if draft.draft {
+            format!("Draft: {}", draft.title)
+        } else {
+            draft.title.clone()
+        };
+        let created: Created = api(at).write(
+            Method::Post,
+            &format!("{}/merge_requests", project(repo)),
+            json!({
+                "source_branch": draft.source,
+                "target_branch": draft.target,
+                "title": title,
+                "description": draft.description,
+            }),
+            &format!("project {repo}"),
+        )?;
+        Ok(PullRequestRef {
+            number: created.iid,
+            url: created.web_url,
+        })
+    }
+
+    fn set_description(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        description: &str,
+    ) -> Result<(), ForgeError> {
+        api(at)
+            .write::<serde_json::Value>(
+                Method::Put,
+                &format!("{}/merge_requests/{number}", project(repo)),
+                json!({ "description": description }),
+                &format!("merge request !{number}"),
+            )
+            .map(drop)
+    }
+}
+
+impl DirectoryApi for GitLab {
+    fn namespaces(&self, at: &Endpoint, user: &str) -> Result<Vec<Namespace>, ForgeError> {
+        let groups: Vec<Group> = api(at).get_pages(
+            "/groups?min_access_level=10&per_page=100&order_by=path",
+            "groups",
+        )?;
+        let mut out = vec![Namespace {
+            path: user.to_owned(),
+            kind: NamespaceKind::User,
+        }];
+        out.extend(groups.into_iter().map(|g| Namespace {
+            path: g.full_path,
+            kind: NamespaceKind::Group,
+        }));
+        Ok(out)
+    }
+
+    fn repositories(
+        &self,
+        at: &Endpoint,
+        namespace: &Namespace,
+    ) -> Result<Vec<RemoteRepo>, ForgeError> {
+        let path = match namespace.kind {
+            NamespaceKind::User => {
+                "/projects?owned=true&per_page=100&order_by=path&sort=asc".into()
+            }
+            NamespaceKind::Organization | NamespaceKind::Group => format!(
+                "/groups/{}/projects?include_subgroups=true&per_page=100&order_by=path&sort=asc",
+                encode(&namespace.path)
+            ),
+        };
+        let projects: Vec<Project> = api(at).get_pages(&path, &namespace.path)?;
+        Ok(projects
+            .into_iter()
+            .map(|p| RemoteRepo {
+                path: p.path_with_namespace,
+                name: p.path,
+                description: p.description.filter(|d| !d.is_empty()),
+                https_url: p.http_url_to_repo,
+                ssh_url: p.ssh_url_to_repo,
+                default_branch: p.default_branch,
+                archived: p.archived,
+            })
+            .collect())
+    }
+}

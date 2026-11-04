@@ -5,37 +5,77 @@
 //! only use `archipel-app` view-models and commands, and theme tokens.
 //!
 //! Startup (spec: < 1 s) overlaps the two slow parts: the core is composed
-//! and the last project reopened on a background thread while GPUI
-//! initializes its platform (graphics device, fonts) on the main thread.
+//! and the project opened on a background thread while GPUI initializes its
+//! platform (graphics device, fonts) on the main thread.
+//!
+//! Command line: `archipel [<dir>]` opens the app on a directory (spec §1
+//! "Launch from a directory"); without it, the last project reopens. When
+//! Archipel is already running, the request goes to that process, which
+//! opens a new window ([`instance`]); `--standalone` skips that hand-off.
 
 // Render functions are declarative element trees: splitting them by line
 // count hurts readability more than it helps.
 #![allow(clippy::too_many_lines)]
 
 mod commit_panel;
+mod forge_panel;
+mod instance;
 mod palette;
 mod repo_view;
 mod startup;
 mod theme;
 mod widgets;
+mod windows;
 mod workspace;
 
-use std::sync::Arc;
+use std::path::PathBuf;
 
 use archipel_compose::{AppDirs, ComposeError, Composition};
-use gpui_kit::{
-    App, AppContext, Bounds, Global, KeyBinding, WindowBounds, WindowOptions, px, size,
-};
-
-use crate::workspace::Workspace;
+use gpui_kit::{App, Global, KeyBinding};
 
 /// Keeps the core's async runtime alive for the lifetime of the GPUI app.
 struct CoreRuntime(#[allow(dead_code)] tokio::runtime::Runtime);
 
 impl Global for CoreRuntime {}
 
-/// Composes the core and reopens the most recent project (no GPUI needed).
-fn compose_and_reopen(dirs: AppDirs) -> Result<Composition, ComposeError> {
+/// Command-line options.
+struct Args {
+    /// Directory to open.
+    dir: Option<PathBuf>,
+    /// Do not hand the request to a running Archipel.
+    standalone: bool,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args {
+        dir: None,
+        standalone: false,
+    };
+    for arg in std::env::args_os().skip(1) {
+        match arg.to_str() {
+            Some("--standalone") => args.standalone = true,
+            Some("-h" | "--help") => {
+                return Err("usage: archipel [--standalone] [<directory>]".into());
+            }
+            Some(flag) if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
+            _ if args.dir.is_some() => return Err("only one directory can be opened".into()),
+            _ => {
+                let dir = std::path::absolute(PathBuf::from(&arg))
+                    .map_err(|e| format!("{}: {e}", PathBuf::from(&arg).display()))?;
+                args.dir = Some(dir);
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Composes the core and opens `dir`, or reopens the most recent project
+/// (no GPUI needed). Also returns notices to show (a directory that could
+/// not be opened).
+fn compose_and_open(
+    dirs: AppDirs,
+    dir: Option<PathBuf>,
+) -> Result<(Composition, Vec<String>), ComposeError> {
     let composition = archipel_compose::compose(dirs)?;
     for (step, d) in &composition.timings {
         startup::mark(&format!(
@@ -45,6 +85,16 @@ fn compose_and_reopen(dirs: AppDirs) -> Result<Composition, ComposeError> {
     }
     startup::mark("compose");
     let app = &composition.app;
+    let mut notices = Vec::new();
+    if let Some(dir) = dir {
+        match app.open_directory(&dir) {
+            Ok(_) => {
+                startup::mark("directory opened");
+                return Ok((composition, notices));
+            }
+            Err(e) => notices.push(format!("cannot open {}: {e}", dir.display())),
+        }
+    }
     let recent = app
         .projects()
         .ok()
@@ -55,11 +105,18 @@ fn compose_and_reopen(dirs: AppDirs) -> Result<Composition, ComposeError> {
         }
     }
     startup::mark("project reopened");
-    Ok(composition)
+    Ok((composition, notices))
 }
 
 fn main() {
     startup::begin();
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("archipel: {e}");
+            std::process::exit(2);
+        }
+    };
     let dirs = match AppDirs::resolve() {
         Ok(d) => d,
         Err(e) => {
@@ -69,10 +126,27 @@ fn main() {
     };
     let _log = archipel_compose::init_logging(&dirs);
     startup::mark("logging");
+    let listener = if args.standalone {
+        None
+    } else {
+        let request = instance::Request {
+            dir: args.dir.clone(),
+        };
+        match instance::forward_or_listen(&dirs.data, &request) {
+            Some(instance::Startup::Forwarded) => {
+                startup::mark("forwarded to the running instance");
+                return;
+            }
+            Some(instance::Startup::Primary(listener)) => Some(listener),
+            None => None,
+        }
+    };
+    startup::mark("instance");
     let themes_dir = dirs.themes_dir();
+    let dir = args.dir;
     let core = std::thread::Builder::new()
         .name("archipel-compose".into())
-        .spawn(move || compose_and_reopen(dirs));
+        .spawn(move || compose_and_open(dirs, dir));
 
     let application = gpui_kit::application();
     startup::mark("gpui platform created");
@@ -85,7 +159,7 @@ fn main() {
                 theme::UiTheme::load(&themes_dir, archipel_theme::builtin::DEFAULT_ID, cx);
             cx.set_global(ui_theme);
             startup::mark("gpui-kit init + theme");
-            let composition = match core.map_err(|e| e.to_string()).and_then(|h| {
+            let (composition, notices) = match core.map_err(|e| e.to_string()).and_then(|h| {
                 h.join()
                     .map_err(|_| "the startup thread panicked".to_owned())?
                     .map_err(|e| e.to_string())
@@ -102,33 +176,38 @@ fn main() {
             let Composition {
                 app,
                 runtime,
-                warnings,
+                mut warnings,
                 ..
             } = composition;
             for w in &warnings {
                 tracing::warn!("{w}");
             }
+            warnings.splice(0..0, notices);
             cx.set_global(CoreRuntime(runtime));
             bind_keys(cx, &app);
-            open_main_window(cx, app, warnings);
+            cx.set_global(windows::Windows::new(app.clone()));
+            windows::open_first(cx, app, warnings);
             startup::mark("window opened");
+            if let Some(listener) = listener {
+                serve_other_launches(cx, listener);
+            }
             cx.activate(true);
         });
 }
 
-fn open_main_window(cx: &mut App, app: Arc<archipel_app::App>, warnings: Vec<String>) {
-    let bounds = Bounds::centered(None, size(px(1280.0), px(800.0)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        ..WindowOptions::default()
-    };
-    let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-        cx.new(|cx| Workspace::new(app, warnings, window, cx))
+/// Opens a window for each later `archipel [<dir>]` launch.
+fn serve_other_launches(cx: &mut App, listener: instance::Listener) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    listener.serve(move |request| {
+        // The receiver lives as long as the app.
+        let _ = tx.send(request);
     });
-    if let Err(e) = opened {
-        tracing::error!(error = %e, "cannot open the window");
-        cx.quit();
-    }
+    cx.spawn(async move |cx| {
+        while let Some(request) = rx.recv().await {
+            cx.update(|cx| windows::open(cx, request.dir.as_deref()));
+        }
+    })
+    .detach();
 }
 
 /// Installs the keymap (from `archipel-app`, rebindable) as GPUI bindings.

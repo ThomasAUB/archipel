@@ -2,17 +2,20 @@
 //!
 //! The composition root shared by the binaries (`archipel-cli`, `archipel-ui`):
 //! the **only** place that knows which concrete adapter sits behind which
-//! port trait (ARCHITECTURE §4). Swapping an implementation is a one-line
-//! change in [`compose`], or a setting (`read_backend`).
+//! port trait (ARCHITECTURE §4), forge providers included ([`forge_ports`]).
+//! Swapping an implementation is a one-line change in [`compose`], or a
+//! setting (`read_backend`).
 //!
 //! It also sets up logging (PLAN §3.6) and resolves the user directories.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use archipel_app::forge::ForgePorts;
 use archipel_app::settings::load_settings;
 use archipel_app::{App, Extensions, Services};
 use archipel_cache::{CacheRegistry, SqliteStore};
+use archipel_forge::{FileAccountStore, ForgeClient, KeychainCredentials, UreqTransport};
 use archipel_git::{CliConfig, GitCli, GixReader, check_git_version};
 use archipel_model::ports::{HistoryReader, RefReader, StashReader, StatusReader};
 use archipel_model::settings::{ReadBackend, Settings};
@@ -92,6 +95,36 @@ impl AppDirs {
     #[must_use]
     pub fn themes_dir(&self) -> PathBuf {
         self.config.join("themes")
+    }
+
+    /// The signed-in forge accounts (hosts and users; tokens are in the
+    /// OS keychain).
+    #[must_use]
+    pub fn forge_accounts_file(&self) -> PathBuf {
+        self.config.join("forges.toml")
+    }
+}
+
+/// Keychain service name of forge tokens (one entry per host).
+pub const KEYCHAIN_SERVICE: &str = "dev.archipel.forge";
+
+/// Forge ports: GitHub and GitLab over HTTPS, tokens in the OS keychain,
+/// the account list in the config directory. A fork registers its own
+/// provider on the client here (`client.register(...)`).
+#[must_use]
+pub fn forge_ports(settings: &Settings, dirs: &AppDirs) -> ForgePorts {
+    let credentials = Arc::new(KeychainCredentials::new(KEYCHAIN_SERVICE));
+    let http = Arc::new(UreqTransport::new(std::time::Duration::from_secs(
+        settings.forge_timeout_secs,
+    )));
+    let client = Arc::new(ForgeClient::with_builtins(http, credentials.clone()));
+    ForgePorts {
+        pull_requests: client.clone(),
+        pull_request_writer: client.clone(),
+        directory: client.clone(),
+        sign_in: client,
+        credentials,
+        accounts: Arc::new(FileAccountStore::new(dirs.forge_accounts_file())),
     }
 }
 
@@ -199,6 +232,7 @@ pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
         stats: store,
         caches: Arc::new(CacheRegistry::new()),
         cache_dir: dirs.cache.clone(),
+        forge: forge_ports(&settings, &dirs),
     };
     steps.done("adapters");
 

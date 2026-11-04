@@ -6,7 +6,8 @@ use std::sync::Arc;
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeToolLauncher,
-    RefReader, RefWriter, RemoteOps, StashReader, StashWriter, StatusReader, TagWriter,
+    RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
+    SubmoduleReader, SubmoduleWriter, TagWriter,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -49,6 +50,12 @@ pub struct GitPorts {
     pub rewriter: Arc<dyn HistoryRewriter>,
     /// External merge tool.
     pub merge_tool: Arc<dyn MergeToolLauncher>,
+    /// Submodule list (dependency tree).
+    pub submodules: Arc<dyn SubmoduleReader>,
+    /// Submodule init / update.
+    pub submodule_writer: Arc<dyn SubmoduleWriter>,
+    /// Remote configuration (forge detection from the remote URL).
+    pub remotes: Arc<dyn RemoteReader>,
 }
 
 impl GitPorts {
@@ -68,6 +75,9 @@ impl GitPorts {
             + RemoteOps
             + HistoryRewriter
             + MergeToolLauncher
+            + SubmoduleReader
+            + SubmoduleWriter
+            + RemoteReader
             + 'static,
     {
         Self {
@@ -83,7 +93,10 @@ impl GitPorts {
             stash_writer: backend.clone(),
             remote: backend.clone(),
             rewriter: backend.clone(),
-            merge_tool: backend,
+            merge_tool: backend.clone(),
+            submodules: backend.clone(),
+            submodule_writer: backend.clone(),
+            remotes: backend,
         }
     }
 }

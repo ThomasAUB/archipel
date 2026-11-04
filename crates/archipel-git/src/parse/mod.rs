@@ -6,6 +6,7 @@ pub mod numstat;
 pub mod progress;
 pub mod refs;
 pub mod status;
+pub mod submodule;
 
 /// Removes C-style quoting from a path printed by Git (`"a\tb"` → `a<TAB>b`).
 ///

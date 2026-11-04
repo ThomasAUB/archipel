@@ -121,3 +121,66 @@ pub enum WatchError {
     #[error("watcher error: {0}")]
     Backend(String),
 }
+
+/// Errors from forge (GitHub, GitLab, …) adapters. Messages never contain
+/// the token.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ForgeError {
+    /// No token for this host.
+    #[error("not signed in to {host}")]
+    NotSignedIn {
+        /// The host.
+        host: String,
+    },
+    /// The forge rejected the token (expired, revoked, missing scope).
+    #[error("{host} rejected the token (HTTP {status}); sign in again with a valid token")]
+    Unauthorized {
+        /// The host.
+        host: String,
+        /// HTTP status (401 or 403).
+        status: u16,
+    },
+    /// The repository, branch or user does not exist (or is not visible).
+    #[error("{host}: {what} not found")]
+    NotFound {
+        /// The host.
+        host: String,
+        /// What was looked up.
+        what: String,
+    },
+    /// Any other HTTP error status.
+    #[error("{host}: HTTP {status}: {message}")]
+    Http {
+        /// The host.
+        host: String,
+        /// HTTP status.
+        status: u16,
+        /// Message returned by the forge.
+        message: String,
+    },
+    /// The host could not be reached (DNS, TLS, timeout…).
+    #[error("cannot reach {host}: {message}")]
+    Network {
+        /// The host.
+        host: String,
+        /// Transport error.
+        message: String,
+    },
+    /// The answer could not be understood.
+    #[error("unexpected answer from {host}: {message}")]
+    Decode {
+        /// The host.
+        host: String,
+        /// Details.
+        message: String,
+    },
+    /// No registered provider serves this forge kind or host.
+    #[error("no forge provider for {0}")]
+    UnknownForge(String),
+    /// The OS keychain failed.
+    #[error("keychain: {0}")]
+    Keychain(String),
+    /// The account list could not be read or written.
+    #[error("forge accounts: {0}")]
+    Accounts(String),
+}

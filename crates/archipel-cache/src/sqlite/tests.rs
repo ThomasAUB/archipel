@@ -124,7 +124,7 @@ fn corrupt_store() -> SqliteStore {
         let conn = raw(&store);
         for sql in [
             "INSERT INTO summaries VALUES ('p', 0, 1, '{bad')",
-            "INSERT INTO ui_state VALUES ('p', '[]')",
+            "INSERT INTO ui_state VALUES ('p', '42')",
             "INSERT INTO registry VALUES ('p', 'null')",
             "INSERT INTO private_projects VALUES ('p', '{}')",
             "INSERT INTO journal (id, repo, batch, data) VALUES (1, 1, 7, 'nope')",

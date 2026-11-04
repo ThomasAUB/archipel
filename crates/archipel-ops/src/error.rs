@@ -1,6 +1,6 @@
 //! Errors of operations.
 
-use archipel_model::{GitError, StoreError};
+use archipel_model::{ForgeError, GitError, StoreError};
 
 /// Why an operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -11,6 +11,9 @@ pub enum OpError {
     /// The journal store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// A forge (GitHub, GitLab…) call failed.
+    #[error(transparent)]
+    Forge(#[from] ForgeError),
     /// The operation was cancelled before or while running.
     #[error("operation cancelled")]
     Cancelled,

@@ -27,4 +27,21 @@ pub trait RepoDiscovery: Send + Sync {
         options: &ScanOptions,
         cancel: &CancelToken,
     ) -> Result<Vec<DiscoveredRepo>, ProjectError>;
+
+    /// Like [`scan`](Self::scan), but reports each repository as soon as it
+    /// is found, in no particular order, so a list can fill in while the scan
+    /// runs. `on_found` may be called from several threads. The default
+    /// implementation scans, then reports everything.
+    fn scan_each(
+        &self,
+        root: &Path,
+        options: &ScanOptions,
+        cancel: &CancelToken,
+        on_found: &(dyn Fn(DiscoveredRepo) + Sync),
+    ) -> Result<(), ProjectError> {
+        for repo in self.scan(root, options, cancel)? {
+            on_found(repo);
+        }
+        Ok(())
+    }
 }

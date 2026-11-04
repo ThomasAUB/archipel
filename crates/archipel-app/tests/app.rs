@@ -64,6 +64,7 @@ fn env() -> Env {
         stats: store.clone(),
         caches: Arc::new(archipel_cache::CacheRegistry::new()),
         cache_dir: dir.path().join("cache"),
+        forge: archipel_app::forge::ForgePorts::disabled(),
     };
     let app = App::new(
         services,

@@ -61,17 +61,12 @@ impl RepoDiscovery for FsRepoDiscovery {
         options: &ScanOptions,
         cancel: &CancelToken,
     ) -> Result<Vec<DiscoveredRepo>, ProjectError> {
-        let metadata = fs::metadata(root).map_err(|e| ProjectError::Io {
-            path: root.to_path_buf(),
-            message: e.to_string(),
-        })?;
-        if !metadata.is_dir() {
-            return Err(ProjectError::Io {
-                path: root.to_path_buf(),
-                message: "not a directory".to_owned(),
-            });
-        }
-        let walker = Walker { options, cancel };
+        check_dir(root)?;
+        let walker = Walker {
+            options,
+            cancel,
+            on_found: None,
+        };
         let mut found = match self.strategy {
             ScanStrategy::Sequential => {
                 let mut out = Vec::new();
@@ -83,11 +78,50 @@ impl RepoDiscovery for FsRepoDiscovery {
         found.sort_by(|a, b| a.path.as_path().cmp(b.path.as_path()));
         Ok(found)
     }
+
+    fn scan_each(
+        &self,
+        root: &Path,
+        options: &ScanOptions,
+        cancel: &CancelToken,
+        on_found: &(dyn Fn(DiscoveredRepo) + Sync),
+    ) -> Result<(), ProjectError> {
+        check_dir(root)?;
+        let walker = Walker {
+            options,
+            cancel,
+            on_found: Some(on_found),
+        };
+        match self.strategy {
+            ScanStrategy::Sequential => {
+                walker.visit_sequential(root.to_path_buf(), 0, &mut Vec::new());
+            }
+            ScanStrategy::Parallel => drop(walker.visit_parallel(root.to_path_buf(), 0)),
+        }
+        Ok(())
+    }
+}
+
+fn check_dir(root: &Path) -> Result<(), ProjectError> {
+    let metadata = fs::metadata(root).map_err(|e| ProjectError::Io {
+        path: root.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    if metadata.is_dir() {
+        Ok(())
+    } else {
+        Err(ProjectError::Io {
+            path: root.to_path_buf(),
+            message: "not a directory".to_owned(),
+        })
+    }
 }
 
 struct Walker<'a> {
     options: &'a ScanOptions,
     cancel: &'a CancelToken,
+    /// Streaming mode: found repos go here instead of the output list.
+    on_found: Option<&'a (dyn Fn(DiscoveredRepo) + Sync)>,
 }
 
 /// What a single folder contains, as far as the scan cares.
@@ -130,10 +164,14 @@ impl Walker<'_> {
     ) -> Vec<PathBuf> {
         match found.kind {
             Some(kind) => {
-                out.push(DiscoveredRepo {
+                let repo = DiscoveredRepo {
                     path: RepoPath::new(dir),
                     kind,
-                });
+                };
+                match self.on_found {
+                    Some(report) => report(repo),
+                    None => out.push(repo),
+                }
                 if self.options.descend_into_repos {
                     found.subdirs
                 } else {

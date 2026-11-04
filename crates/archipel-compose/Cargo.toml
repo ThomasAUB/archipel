@@ -13,6 +13,7 @@ archipel-app.workspace = true
 archipel-ops.workspace = true
 archipel-git.workspace = true
 archipel-cache.workspace = true
+archipel-forge.workspace = true
 archipel-project.workspace = true
 archipel-watch.workspace = true
 directories.workspace = true

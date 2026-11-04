@@ -67,6 +67,13 @@ fn ui_state() -> UiState {
         sidebar_width: 300.5,
         sidebar_collapsed: true,
         drawer_height: 120.0,
+        selection: vec![RepoId(8)],
+        hidden_repos: vec![RepoId(9)],
+        show_hidden: true,
+        show_dependency_tree: true,
+        collapsed_nodes: vec!["k".into()],
+        accent: Some("#112233".into()),
+        icon: Some("🧪".into()),
     }
 }
 
@@ -94,6 +101,8 @@ fn project_def() -> ProjectDef {
                 name: "fix".into(),
                 body: "{ticket}: fix".into(),
             }],
+            accent: None,
+            icon: Some("🧪".into()),
         },
     }
 }

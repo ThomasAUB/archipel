@@ -21,8 +21,10 @@ use crate::journal::RefSnapshot;
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
 use crate::requests::{
     CheckoutTarget, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection, PullMode,
-    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, TagRequest,
+    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleUpdate,
+    TagRequest,
 };
+use crate::submodule::SubmoduleInfo;
 use crate::summary::RepoSummary;
 use crate::time::Timestamp;
 
@@ -287,5 +289,24 @@ pub trait MergeToolLauncher: Send + Sync {
         repo: &RepoPath,
         path: Option<&str>,
         tool: Option<&str>,
+    ) -> Result<(), GitError>;
+}
+
+/// Lists the submodules of a repository (spec §9).
+pub trait SubmoduleReader: Send + Sync {
+    /// Submodules declared by `repo` (one level), in path order. A repository
+    /// without submodules returns an empty list, not an error.
+    fn submodules(&self, repo: &RepoPath) -> Result<Vec<SubmoduleInfo>, GitError>;
+}
+
+/// Initializes and updates submodules (may clone: a network operation).
+pub trait SubmoduleWriter: Send + Sync {
+    /// `git submodule update` with the options of `request`.
+    fn update_submodules(
+        &self,
+        repo: &RepoPath,
+        request: &SubmoduleUpdate,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
     ) -> Result<(), GitError>;
 }

@@ -2,6 +2,7 @@
 
 mod read;
 mod runner;
+mod submodule;
 mod write;
 
 use std::path::PathBuf;

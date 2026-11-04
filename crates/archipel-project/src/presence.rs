@@ -56,3 +56,20 @@ pub fn classify_repos(project: &ProjectDef) -> Vec<(&RepoEntry, RepoPresence)> {
         .map(|entry| (entry, repo_presence(entry.path.as_path())))
         .collect()
 }
+
+/// The outermost repository working tree containing `dir` (`dir` itself
+/// included), if any: launching from `repo/src` or from a submodule opens
+/// the top-level repository.
+///
+/// `dir` should be absolute; only `.git` entries are looked for (a bare
+/// repository has no working tree to open).
+#[must_use]
+pub fn outermost_repo_root(dir: &Path) -> Option<std::path::PathBuf> {
+    dir.ancestors()
+        .filter(|a| {
+            let dot_git = a.join(DOT_GIT);
+            dot_git.is_dir() || dot_git.is_file()
+        })
+        .last()
+        .map(Path::to_path_buf)
+}

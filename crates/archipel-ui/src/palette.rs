@@ -142,9 +142,16 @@ impl Render for Palette {
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(PaletteEvent::Confirmed(id.clone()));
                     }))
-                    .child(div().text_color(color(cx, T::FgDefault)).child(item.label))
                     .child(
                         div()
+                            .flex_none()
+                            .text_color(color(cx, T::FgDefault))
+                            .child(item.label),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
                             .text_xs()
                             .text_color(color(cx, T::FgMuted))
                             .child(item.detail),

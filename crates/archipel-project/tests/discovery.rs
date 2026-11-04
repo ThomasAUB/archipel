@@ -11,7 +11,8 @@ use archipel_model::ids::RepoPath;
 use archipel_model::ports::project::RepoDiscovery;
 use archipel_model::project::{DiscoveredKind, DiscoveredRepo, ProjectDef, ScanOptions};
 use archipel_project::{
-    FsRepoDiscovery, RepoPresence, ScanStrategy, classify_repos, repo_presence, submodule_paths,
+    FsRepoDiscovery, RepoPresence, ScanStrategy, classify_repos, outermost_repo_root,
+    repo_presence, submodule_paths,
 };
 
 const STRATEGIES: [ScanStrategy; 2] = [ScanStrategy::Sequential, ScanStrategy::Parallel];
@@ -197,6 +198,50 @@ fn cancelled_scan_stops_early() {
             .scan(tmp.path(), &ScanOptions::default(), &cancel)
             .unwrap();
         assert!(found.is_empty());
+    }
+}
+
+#[test]
+fn streaming_scan_reports_the_same_repositories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for name in ["a", "b/c", "d/e/f"] {
+        fake_git_dir(&root.join(name));
+    }
+    fake_git_file(&root.join("g"));
+    for strategy in STRATEGIES {
+        let discovery = FsRepoDiscovery::with_strategy(strategy);
+        let expected = discovery
+            .scan(root, &ScanOptions::default(), &CancelToken::new())
+            .unwrap();
+        let found = std::sync::Mutex::new(Vec::new());
+        discovery
+            .scan_each(root, &ScanOptions::default(), &CancelToken::new(), &|r| {
+                found.lock().unwrap().push(r);
+            })
+            .unwrap();
+        let mut found = found.into_inner().unwrap();
+        found.sort_by(|a, b| a.path.as_path().cmp(b.path.as_path()));
+        assert_eq!(found, expected);
+    }
+}
+
+#[test]
+fn outermost_repo_root_climbs_out_of_nested_repositories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outer = tmp.path().join("outer");
+    fake_git_dir(&outer);
+    let sub = outer.join("libs").join("sub");
+    fake_git_file(&sub);
+    let deep = sub.join("src").join("deep");
+    fs::create_dir_all(&deep).unwrap();
+    assert_eq!(outermost_repo_root(&deep), Some(outer.clone()));
+    assert_eq!(outermost_repo_root(&outer), Some(outer));
+    let plain = tmp.path().join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    // The temp dir itself is not inside a repository on CI machines.
+    if outermost_repo_root(tmp.path()).is_none() {
+        assert_eq!(outermost_repo_root(&plain), None);
     }
 }
 

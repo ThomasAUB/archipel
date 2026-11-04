@@ -16,6 +16,9 @@
 //! ticket_prefix = "JIRA-123"
 //! ticket_from_branch = "([A-Z]+-[0-9]+)"
 //!
+//! accent = "#3b82f6"   # team default window color (spec §2)
+//! icon = "🚀"           # team default project icon
+//!
 //! [[settings.template]]
 //! name = "fix"
 //! body = "{ticket} fix: "
@@ -68,6 +71,10 @@ struct SettingsV1 {
     ticket_prefix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ticket_from_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
     #[serde(default, rename = "template", skip_serializing_if = "Vec::is_empty")]
     templates: Vec<TemplateV1>,
 }
@@ -199,6 +206,8 @@ impl From<SettingsV1> for ProjectSettings {
                     body: t.body,
                 })
                 .collect(),
+            accent: raw.accent,
+            icon: raw.icon,
         }
     }
 }
@@ -209,6 +218,8 @@ impl From<&ProjectSettings> for SettingsV1 {
             require_same_branch: settings.require_same_branch,
             ticket_prefix: settings.ticket_prefix.clone(),
             ticket_from_branch: settings.ticket_from_branch.clone(),
+            accent: settings.accent.clone(),
+            icon: settings.icon.clone(),
             templates: settings
                 .message_templates
                 .iter()

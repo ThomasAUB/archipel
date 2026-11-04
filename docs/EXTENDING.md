@@ -12,9 +12,12 @@ implementation; you never patch the core.
 | Palette / menu actions | `archipel_app::Action` (or `SimpleAction`) | `Extensions::actions` (`ActionRegistry`) |
 | Shortcuts | keymap file `keymap.toml` | user config dir |
 | "Open in browser" links | `archipel_app::forge::ForgeProvider` | `ForgeRegistry::register` |
+| Forge API provider (Gitea, Bitbucket…) | `archipel_forge::provider::{ForgeApi, PullRequestApi, DirectoryApi}` | `ForgeClient::register` in `archipel_compose::forge_ports` |
+| Forge access as a whole (other client, no network) | the forge ports of `archipel_model::ports::forge` | `Services::forge` (`ForgePorts`) |
 | Ticket prefix | `archipel_app::message::TicketPrefixExtractor` | per-project settings |
 | Commit message templates | `archipel_app::message::MessageTemplate` | per-project settings |
 | Statistics | `archipel_stats::StatProvider` | `StatsRegistry::register` |
+| Repo dependency tree | `archipel_app::deptree::DependencySource` | `Extensions::dependencies` |
 | Look and feel | theme tokens and theme files | `themes/*.toml` in the user config dir |
 | Git backend per operation | the reader/writer traits of `archipel_model::ports::git` | `archipel_compose::git_ports` |
 | Persistence | the store traits of `archipel_model::ports::store` | `archipel_compose::compose` |
@@ -98,6 +101,64 @@ impl ForgeProvider for Gitea {
     }
 }
 // Arc::get_mut(&mut ext.forges).unwrap().register(Arc::new(Gitea));
+```
+
+## A forge API provider
+
+The "Pull request" dashboard column, pull request creation and clone from an
+account go through `ForgeClient` (`archipel-forge`), which dispatches to the
+provider registered for each account's kind. A provider only builds HTTP
+requests and parses answers through `Endpoint` (transport, API URL, token),
+so it is tested against a fake transport.
+
+```rust
+use archipel_forge::provider::{DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+use archipel_model::ForgeError;
+use archipel_model::forge::ForgeKind;
+
+struct Gitea;
+impl ForgeApi for Gitea {
+    fn kind(&self) -> ForgeKind { ForgeKind("gitea".into()) }
+    fn label(&self) -> &str { "Gitea" }
+    fn recognizes(&self, host: &str) -> bool { host.starts_with("gitea.") }
+    fn api_url(&self, host: &str) -> String { format!("https://{host}/api/v1") }
+    fn current_user(&self, at: &Endpoint) -> Result<String, ForgeError> { todo!("GET /user") }
+}
+impl PullRequestApi for Gitea { /* for_branch, create, set_description */ }
+impl DirectoryApi for Gitea { /* namespaces, repositories */ }
+
+// In archipel_compose::forge_ports:
+// let mut client = ForgeClient::with_builtins(http, credentials.clone());
+// client.register(Arc::new(Gitea));
+```
+
+Signing in to a host whose name gives no hint tries every registered
+provider's API; the first one accepting the token wins.
+
+## A dependency source
+
+The dependency tree (spec §9) reads each repo's dependencies through
+`Extensions::dependencies`; the built-in `SubmoduleSource` lists submodules
+at any depth. A node whose path is a repo of the project is drawn as that
+repo, so any source that returns paths nests project repos automatically.
+
+```rust
+use std::sync::Arc;
+use archipel_app::deptree::{DependencySource, SubmoduleSource};
+use archipel_model::submodule::SubmoduleNode;
+use archipel_model::{GitError, RepoPath};
+use archipel_ops::GitPorts;
+
+/// Submodules plus the repos listed in a `repo` manifest.
+struct WithManifest;
+impl DependencySource for WithManifest {
+    fn dependencies(&self, git: &GitPorts, repo: &RepoPath) -> Result<Vec<SubmoduleNode>, GitError> {
+        let mut nodes = SubmoduleSource.dependencies(git, repo)?;
+        nodes.extend(todo!("parse .repo/manifest.xml into nodes"));
+        Ok(nodes)
+    }
+}
+// ext.dependencies = Arc::new(WithManifest);
 ```
 
 ## A statistic

@@ -60,6 +60,59 @@ pub fn wait_fresh(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// `tree`: prints the repo dependency tree (spec §9) of a project.
+pub fn tree(dirs: AppDirs, target: &Path) -> Result<()> {
+    use archipel_app::deptree::{TreeInput, build_tree};
+    let c = compose(dirs)?;
+    open_target(&c.app, target)?;
+    let rows = c.app.rows();
+    let ports = c.app.repo_actions().ports();
+    let source = c.app.extensions().dependencies.clone();
+    let mut dependencies = std::collections::HashMap::new();
+    for row in &rows {
+        match source.dependencies(ports, &row.path) {
+            Ok(nodes) => {
+                dependencies.insert(row.id, nodes);
+            }
+            Err(e) => eprintln!("{}: {e}", row.name),
+        }
+    }
+    let tree = build_tree(&TreeInput {
+        rows: &rows,
+        dependencies: &dependencies,
+        collapsed: &[],
+        skip: &std::collections::HashSet::new(),
+    });
+    let short = |o: Option<archipel_model::Oid>| o.map_or_else(|| "?".into(), |o| o.short(8));
+    for node in tree {
+        let mut notes = Vec::new();
+        if node.state.is_some() && node.repo.is_some() {
+            notes.push("in project".to_owned());
+        }
+        if let Some(s) = &node.state {
+            if !s.initialized {
+                notes.push(format!("not initialized, pins {}", short(s.pinned)));
+            } else if s.out_of_sync {
+                notes.push(format!(
+                    "checked out {} != pinned {}",
+                    short(s.checked_out),
+                    short(s.pinned)
+                ));
+            }
+            if s.dirty {
+                notes.push("dirty".into());
+            }
+        }
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", notes.join(", "))
+        };
+        println!("{}{}{notes}", node.prefix, node.name);
+    }
+    Ok(())
+}
+
 /// `dashboard`: prints the six columns of every repo.
 pub fn dashboard(dirs: AppDirs, target: &Path, json: bool) -> Result<()> {
     let c = compose(dirs)?;
