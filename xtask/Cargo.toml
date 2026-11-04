@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+description = "Repository quality gates: dependency directions and theme-token enforcement."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
