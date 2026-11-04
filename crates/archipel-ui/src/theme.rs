@@ -13,19 +13,22 @@ use gpui_kit::{App, Global, Hsla, Pixels, Rgba, px};
 /// The active theme, as a GPUI global.
 ///
 /// `theme` is what views read: the user's theme, re-derived with the
-/// accent of the project of the window being drawn (spec §2 "Recognizing a
-/// window at a glance"). Each window applies its accent at the start of its
-/// render ([`apply_window_accent`]); windows are drawn one at a time on the
-/// main thread, so every view of a window sees that window's accent.
+/// accent and background tint of the project of the window being drawn (spec §2
+/// "Recognizing a window at a glance"). Each window applies its colors at
+/// the start of its render ([`apply_window_colors`]); windows are drawn one
+/// at a time on the main thread, so every view of a window sees that
+/// window's colors.
 pub struct UiTheme {
     /// Built-in and user themes.
     pub registry: ThemeRegistry,
-    /// The effective theme (user theme + window accent).
+    /// The effective theme (user theme + window colors).
     pub theme: Theme,
     /// The theme the user chose.
     selected: Theme,
     /// Accent applied to `theme`, if any.
     accent: Option<Color>,
+    /// Background tint (percent) applied to `theme`, if any.
+    background_tint: Option<u8>,
     /// Font families installed on this system (lowercase).
     installed: HashSet<String>,
     /// UI font actually used (the theme's, or the platform fallback).
@@ -78,6 +81,7 @@ impl UiTheme {
             selected: theme.clone(),
             theme,
             accent: None,
+            background_tint: None,
             installed,
             ui_family: String::new(),
             mono_family: String::new(),
@@ -90,16 +94,19 @@ impl UiTheme {
     pub fn set(&mut self, id: &str) {
         if let Some(t) = self.registry.get(id) {
             self.selected = t.clone();
-            self.theme = self.derive(self.accent);
+            self.theme = self.derive(self.accent, self.background_tint);
             self.resolve_fonts();
         }
     }
 
-    fn derive(&self, accent: Option<Color>) -> Theme {
-        accent.map_or_else(
+    fn derive(&self, accent: Option<Color>, background_tint: Option<u8>) -> Theme {
+        let theme = accent.map_or_else(
             || self.selected.clone(),
             |a| archipel_theme::with_project_accent(&self.selected, a),
-        )
+        );
+        background_tint.map_or(theme.clone(), |t| {
+            archipel_theme::with_background_tint(&theme, t)
+        })
     }
 }
 
@@ -211,15 +218,18 @@ pub fn sync_toolkit_theme(cx: &mut App) {
     });
 }
 
-/// Re-derives the theme with the accent of the window about to be drawn
-/// (`None`: the user's theme as is). Cheap when the accent is unchanged.
-pub fn apply_window_accent(cx: &mut App, accent: Option<Color>) {
-    if cx.global::<UiTheme>().accent == accent {
+/// Re-derives the theme with the accent and background tint of the window
+/// about to be drawn (`None`: the user's as is). Cheap when they are
+/// unchanged.
+pub fn apply_window_colors(cx: &mut App, accent: Option<Color>, background_tint: Option<u8>) {
+    let ui = cx.global::<UiTheme>();
+    if ui.accent == accent && ui.background_tint == background_tint {
         return;
     }
     let ui = cx.global_mut::<UiTheme>();
-    ui.theme = ui.derive(accent);
+    ui.theme = ui.derive(accent, background_tint);
     ui.accent = accent;
+    ui.background_tint = background_tint;
 }
 
 impl UiTheme {

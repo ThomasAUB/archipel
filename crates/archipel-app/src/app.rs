@@ -125,20 +125,96 @@ pub struct ProjectIdentity {
     pub accent: archipel_theme::Color,
     /// The accent is the automatic one (derived from the project path).
     pub automatic_accent: bool,
-    /// Icon / emoji, if any.
-    pub icon: Option<String>,
+    /// Percentage of the accent tinting the window background (`None`:
+    /// untinted).
+    pub background_tint: Option<u8>,
+    /// Icon, if any.
+    pub icon: Option<ProjectIcon>,
     /// One or two letters for badges.
     pub initials: String,
 }
 
 impl ProjectIdentity {
     /// Window title: project name first so truncated titles stay readable.
+    /// An image icon cannot go in a title; a text one leads it.
     #[must_use]
     pub fn window_title(&self) -> String {
-        match &self.icon {
+        match self.icon.as_ref().and_then(ProjectIcon::text) {
             Some(icon) => format!("{icon} {} — Archipel", self.name),
             None => format!("{} — Archipel", self.name),
         }
+    }
+}
+
+/// A project icon (spec §2), read from the `icon` setting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectIcon {
+    /// Text drawn as is: an emoji, a symbol.
+    Text(String),
+    /// An image file (absolute path).
+    Image(PathBuf),
+}
+
+/// Extensions that make an `icon` value an image file.
+const ICON_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
+
+impl ProjectIcon {
+    /// Reads an `icon` setting: a value naming an image file (`logo.png`,
+    /// `assets/icon.svg`) is a path, relative to the project's folder
+    /// `base`; anything else is text. `None` when blank, or for a relative
+    /// image path in a project without a folder.
+    #[must_use]
+    pub fn parse(value: &str, base: Option<&Path>) -> Option<Self> {
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+        let path = Path::new(value);
+        if !is_image_path(path) {
+            return Some(Self::Text(value.to_owned()));
+        }
+        if path.is_absolute() {
+            return Some(Self::Image(path.to_path_buf()));
+        }
+        base.map(|b| Self::Image(b.join(path)))
+    }
+
+    /// The text of a text icon.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(t) => Some(t),
+            Self::Image(_) => None,
+        }
+    }
+}
+
+fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ICON_IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// The folder a project's relative paths start from: the project file's folder.
+fn project_folder(location: &ProjectLocation) -> Option<PathBuf> {
+    let ProjectLocation::SharedFile(file) = location;
+    file.parent().map(Path::to_path_buf)
+}
+
+/// An `icon` value as stored: an image inside the project's folder is kept
+/// relative to it, with `/` separators, so the file works for the whole team.
+fn stored_icon(value: &str, folder: Option<&Path>) -> String {
+    let path = Path::new(value);
+    let relative = folder
+        .filter(|_| path.is_absolute() && is_image_path(path))
+        .and_then(|f| path.strip_prefix(f).ok());
+    match relative {
+        Some(rel) => rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        None => value.to_owned(),
     }
 }
 
@@ -158,12 +234,9 @@ pub fn initials(name: &str) -> String {
     letters.to_uppercase()
 }
 
-/// A user-typed accent color as `#rrggbb` (`None` when blank).
-fn parse_accent(accent: Option<String>) -> Result<Option<String>, AppError> {
-    let Some(hex) = accent
-        .map(|a| a.trim().to_owned())
-        .filter(|a| !a.is_empty())
-    else {
+/// A user-typed color as `#rrggbb` (`None` when blank).
+fn parse_color(color: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(hex) = color.map(|a| a.trim().to_owned()).filter(|a| !a.is_empty()) else {
         return Ok(None);
     };
     let hex = if hex.starts_with('#') {
@@ -174,6 +247,24 @@ fn parse_accent(accent: Option<String>) -> Result<Option<String>, AppError> {
     archipel_theme::Color::from_hex(&hex)
         .map_err(|e| AppError::InvalidInput(format!("{hex} is not a color (#rrggbb): {e}")))?;
     Ok(Some(hex))
+}
+
+/// Validates a percentage typed by the user (`15` or `15%`, 0–100); empty
+/// means none.
+fn parse_percent(percent: Option<String>) -> Result<Option<u8>, AppError> {
+    let Some(text) = percent
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+    else {
+        return Ok(None);
+    };
+    text.trim_end_matches('%')
+        .trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|&p| p <= 100)
+        .map(Some)
+        .ok_or_else(|| AppError::InvalidInput(format!("{text} is not a percentage (0–100)")))
 }
 
 /// Id of the project registered for a shared project file.
@@ -1113,13 +1204,9 @@ impl App {
     /// Icon of any known project (switcher): personal choice, else the team
     /// default of its project file.
     #[must_use]
-    pub fn project_icon(&self, id: &ProjectId) -> Option<String> {
+    pub fn project_icon(&self, id: &ProjectId) -> Option<ProjectIcon> {
         if self.project().is_some_and(|(open, _)| &open == id) {
             return self.identity()?.icon;
-        }
-        let personal = self.services.ui_state.load_ui_state(id).ok().flatten();
-        if let Some(icon) = personal.and_then(|u| u.icon) {
-            return Some(icon);
         }
         let entry = self
             .services
@@ -1128,12 +1215,20 @@ impl App {
             .ok()?
             .into_iter()
             .find(|e| &e.id == id)?;
-        self.services
-            .projects
-            .load(&entry.location)
-            .ok()?
-            .settings
-            .icon
+        let folder = project_folder(&entry.location);
+        let personal = self.services.ui_state.load_ui_state(id).ok().flatten();
+        let icon = match personal.and_then(|u| u.icon) {
+            Some(icon) => icon,
+            None => {
+                self.services
+                    .projects
+                    .load(&entry.location)
+                    .ok()?
+                    .settings
+                    .icon?
+            }
+        };
+        ProjectIcon::parse(&icon, folder.as_deref())
     }
 
     /// How the open project's window is recognized (spec §2): the color
@@ -1148,13 +1243,14 @@ impl App {
             parse(s.ui.accent.as_deref()).or_else(|| parse(s.def.settings.accent.as_deref()));
         let icon =
             s.ui.icon
-                .clone()
-                .or_else(|| s.def.settings.icon.clone())
-                .filter(|i| !i.trim().is_empty());
+                .as_deref()
+                .or(s.def.settings.icon.as_deref())
+                .and_then(|i| ProjectIcon::parse(i, project_folder(&s.location).as_deref()));
         Some(ProjectIdentity {
             name: s.def.name.clone(),
             accent: chosen.unwrap_or_else(|| archipel_theme::accent_for_key(&s.id.0)),
             automatic_accent: chosen.is_none(),
+            background_tint: s.def.settings.background_tint.filter(|&t| t > 0),
             icon,
             initials: initials(&s.def.name),
         })
@@ -1608,14 +1704,23 @@ impl App {
                 self.dispatch(Command::OpenRepoTab(id))?;
             }
             Command::SetAccent(accent) => {
-                let accent = parse_accent(accent)?;
+                let accent = parse_color(accent)?;
                 self.save_identity(|settings, ui| {
                     settings.accent = accent;
                     ui.accent = None;
                 })?;
             }
+            Command::SetBackgroundTint(tint) => {
+                let tint = parse_percent(tint)?;
+                self.save_identity(|settings, _| settings.background_tint = tint)?;
+            }
             Command::SetIcon(icon) => {
-                let icon = icon.map(|i| i.trim().to_owned()).filter(|i| !i.is_empty());
+                let folder = lock(&self.session)
+                    .as_ref()
+                    .and_then(|s| project_folder(&s.location));
+                let icon = icon
+                    .map(|i| stored_icon(i.trim(), folder.as_deref()))
+                    .filter(|i| !i.is_empty());
                 self.save_identity(|settings, ui| {
                     settings.icon = icon;
                     ui.icon = None;
@@ -1627,7 +1732,7 @@ impl App {
         Ok(())
     }
 
-    /// Changes the project's color or icon in its definition, so a project
+    /// Changes the project's colors or icon in its definition, so a project
     /// file carries them for the whole team (spec §2), and drops any older
     /// personal override.
     fn save_identity(

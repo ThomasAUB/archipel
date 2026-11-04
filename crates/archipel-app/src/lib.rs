@@ -39,7 +39,7 @@ pub mod settings;
 
 pub use actions::{Action, ActionContext, ActionRegistry, Command};
 pub use app::{
-    App, AppError, AppEvent, CloneOutcome, CloneProtocol, DirectoryTarget, Extensions,
+    App, AppError, AppEvent, CloneOutcome, CloneProtocol, DirectoryTarget, Extensions, ProjectIcon,
     ProjectIdentity, PullRequestOutcome, PullRequestPlan, PullRequestTarget, Services,
     file_project_id, initials,
 };

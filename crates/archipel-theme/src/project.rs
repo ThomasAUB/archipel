@@ -6,7 +6,7 @@
 //! then the user's theme re-derived with that accent ([`with_project_accent`]),
 //! which tints the selection and accent tokens consistently.
 
-use crate::color::{Color, Oklch};
+use crate::color::{Color, Oklab, Oklch};
 use crate::theme::Theme;
 
 /// OKLCH lightness of automatic project accents (readable on light and dark).
@@ -59,6 +59,26 @@ pub fn with_project_accent(theme: &Theme, accent: Color) -> Theme {
     out
 }
 
+/// `theme` re-derived with its background tinted by its accent: `percent`
+/// (0–100, clamped) of the accent's Oklab hue and chroma mixed into the
+/// background, whose lightness is kept so text contrast and the light /
+/// dark appearance are unchanged. Explicit token overrides are kept.
+#[must_use]
+pub fn with_background_tint(theme: &Theme, percent: u8) -> Theme {
+    let t = f64::from(percent.min(100)) / 100.0;
+    let mut out = theme.clone();
+    let mut base = *theme.base();
+    let (bg, accent) = (base.background.to_oklab(), base.accent.to_oklab());
+    base.background = Oklab {
+        a: bg.a + (accent.a - bg.a) * t,
+        b: bg.b + (accent.b - bg.b) * t,
+        ..bg
+    }
+    .to_color();
+    out.set_base(base);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +108,25 @@ mod tests {
             themed.color(ColorToken::BgApp),
             dark.color(ColorToken::BgApp)
         );
+    }
+
+    #[test]
+    fn background_tint_keeps_lightness() {
+        for theme in [builtin::dark(), builtin::light()] {
+            let themed = with_project_accent(&theme, accent_for_key("/x"));
+            assert_eq!(with_background_tint(&themed, 0).base(), themed.base());
+            let tinted = with_background_tint(&themed, 30);
+            let (before, after) = (
+                themed.base().background.to_oklch(),
+                tinted.base().background.to_oklch(),
+            );
+            assert!((before.l - after.l).abs() < 0.005);
+            assert!(after.c > before.c);
+            assert_eq!(tinted.appearance(), themed.appearance());
+            assert_eq!(
+                tinted.color(ColorToken::Accent),
+                themed.color(ColorToken::Accent)
+            );
+        }
     }
 }

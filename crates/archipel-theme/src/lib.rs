@@ -42,7 +42,7 @@ pub use derive::{BaseColors, derive_colors, ensure_contrast};
 pub use editor::{ContrastWarning, contrast_warnings};
 pub use error::{ThemeError, ThemeWarning};
 pub use file::{ThemeFile, export_theme};
-pub use project::{accent_for_key, with_project_accent};
+pub use project::{accent_for_key, with_background_tint, with_project_accent};
 pub use registry::ThemeRegistry;
 pub use settings::{AnimationSpeed, Appearance, Density, Spacing, ThemeSelection, Typography};
 pub use theme::Theme;

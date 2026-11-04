@@ -44,6 +44,7 @@ fn sample(root: &Path) -> ProjectDef {
                 body: "{ticket} fix: \"quoted\"\nsecond line".to_owned(),
             }],
             accent: Some("#3b82f6".to_owned()),
+            background_tint: Some(15),
             icon: Some("🚀".to_owned()),
         },
     }

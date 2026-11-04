@@ -41,6 +41,11 @@ pub struct ProjectSettings {
     /// Accent color of the project's windows (`#rrggbb`; automatic when
     /// `None`), shared through the project file (spec §2).
     pub accent: Option<String>,
+    /// Percentage (0–100) of the accent's hue mixed into the background of
+    /// the project's windows, keeping the theme's lightness so it suits light
+    /// and dark themes alike (`None`: untinted); shared through the project
+    /// file (spec §2).
+    pub background_tint: Option<u8>,
     /// Project icon / emoji, shared through the project file.
     pub icon: Option<String>,
 }

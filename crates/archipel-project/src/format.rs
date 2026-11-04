@@ -18,7 +18,9 @@
 //! ticket_from_branch = "([A-Z]+-[0-9]+)"
 //!
 //! accent = "#3b82f6"   # window color (spec §2)
-//! icon = "🚀"           # project icon
+//! background_tint = 15  # % of the accent tinting the window background
+//! icon = "🚀"           # project icon: an emoji, or an image file
+//!                       # relative to this file ("assets/logo.svg")
 //!
 //! [[settings.template]]
 //! name = "fix"
@@ -76,6 +78,8 @@ struct SettingsV1 {
     ticket_from_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    background_tint: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
     #[serde(default, rename = "template", skip_serializing_if = "Vec::is_empty")]
@@ -215,6 +219,7 @@ impl From<SettingsV1> for ProjectSettings {
                 })
                 .collect(),
             accent: raw.accent,
+            background_tint: raw.background_tint,
             icon: raw.icon,
         }
     }
@@ -227,6 +232,7 @@ impl From<&ProjectSettings> for SettingsV1 {
             ticket_prefix: settings.ticket_prefix.clone(),
             ticket_from_branch: settings.ticket_from_branch.clone(),
             accent: settings.accent.clone(),
+            background_tint: settings.background_tint,
             icon: settings.icon.clone(),
             templates: settings
                 .message_templates

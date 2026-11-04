@@ -66,10 +66,10 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 **Recognizing a window at a glance — P1**
 > Implemented except the taskbar badge (it needs a native Windows API call, i.e. an `unsafe` exception and an ADR).
 
-- **Per-project accent color:** derived automatically from the project path (stable across launches), overridable by the user. Shown as a thin colored band at the top of the window, and on the selection and project name; built on the theme engine's accent-derived palette.
+- **Per-project accent color:** derived automatically from the project path (stable across launches), overridable by the user. Shown as a thin colored band at the top of the window, and on the selection and project name; built on the theme engine's accent-derived palette. An optional per-project background tint, also shared through the project file, mixes a percentage of the accent's hue into the window's surfaces while keeping the theme's lightness, so it suits light and dark themes alike and every user keeps their own theme.
 - **Project name first in the window title** (`myproject — Archipel`), so the taskbar, Alt+Tab and window lists stay readable when titles are truncated.
 - **Taskbar badge:** a small dot in the project color with its initials, overlaid on the taskbar icon (native overlay on Windows; best effort on Linux), to tell grouped windows apart.
-- **Optional project icon / emoji**, chosen by the user, shown next to the name in the title bar and the project switcher.
+- **Optional project icon:** an emoji, or an image file (PNG, SVG…) kept relative to `archipel.toml`, chosen by the user, shown next to the name in the project switcher (and in the title bar for an emoji, since titles are text).
 - Color and icon belong to the project: stored in the project definition, so `archipel.toml` shares them with the team (a new file gets the automatic color written in it).
 
 ### 3. Project dashboard — P0

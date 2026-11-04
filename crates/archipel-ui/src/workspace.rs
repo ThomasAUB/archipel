@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use archipel_app::dashboard::{DashboardRow, RepoStatus};
 use archipel_app::deptree::TreeRow;
-use archipel_app::{App as Core, AppEvent, Command, Extensions};
+use archipel_app::{App as Core, AppEvent, Command, Extensions, ProjectIcon};
 use archipel_model::project::ProjectLocation;
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, RepoPath, Timestamp};
@@ -16,8 +16,8 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Action, AnyElement, ClickEvent, Context, Entity, FocusHandle, MouseButton, MouseDownEvent,
-    PathPromptOptions, Pixels, Point, SharedString, Subscription, Window, anchored, deferred, div,
-    px,
+    ObjectFit, PathPromptOptions, Pixels, Point, SharedString, Subscription, Window, anchored,
+    deferred, div, img, px, rems,
 };
 
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
@@ -85,6 +85,7 @@ enum PaletteKind {
     Branch,
     Tag,
     Color,
+    BackgroundTint,
     Icon,
     Category,
     RenameCategory,
@@ -274,7 +275,12 @@ impl Workspace {
                     } else if crate::windows::is_open(window, cx, &p.id) {
                         detail = format!("open in another window · {detail}");
                     }
-                    let label = match self.core.project_icon(&p.id) {
+                    let label = match self
+                        .core
+                        .project_icon(&p.id)
+                        .as_ref()
+                        .and_then(|i| i.text())
+                    {
                         Some(icon) => format!("{icon}  {}", p.name),
                         None => p.name,
                     };
@@ -326,7 +332,16 @@ impl Workspace {
                 Vec::new(),
                 true,
             ),
-            PaletteKind::Icon => ("Project icon or emoji (empty: none)", Vec::new(), true),
+            PaletteKind::BackgroundTint => (
+                "Project background tint: % of the project color, 0–100 (empty: none)",
+                Vec::new(),
+                true,
+            ),
+            PaletteKind::Icon => (
+                "Project icon: emoji or image file (empty: none)",
+                Vec::new(),
+                true,
+            ),
             PaletteKind::RenameCategory => {
                 // A plain prompt: an empty Enter must not pick (merge into)
                 // another category. Typing an existing name merges into it.
@@ -431,6 +446,9 @@ impl Workspace {
             PaletteKind::Branch => self.dispatch(Command::CreateBranchAll(value, targets), cx),
             PaletteKind::Tag => self.dispatch(Command::CreateTagAll(value, targets), cx),
             PaletteKind::Color => self.dispatch(Command::SetAccent(Some(value)), cx),
+            PaletteKind::BackgroundTint => {
+                self.dispatch(Command::SetBackgroundTint(Some(value)), cx);
+            }
             PaletteKind::Icon => self.dispatch(Command::SetIcon(Some(value)), cx),
             PaletteKind::Category => {
                 let ids = std::mem::take(&mut self.category_targets);
@@ -483,7 +501,11 @@ impl Workspace {
             "app.copy_diagnostics" => self.copy_diagnostics(cx),
             "window.new" => crate::windows::open(cx, None),
             "project.set_color" => self.open_palette(PaletteKind::Color, window, cx),
+            "project.set_background_tint" => {
+                self.open_palette(PaletteKind::BackgroundTint, window, cx);
+            }
             "project.set_icon" => self.open_palette(PaletteKind::Icon, window, cx),
+            "project.set_icon_image" => self.pick_icon_image(cx),
             "repos.set_category" => {
                 let targets = self.core.action_context().selected;
                 self.set_category(targets, window, cx);
@@ -635,6 +657,14 @@ impl Workspace {
                 w.notice = Some(e.to_string());
             }
             cx.notify();
+        });
+    }
+
+    #[allow(clippy::unused_self)] // called like every other view action
+    fn pick_icon_image(&mut self, cx: &mut Context<Self>) {
+        Self::pick(false, cx, |w, file, cx| {
+            let icon = file.to_string_lossy().into_owned();
+            w.dispatch(Command::SetIcon(Some(icon)), cx);
         });
     }
 
@@ -843,7 +873,7 @@ impl Workspace {
                             .items_center()
                             .gap_2()
                             .text_color(color(cx, T::Accent))
-                            .children(identity.icon.clone())
+                            .children(identity.icon.map(|icon| project_icon(icon, cx)))
                             .child(div().truncate().child(identity.name)),
                     }),
             )
@@ -1651,10 +1681,14 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Window identity (spec §2): this window's project accent for every
+        // Window identity (spec §2): this window's project colors for every
         // view drawn below, and the project name first in the title.
         let identity = self.core.identity();
-        crate::theme::apply_window_accent(cx, identity.as_ref().map(|i| i.accent));
+        crate::theme::apply_window_colors(
+            cx,
+            identity.as_ref().map(|i| i.accent),
+            identity.as_ref().and_then(|i| i.background_tint),
+        );
         let title = identity.as_ref().map_or_else(
             || "Archipel".to_owned(),
             archipel_app::ProjectIdentity::window_title,
@@ -1831,4 +1865,18 @@ fn row_cells(
                 .into_any_element()
         })
         .collect()
+}
+
+/// A project icon next to its name: the text, or the image sized to the
+/// line (nothing is drawn when the file cannot be read).
+fn project_icon(icon: ProjectIcon, cx: &gpui_kit::App) -> AnyElement {
+    match icon {
+        ProjectIcon::Text(text) => div().child(text).into_any_element(),
+        ProjectIcon::Image(path) => img(path)
+            .size(rems(1.25))
+            .flex_none()
+            .rounded(radius(cx))
+            .object_fit(ObjectFit::Contain)
+            .into_any_element(),
+    }
 }

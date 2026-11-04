@@ -86,7 +86,11 @@ pub enum Command {
     /// Project accent color (`#rrggbb`; automatic when `None`), saved in
     /// the project definition.
     SetAccent(Option<String>),
-    /// Project icon / emoji (`None`: none), saved in the project definition.
+    /// Percentage (0–100) of the project color tinting its window
+    /// background (`None`: untinted), saved in the project definition.
+    SetBackgroundTint(Option<String>),
+    /// Project icon (`None`: none), saved in the project definition: an
+    /// emoji, or an image file (kept relative to the project's folder).
     SetIcon(Option<String>),
     /// UI-only commands (palettes, dialogs) the frontend handles itself.
     Ui(String),
@@ -293,8 +297,18 @@ impl ActionRegistry {
             with_project,
         ));
         r.register(ui(
+            "project.set_background_tint",
+            "Set the project background tint…",
+            with_project,
+        ));
+        r.register(ui(
             "project.set_icon",
             "Set the project icon…",
+            with_project,
+        ));
+        r.register(ui(
+            "project.set_icon_image",
+            "Set the project icon from an image…",
             with_project,
         ));
         r.register(Arc::new(SimpleAction::new(

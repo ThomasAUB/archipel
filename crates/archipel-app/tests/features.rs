@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use archipel_app::{App, Command, Extensions, Services, file_project_id};
+use archipel_app::{App, Command, Extensions, ProjectIcon, Services, file_project_id};
 use archipel_model::ports::{ProjectSource, Scope};
 use archipel_model::project::{
     DiscoveredKind, DiscoveredRepo, ProjectDef, ProjectLocation, RepoEntry,
@@ -410,6 +410,59 @@ fn identity_is_automatic_then_saved_in_the_project() {
     );
     e.app.dispatch(Command::SetAccent(None)).unwrap();
     assert!(e.app.identity().unwrap().automatic_accent);
+
+    assert_eq!(e.app.identity().unwrap().background_tint, None);
+    e.app
+        .dispatch(Command::SetBackgroundTint(Some("15%".into())))
+        .unwrap();
+    assert_eq!(e.app.identity().unwrap().background_tint, Some(15));
+    let settings = e.app.project().unwrap().1.settings;
+    assert_eq!(settings.background_tint, Some(15));
+    for bad in ["101", "-5", "half"] {
+        assert!(
+            e.app
+                .dispatch(Command::SetBackgroundTint(Some(bad.into())))
+                .is_err()
+        );
+    }
+    e.app.dispatch(Command::SetBackgroundTint(None)).unwrap();
+    assert_eq!(e.app.identity().unwrap().background_tint, None);
+}
+
+#[test]
+fn image_icon_is_stored_relative_to_the_project_file() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let def = e.app.project().unwrap().1;
+    let file = e.dir.path().join("archipel.toml");
+    let id = e
+        .app
+        .create_project(ProjectLocation::SharedFile(file), &def)
+        .unwrap();
+    e.app.open_project(&id).unwrap();
+
+    let logo = e.dir.path().join("assets").join("logo.svg");
+    e.app
+        .dispatch(Command::SetIcon(Some(logo.display().to_string())))
+        .unwrap();
+    let settings = e.app.project().unwrap().1.settings;
+    assert_eq!(settings.icon.as_deref(), Some("assets/logo.svg"));
+    let identity = e.app.identity().unwrap();
+    assert_eq!(identity.icon, Some(ProjectIcon::Image(logo.clone())));
+    assert_eq!(identity.window_title(), "My product — Archipel");
+    assert_eq!(e.app.project_icon(&id), Some(ProjectIcon::Image(logo)));
+
+    // An absolute image path is kept; text stays text.
+    let elsewhere = e.dir.path().join("Icon.PNG");
+    assert_eq!(
+        ProjectIcon::parse(&elsewhere.display().to_string(), None),
+        Some(ProjectIcon::Image(elsewhere))
+    );
+    assert_eq!(ProjectIcon::parse("logo.png", None), None);
+    assert_eq!(
+        ProjectIcon::parse(" 🚀 ", None),
+        Some(ProjectIcon::Text("🚀".into()))
+    );
 }
 
 #[test]

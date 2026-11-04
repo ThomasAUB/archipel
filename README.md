@@ -77,9 +77,12 @@ reopens.
 | `Ctrl+N` (or `Ctrl+Shift+N`) | new window |
 
 Right-click a repo for its menu. The project color and icon are set from the
-action palette ("Set the project color…", "Set the project icon…") and saved
-in the project, so `archipel.toml` shares them with the team
-(`[settings] accent = "#3b82f6"`, `icon = "🚀"`). F5 reloads the project file
+action palette ("Set the project color…", "Set the project icon…", "Set the
+project icon from an image…") and saved in the project, so `archipel.toml`
+shares them with the team (`[settings] accent = "#3b82f6"`, `background_tint = 15`, `icon = "🚀"`).
+The icon can also be an image file (PNG, SVG, JPEG, WebP, GIF, BMP, ICO),
+written relative to `archipel.toml` (`icon = "assets/logo.svg"`); it is shown
+next to the project name in the sidebar. F5 reloads the project file
 (after a hand edit or a pull) and refreshes every repo.
 
 Forges: "Forge accounts…" in the action palette signs in to GitHub, GitLab or
