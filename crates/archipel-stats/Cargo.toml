@@ -1,0 +1,23 @@
+[package]
+name = "archipel-stats"
+description = "Streaming, incremental repository statistics (activity, branch age, hotspots)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+archipel-model.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+archipel-model = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+archipel-fixtures.workspace = true
+archipel-git.workspace = true
+archipel-cache.workspace = true
+
+[lints]
+workspace = true

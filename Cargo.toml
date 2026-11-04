@@ -24,6 +24,8 @@ archipel-app = { path = "crates/archipel-app" }
 archipel-fixtures = { path = "tools/fixtures" }
 
 anyhow = "1"
+ignore = "0.4"
+regex = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 gix = { version = "0.90", default-features = false }
