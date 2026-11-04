@@ -25,9 +25,10 @@ pub fn light() -> Theme {
         LIGHT_ID,
         "Light",
         BaseColors {
-            background: Color::rgb(0xfb, 0xfb, 0xfc),
-            text: Color::rgb(0x1f, 0x23, 0x28),
-            accent: Color::rgb(0x25, 0x63, 0xeb),
+            // Cool off-white paper, slate ink, a restrained cobalt.
+            background: Color::rgb(0xfa, 0xfb, 0xfd),
+            text: Color::rgb(0x20, 0x24, 0x2c),
+            accent: Color::rgb(0x3b, 0x67, 0xc1),
         },
     )
 }
@@ -39,9 +40,10 @@ pub fn dark() -> Theme {
         DARK_ID,
         "Dark",
         BaseColors {
-            background: Color::rgb(0x1b, 0x1d, 0x22),
-            text: Color::rgb(0xe3, 0xe5, 0xe8),
-            accent: Color::rgb(0x4c, 0x8d, 0xff),
+            // Deep slate (faint blue cast), soft cool white, periwinkle.
+            background: Color::rgb(0x17, 0x19, 0x1e),
+            text: Color::rgb(0xe3, 0xe6, 0xec),
+            accent: Color::rgb(0x7a, 0xa1, 0xe9),
         },
     )
 }

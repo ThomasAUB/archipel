@@ -10,9 +10,16 @@ use crate::color::{Color, Oklch};
 use crate::theme::Theme;
 
 /// OKLCH lightness of automatic project accents (readable on light and dark).
-pub const PROJECT_ACCENT_LIGHTNESS: f64 = 0.66;
-/// OKLCH chroma of automatic project accents.
-pub const PROJECT_ACCENT_CHROMA: f64 = 0.15;
+pub const PROJECT_ACCENT_LIGHTNESS: f64 = 0.68;
+/// OKLCH chroma of automatic project accents: enough to tell windows apart,
+/// muted enough to sit with the theme's neutrals.
+pub const PROJECT_ACCENT_CHROMA: f64 = 0.12;
+/// Hues (OKLCH degrees) automatic project accents are picked from. The
+/// olive / lime band (~90–140°) is left out: at this lightness and chroma it
+/// reads as muddy next to the slate neutrals.
+pub const PROJECT_ACCENT_HUES: [f64; 12] = [
+    15.0, 40.0, 65.0, 150.0, 175.0, 200.0, 222.0, 245.0, 268.0, 290.0, 315.0, 340.0,
+];
 
 /// FNV-1a 64-bit offset basis.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -30,10 +37,15 @@ fn fnv1a(text: &str) -> u64 {
 /// The automatic accent of a project, derived from `key` (its path).
 #[must_use]
 pub fn accent_for_key(key: &str) -> Color {
-    // 360 hues are plenty; the modulo keeps the value exact in f64.
-    #[allow(clippy::cast_precision_loss)] // < 360, exact
-    let hue = (fnv1a(key) % 360) as f64;
-    Oklch::new(PROJECT_ACCENT_LIGHTNESS, PROJECT_ACCENT_CHROMA, hue).to_color()
+    let n = PROJECT_ACCENT_HUES.len() as u64;
+    // The remainder is below the (tiny) table length.
+    let i = usize::try_from(fnv1a(key) % n).unwrap_or(0);
+    Oklch::new(
+        PROJECT_ACCENT_LIGHTNESS,
+        PROJECT_ACCENT_CHROMA,
+        PROJECT_ACCENT_HUES[i],
+    )
+    .to_color()
 }
 
 /// `theme` re-derived with `accent` as its accent color; explicit token

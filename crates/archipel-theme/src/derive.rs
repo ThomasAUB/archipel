@@ -61,28 +61,39 @@ pub const OPERATOR_MIX: f64 = 0.12;
 /// Lightness of status, syntax and diff foreground colors on dark themes.
 pub const FG_HUE_LIGHTNESS_DARK: f64 = 0.78;
 /// Lightness of status, syntax and diff foreground colors on light themes.
-pub const FG_HUE_LIGHTNESS_LIGHT: f64 = 0.50;
-/// Chroma of status, syntax and diff foreground colors.
-pub const FG_HUE_CHROMA: f64 = 0.15;
+pub const FG_HUE_LIGHTNESS_LIGHT: f64 = 0.52;
+/// Chroma of status, syntax and diff foreground colors: moderate, so hued
+/// text reads as a family of soft tones rather than competing neons.
+pub const FG_HUE_CHROMA: f64 = 0.11;
 
 /// Lightness step from `bg.app` to the diff line backgrounds.
 pub const DIFF_BG_STEP: f64 = 0.06;
 /// Chroma of the diff line backgrounds.
-pub const DIFF_BG_CHROMA: f64 = 0.045;
+pub const DIFF_BG_CHROMA: f64 = 0.035;
 /// Lightness step from `bg.app` to the word-level diff highlights.
 pub const DIFF_WORD_STEP: f64 = 0.13;
 /// Chroma of the word-level diff highlights.
-pub const DIFF_WORD_CHROMA: f64 = 0.09;
+pub const DIFF_WORD_CHROMA: f64 = 0.07;
 
-/// Hue (degrees) of the first graph lane.
-pub const LANE_HUE_START: f64 = 25.0;
-/// Hue spacing (degrees) between consecutive lanes; with [`LANE_COUNT`]
-/// lanes this spreads them evenly around the hue circle.
-pub const LANE_HUE_STEP: f64 = 360.0 / 10.0;
-// `LANE_HUE_STEP` and `lane_position` assume ten lanes.
-const _: () = assert!(LANE_COUNT == 10);
+/// Hues (OKLCH degrees) of the graph lanes, in lane order.
+///
+/// A curated set rather than an even spread around the wheel: the
+/// yellow-green band (~90–140°), which turns muddy at moderate chroma, is
+/// skipped, and only two warm hues are used so the graph stays cool and
+/// calm. The order keeps consecutive lanes (and the last and first) far
+/// apart in hue, and gives hues that are close on the wheel (240/265,
+/// 290/320…) opposite lightness steps. The first lane (usually the main
+/// line) is the theme-neutral blue.
+pub const LANE_HUES: [f64; 10] = [
+    240.0, 70.0, 290.0, 185.0, 320.0, 215.0, 25.0, 265.0, 150.0, 355.0,
+];
+// `LANE_HUES` has one hue per lane.
+const _: () = assert!(LANE_COUNT == LANE_HUES.len());
 /// Chroma of graph lane colors.
-pub const LANE_CHROMA: f64 = 0.15;
+pub const LANE_CHROMA: f64 = 0.125;
+/// Lightness of graph lanes on light themes: a little lighter than hued
+/// text, so thin lines do not turn brownish (lanes need only 3:1).
+pub const LANE_LIGHTNESS_LIGHT: f64 = 0.58;
 /// Lightness offset alternated between consecutive lanes so neighbors also
 /// differ in lightness.
 pub const LANE_LIGHTNESS_ALTERNATION: f64 = 0.05;
@@ -371,33 +382,27 @@ impl Deriver {
         }
     }
 
-    /// Graph lanes: evenly spaced hues, alternating lightness, readable as
+    /// Graph lanes: curated hues ([`LANE_HUES`]), alternating lightness, readable as
     /// graphical objects (3:1) on app and panel backgrounds.
     fn lanes(&self, set: &mut ColorSet) {
+        let lane_l = if self.toward_text > 0.0 {
+            self.hue_l
+        } else {
+            LANE_LIGHTNESS_LIGHT
+        };
         for (i, &t) in ColorToken::LANES.iter().enumerate() {
             let offset = if i % 2 == 0 {
                 LANE_LIGHTNESS_ALTERNATION / 2.0
             } else {
                 -LANE_LIGHTNESS_ALTERNATION / 2.0
             };
-            let h = LANE_HUE_START + LANE_HUE_STEP * lane_position(i);
-            let c = Oklch::new(self.hue_l + offset, LANE_CHROMA, h).to_color();
+            let c = Oklch::new(lane_l + offset, LANE_CHROMA, LANE_HUES[i]).to_color();
             set.set(
                 t,
                 ensure_contrast_all(c, &[self.bg, self.bg_panel], WCAG_AA_LARGE_TEXT),
             );
         }
     }
-}
-
-/// Lane `i`'s position on the hue circle. Consecutive lanes are placed far
-/// apart (stride 3 over 10 positions, coprime) so adjacent lanes in the graph
-/// never get neighboring hues.
-fn lane_position(i: usize) -> f64 {
-    const STRIDE: usize = 3;
-    let pos = (i * STRIDE) % LANE_COUNT;
-    // LANE_COUNT is tiny; the conversion is exact.
-    f64::from(u8::try_from(pos).unwrap_or(0))
 }
 
 /// Picks a readable text color on `fill`: the first candidate reaching AA,
@@ -428,12 +433,5 @@ mod tests {
         assert!(out.contrast_ratio(bg) >= WCAG_AA_NORMAL_TEXT);
         // Already fine: unchanged.
         assert_eq!(ensure_contrast(Color::WHITE, bg, 4.5), Color::WHITE);
-    }
-
-    #[test]
-    fn lane_positions_are_a_permutation() {
-        let mut p: Vec<_> = (0..LANE_COUNT).map(|i| (i * 3) % LANE_COUNT).collect();
-        p.sort_unstable();
-        assert_eq!(p, (0..LANE_COUNT).collect::<Vec<_>>());
     }
 }
