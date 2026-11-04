@@ -24,6 +24,23 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - The definition is stored in a readable file (`.gitproject.toml`), so it can be versioned and shared with the team.
 - P2: import from submodules, `repo` manifest, VS Code workspace.
 
+**Launch from a directory — P1**
+> **Not in the current version.** Today folder scanning exists in the CLI (`archipel-cli scan` / `add`); the desktop app does not take a directory at launch.
+
+- `archipel <dir>` (or `archipel .`, or "Open with Archipel" from the file manager) opens the app on that directory.
+- If the directory holds a `.gitproject.toml`, that project is opened.
+- Otherwise the repos around are detected automatically and added to the list: the directory is scanned downward (same depth-limited scan as "scan a parent folder"); if it is itself inside a repo, the scan starts from the outermost enclosing repo root.
+- The result is a private project tied to that directory (in the user data dir); launching again from the same directory reopens it and adds any newly found repos — it never re-adds hidden ones.
+- No confirmation dialog: the list appears immediately and fills in as the scan progresses (cancellable).
+
+**Hidden repos — P1**
+> **Not in the current version.**
+
+- Any repo of a project can be hidden when it isn't wanted (context menu or keyboard), individually or in batch.
+- Hidden repos disappear from the dashboard, graph switcher, batch actions and multi-repo commit; they are neither watched nor refreshed (saves CPU and RAM).
+- A "show hidden repos" toggle lists them, dimmed, with an "unhide" action.
+- Hiding is a personal choice: stored in the private project state, never in the shared `.gitproject.toml`. Removing a repo from the project stays a separate, explicit action.
+
 ### 2. Project switching — P0
 - Fast keyboard switcher (`Ctrl+P` style), plus a recent-projects list.
 - Each project keeps its own UI state (selected repo, filters, layout).
