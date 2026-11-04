@@ -42,9 +42,11 @@ Rules:
 - Feature crates (`ops`, `graph`, `stats`, `project`) depend on **traits** from `archipel-model`, not on concrete adapters. They never name `gix`, `rusqlite` or `notify` types.
 - Adapter crates (`git`, `watch`, `cache`) implement the traits. They never depend on feature crates.
 - `archipel-app` knows use cases, not toolkits. `archipel-ui` is the only crate that depends on the UI toolkit, and it never depends on adapter crates directly.
-- Only the **composition roots** (`archipel-ui`'s `main`, `archipel-cli`) know which concrete implementation goes behind which trait.
+- Only the **composition roots** (`archipel-ui`'s `main`, `archipel-cli`) know which concrete implementation goes behind which trait. Both get their wiring from `archipel-compose`, the single shared `compose` module; the UI library code itself never names an adapter.
+- `archipel-theme` is a pure leaf crate (tokens, derivation, theme files) with no workspace dependency; `archipel-app` and `archipel-ui` use it.
+- `archipel-graph` may use the pure LRU of `archipel-cache` (never its SQLite store).
 
-A CI check (`cargo xtask check-deps`, built in Phase 0) fails the build if a crate depends on a crate it is not allowed to.
+A CI check (`cargo xtask check-deps`) fails the build if a crate depends on a crate it is not allowed to; the allowed edges are the `ALLOWED` table in `xtask/src/main.rs`, kept in sync with this section. Dev-dependencies are free (adapter tests use fixtures and real backends).
 
 ### 2.3 Third-party types stay inside their adapter
 

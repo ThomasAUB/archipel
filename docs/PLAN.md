@@ -108,7 +108,9 @@ archipel/
 │  ├─ archipel-cache/          # byte-budgeted LRU caches, SQLite store
 │  ├─ archipel-graph/          # commit-graph lane layout, paged history
 │  ├─ archipel-stats/          # (P1) streaming stats computation
+│  ├─ archipel-theme/          # theme tokens, derivation, built-in themes, theme files (pure)
 │  ├─ archipel-app/            # app state, view-models, command bus — UI-agnostic
+│  ├─ archipel-compose/        # shared composition root: wires adapters behind the ports
 │  ├─ archipel-cli/            # headless binary: dump dashboard, run batch ops, benchmarks
 │  └─ archipel-ui/             # the chosen UI frontend (only crate depending on the UI toolkit)
 ├─ tools/fixtures/             # scripts generating test repos (20-repo project, 100k-commit repo)
