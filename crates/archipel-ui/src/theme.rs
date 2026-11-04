@@ -3,6 +3,8 @@
 //! This is the **only** module of the UI allowed to deal with concrete
 //! colors (`cargo xtask check-colors`); views ask for semantic tokens.
 
+use std::collections::HashSet;
+
 use archipel_app::dashboard::Tone;
 use archipel_theme::{Color, ColorToken, Theme, ThemeRegistry, builtin};
 use gpui_kit::{App, Global, Hsla, Pixels, Rgba, px};
@@ -13,26 +15,83 @@ pub struct UiTheme {
     pub registry: ThemeRegistry,
     /// The active theme.
     pub theme: Theme,
+    /// Font families installed on this system (lowercase).
+    installed: HashSet<String>,
+    /// UI font actually used (the theme's, or the platform fallback).
+    ui_family: String,
+    /// Monospace font actually used.
+    mono_family: String,
 }
 
 impl Global for UiTheme {}
 
+/// UI fonts tried, in order, when the theme's font is not installed.
+const UI_FALLBACKS: &[&str] = &[
+    "Segoe UI",
+    ".SystemUIFont",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Ubuntu",
+    "Cantarell",
+];
+/// Monospace fonts tried when the theme's font is not installed.
+const MONO_FALLBACKS: &[&str] = &[
+    "Cascadia Mono",
+    "Consolas",
+    "Menlo",
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+    "Ubuntu Mono",
+];
+
 impl UiTheme {
     /// Loads user themes from `dir` and activates `id` (default theme when unknown).
-    pub fn load(dir: &std::path::Path, id: &str) -> Self {
+    ///
+    /// A font family that is not installed makes the text system search for
+    /// a fallback on every new text run, which cost ~200 ms on the first
+    /// frame (ADR 0001): fonts are resolved once here instead.
+    pub fn load(dir: &std::path::Path, id: &str, cx: &App) -> Self {
         let mut registry = ThemeRegistry::new();
         if let Err(e) = registry.load_dir(dir) {
             tracing::warn!(error = %e, "cannot load user themes");
         }
         let theme = registry.get(id).cloned().unwrap_or_else(builtin::dark);
-        Self { registry, theme }
+        let installed = cx
+            .text_system()
+            .all_font_names()
+            .into_iter()
+            .map(|n| n.to_lowercase())
+            .collect();
+        let mut ui = Self {
+            registry,
+            theme,
+            installed,
+            ui_family: String::new(),
+            mono_family: String::new(),
+        };
+        ui.resolve_fonts();
+        ui
     }
 
     /// Activates another theme (live: every view re-renders).
     pub fn set(&mut self, id: &str) {
         if let Some(t) = self.registry.get(id) {
             self.theme = t.clone();
+            self.resolve_fonts();
         }
+    }
+
+    fn resolve_fonts(&mut self) {
+        self.ui_family = self.pick(&self.theme.typography.ui_font, UI_FALLBACKS);
+        self.mono_family = self.pick(&self.theme.typography.mono_font, MONO_FALLBACKS);
+    }
+
+    fn pick(&self, wanted: &str, fallbacks: &[&str]) -> String {
+        std::iter::once(wanted)
+            .chain(fallbacks.iter().copied())
+            .find(|f| self.installed.contains(&f.to_lowercase()))
+            .unwrap_or(wanted)
+            .to_owned()
     }
 }
 
@@ -84,14 +143,14 @@ pub fn radius(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.radius)
 }
 
-/// UI font family.
+/// UI font family (installed).
 pub fn ui_font(cx: &App) -> String {
-    cx.global::<UiTheme>().theme.typography.ui_font.clone()
+    cx.global::<UiTheme>().ui_family.clone()
 }
 
-/// Monospace font family.
+/// Monospace font family (installed).
 pub fn mono_font(cx: &App) -> String {
-    cx.global::<UiTheme>().theme.typography.mono_font.clone()
+    cx.global::<UiTheme>().mono_family.clone()
 }
 
 /// Base text size.

@@ -31,19 +31,31 @@ misses a criterion, and a WebView2 alone is documented at 80–150 MB.
 
 ## Full application (release build)
 
-`archipel.exe` with a 20-repo project open (Windows 11, warm runs):
+`archipel.exe` with a 20-repo project open (Windows 11, warm runs, medians
+of 9 launches with `tools/bench-startup.ps1`):
 
 | Measurement | Value | Spec target |
 |---|---:|---|
-| Idle RSS, sampled every 5 s for 30 s | 111 MiB, flat | < 150 MB, no growth |
-| Process start → window shown | ~1.1 s (1.9 s first ever launch) | < 1 s |
-| of which: project painted from cached summaries | 2 ms | |
-| bare GPUI spike, same measurement | 1.0–1.3 s | |
+| Idle RSS, sampled every 5 s for 30 s | 75 MiB, flat | < 150 MB, no growth |
+| Process launch → first frame (dashboard painted) | 360–390 ms | < 1 s |
+| First launch after a new build (antivirus scan) | ~1.1 s | |
 
-The start time is GPUI's window and GPU device initialization on Windows:
-the core adds nothing measurable. It misses the 1 s target by ~10 %.
-Follow-ups: measure with the window created before `compose` finishes
-(show a skeleton, compose on a thread), and on Linux.
+### How startup was brought down
+
+A first measurement (`Start-Process`, then polling for the window handle)
+reported 1.1 s; that method adds ~0.5 s of polling latency. The app now
+prints its own milestones (`ARCHIPEL_STARTUP_TRACE=1`) and the benchmark
+measures launch → first frame from them. Launch → `main` is ~20 ms (a
+trivial executable: ~10 ms), so loading the 35 MB binary and its DLLs is
+not the problem. Then, step by step (median launch → first frame):
+
+| Change | Before | After |
+|---|---:|---|
+| Theme font "Inter" is not installed on Windows: every text run searched for a fallback (first frame ~230 ms). Fonts are now resolved once against installed families, with platform fallbacks (Segoe UI / Consolas…) | 609 ms | 367 ms |
+| `compose` (git version check 84 ms, SQLite, watcher) and reopening the last project run on a thread while GPUI initializes; A/B: sequential 515 ms vs parallel 356–377 ms | 515 ms | ~370 ms |
+
+The font fix also lowered idle RSS from 111 MiB to 75 MiB. What remains is
+GPUI's platform and window creation (~130 ms + ~100 ms).
 
 ## Decision
 

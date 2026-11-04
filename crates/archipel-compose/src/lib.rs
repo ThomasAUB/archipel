@@ -105,6 +105,29 @@ pub struct Composition {
     pub dirs: AppDirs,
     /// Warnings to show (broken settings or keymap file…).
     pub warnings: Vec<String>,
+    /// Duration of each composition step (startup diagnostics).
+    pub timings: Vec<(&'static str, std::time::Duration)>,
+}
+
+/// Records how long each composition step takes.
+struct Steps {
+    last: std::time::Instant,
+    timings: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Steps {
+    fn new() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+            timings: Vec::new(),
+        }
+    }
+
+    fn done(&mut self, step: &'static str) {
+        let now = std::time::Instant::now();
+        self.timings.push((step, now - self.last));
+        self.last = now;
+    }
 }
 
 /// Initializes logging: a daily rolling file in the data directory (level
@@ -142,20 +165,25 @@ pub fn git_ports(settings: &Settings, cli: &Arc<GitCli>) -> GitPorts {
 
 /// Builds the application from the user directories.
 pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
+    let mut steps = Steps::new();
     let mut warnings = Vec::new();
     let (settings, warning) = load_settings(&dirs.settings_file());
     warnings.extend(warning);
+    steps.done("settings");
     let cli_config = CliConfig::from_settings(&settings);
     let version = check_git_version(&cli_config.program, settings.min_git_version)?;
     tracing::info!(%version, "git found");
+    steps.done("git version");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .thread_name("archipel-worker")
         .enable_all()
         .build()
         .map_err(|e| ComposeError::Runtime(e.to_string()))?;
+    steps.done("runtime");
 
     let store = Arc::new(SqliteStore::open(dirs.data.join("archipel.db"))?);
+    steps.done("sqlite");
     let cli = Arc::new(GitCli::new(cli_config));
     let services = Services {
         git: git_ports(&settings, &cli),
@@ -172,6 +200,7 @@ pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
         caches: Arc::new(CacheRegistry::new()),
         cache_dir: dirs.cache.clone(),
     };
+    steps.done("adapters");
 
     let mut ext = Extensions::default();
     if let Ok(text) = std::fs::read_to_string(dirs.keymap_file()) {
@@ -180,11 +209,13 @@ pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
         warnings.extend(keymap_warnings.into_iter().map(|w| w.0));
     }
     let app = App::new(services, settings, ext, runtime.handle().clone());
+    steps.done("app");
     Ok(Composition {
         app,
         runtime,
         dirs,
         warnings,
+        timings: steps.timings,
     })
 }
 

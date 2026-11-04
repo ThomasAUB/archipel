@@ -30,8 +30,8 @@ generated fixtures (20-repo project, 100k-commit history). Windows 11, 16 CPUs:
 | Idle RAM < 150 MB (20-repo project, core) | ~25 MiB |
 | 100k-commit graph, first rows < 500 ms | ~160 ms cold, ~7 ms cached |
 | RAM flat while scrolling the whole history | +7 MiB (bounded by the LRU budget) |
-| Desktop app idle, 20-repo project (release) | 111 MiB, flat |
-| Desktop app start → window | ~1.1 s (GPUI init; target 1 s) |
+| Desktop app idle, 20-repo project (release) | 75 MiB, flat |
+| Desktop app launch → first frame < 1 s | ~380 ms (`tools/bench-startup.ps1`) |
 
 ## Workspace
 

@@ -99,15 +99,8 @@ impl Workspace {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         Self::pump_events(&core, cx);
-        let recent = core
-            .projects()
-            .ok()
-            .and_then(|p| p.into_iter().find(|e| e.last_opened.is_some()));
-        if let Some(entry) = recent {
-            if let Err(e) = core.open_project(&entry.id) {
-                tracing::warn!(error = %e, "cannot reopen the last project");
-            }
-        }
+        crate::startup::mark("workspace built");
+        window.on_next_frame(|_, _| crate::startup::mark("first frame"));
         window.on_window_should_close(cx, |_, cx| {
             cx.quit();
             true
