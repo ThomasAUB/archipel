@@ -91,6 +91,8 @@ pub struct Services {
     pub journal: Arc<dyn archipel_model::ports::JournalStore>,
     /// File watching.
     pub watcher: Arc<dyn ChangeSource>,
+    /// Commit and working copy diffs.
+    pub diffs: Arc<dyn archipel_model::ports::DiffReader>,
     /// Per-commit churn for statistics.
     pub churn: Arc<dyn archipel_model::ports::ChurnReader>,
     /// Statistics storage.
@@ -304,6 +306,12 @@ impl App {
             refs: self.services.git.refs.clone(),
             history: self.services.git.history.clone(),
         }
+    }
+
+    /// Diff reads (run them off the UI thread).
+    #[must_use]
+    pub fn diff_reader(&self) -> Arc<dyn archipel_model::ports::DiffReader> {
+        self.services.diffs.clone()
     }
 
     /// Memory used by every named cache (diagnostics).

@@ -59,6 +59,7 @@ fn env() -> Env {
         ui_state: store.clone(),
         journal: store.clone(),
         watcher: watcher.clone(),
+        diffs: git.clone(),
         churn: git.clone(),
         stats: store.clone(),
         caches: Arc::new(archipel_cache::CacheRegistry::new()),

@@ -166,6 +166,7 @@ pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
         ui_state: store.clone(),
         journal: store.clone(),
         watcher: Arc::new(NotifyChangeSource::from_settings(&settings)?),
+        diffs: cli.clone(),
         churn: cli,
         stats: store,
         caches: Arc::new(CacheRegistry::new()),
