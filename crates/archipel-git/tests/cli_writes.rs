@@ -152,6 +152,19 @@ fn partial_staging_with_patches() {
 }
 
 #[test]
+fn untracked_file_diff() {
+    let (repo, path, cli) = setup();
+    repo.write("new.txt", "hello\nworld\n").unwrap();
+    let diff = cli
+        .worktree_diff(&path, DiffSide::Unstaged, Some("new.txt"))
+        .unwrap();
+    assert_eq!(diff.len(), 1);
+    assert_eq!(diff[0].kind, ChangeKind::Added);
+    assert_eq!(diff[0].display_path(), "new.txt");
+    assert_eq!(diff[0].line_stats(), (2, 0));
+}
+
+#[test]
 fn branches_and_checkout() {
     let (repo, path, cli) = setup();
     cli.create_branch(&path, "feature", None).unwrap();

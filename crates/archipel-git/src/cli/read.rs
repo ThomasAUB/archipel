@@ -428,6 +428,42 @@ impl DiffReader for GitCli {
             cmd = cmd.arg("--").arg(path);
         }
         let out = self.runner.run(cmd)?;
+        let files = parse_unified_diff(&String::from_utf8_lossy(&out.stdout), self.max_diff_bytes);
+        match path {
+            // `git diff` ignores untracked files: show them as added.
+            Some(path) if files.is_empty() && side == DiffSide::Unstaged => {
+                self.untracked_diff(repo, path)
+            }
+            _ => Ok(files),
+        }
+    }
+}
+
+impl GitCli {
+    /// Diff of untracked file `path` against nothing (empty if it is not untracked).
+    fn untracked_diff(&self, repo: &RepoPath, path: &str) -> Result<Vec<FileDiff>, GitError> {
+        let listed = self.runner.run(Cmd::new(
+            repo.as_path(),
+            CmdKind::Read,
+            &[
+                "ls-files",
+                "-z",
+                "--others",
+                "--exclude-standard",
+                "--",
+                path,
+            ],
+        ))?;
+        if listed.stdout.is_empty() {
+            return Ok(Vec::new());
+        }
+        // `--no-index` exits with 1 when the files differ.
+        let out = self.runner.run(
+            Cmd::new(repo.as_path(), CmdKind::Read, &["diff", "--no-index"])
+                .args(DIFF_ARGS)
+                .args(["--", "/dev/null", path])
+                .ok_codes(&[0, 1]),
+        )?;
         Ok(parse_unified_diff(
             &String::from_utf8_lossy(&out.stdout),
             self.max_diff_bytes,
