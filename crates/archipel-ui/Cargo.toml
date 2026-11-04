@@ -23,6 +23,9 @@ memory-stats = "1"
 tokio.workspace = true
 tracing.workspace = true
 
+[build-dependencies]
+embed-resource = "3"
+
 [dev-dependencies]
 tempfile.workspace = true
 

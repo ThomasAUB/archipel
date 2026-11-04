@@ -1,0 +1,2 @@
+// Windows resources for the archipel binary. GPUI loads icon resource 1 as the window and taskbar icon.
+1 ICON "../../assets/logo/archipel.ico"

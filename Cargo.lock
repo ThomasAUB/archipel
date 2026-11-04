@@ -437,6 +437,7 @@ dependencies = [
  "archipel-model",
  "archipel-ops",
  "archipel-theme",
+ "embed-resource",
  "gpui-kit",
  "memory-stats",
  "tempfile",

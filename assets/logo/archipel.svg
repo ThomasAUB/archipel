@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Archipel: an "A" drawn as a git graph. Two lanes branch from one commit, a merge forms the crossbar. -->
+  <rect width="128" height="128" rx="28" fill="#12202E"/>
+  <g fill="none" stroke-linecap="round">
+    <path d="M64 26 L32 102" stroke="#4FC3F7" stroke-width="12"/>
+    <path d="M64 26 C76 50 92 76 96 102" stroke="#F6AD55" stroke-width="12"/>
+    <path d="M45 72 C58 64 72 64 86 72" stroke="#7EE0B5" stroke-width="10"/>
+  </g>
+  <circle cx="64" cy="26" r="13" fill="#E8EEF4"/>
+  <circle cx="32" cy="102" r="12" fill="#4FC3F7"/>
+  <circle cx="96" cy="102" r="12" fill="#F6AD55"/>
+</svg>

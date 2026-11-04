@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Archipel, hinted for 16-32 px: heavier strokes, straight crossbar, less margin. -->
+  <rect width="32" height="32" rx="7" fill="#12202E"/>
+  <g fill="none" stroke-linecap="round">
+    <path d="M16 6.5 L7.5 25" stroke="#4FC3F7" stroke-width="3.6"/>
+    <path d="M16 6.5 C19 12 23 18 24.5 25" stroke="#F6AD55" stroke-width="3.6"/>
+    <path d="M11 18.5 L21.5 18.5" stroke="#7EE0B5" stroke-width="3.2"/>
+  </g>
+  <circle cx="16" cy="6.5" r="3.6" fill="#E8EEF4"/>
+  <circle cx="7.5" cy="25" r="3.4" fill="#4FC3F7"/>
+  <circle cx="24.5" cy="25" r="3.4" fill="#F6AD55"/>
+</svg>
