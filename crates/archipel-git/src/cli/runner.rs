@@ -111,6 +111,7 @@ pub(crate) struct Runner {
     pub local_timeout: Duration,
     pub network_timeout: Duration,
     pub askpass: Option<PathBuf>,
+    pub credential_helper: Option<String>,
 }
 
 impl Runner {
@@ -125,6 +126,11 @@ impl Runner {
             .args(["-c", "color.ui=false", "-c", "core.quotepath=false"]);
         if cmd.kind == CmdKind::Read {
             c.arg("--no-optional-locks");
+        }
+        // `-c` entries come after every config file: git asks the user's
+        // helpers first.
+        if let Some(helper) = &self.credential_helper {
+            c.arg("-c").arg(format!("credential.helper={helper}"));
         }
         if let Some(askpass) = &self.askpass {
             c.env("GIT_ASKPASS", askpass)

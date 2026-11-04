@@ -14,6 +14,8 @@
 //!   transport: no network.
 //! * Credentials: [`KeychainCredentials`] (OS keychain, `CredentialStore`)
 //!   and [`FileAccountStore`] (non-secret account list, `ForgeAccountStore`).
+//! * [`git_credential`]: the same tokens served to `git` as a credential
+//!   helper, for HTTPS fetch and push.
 //!
 //! Dependencies: `archipel-model` only. Calls are blocking; callers run them
 //! on the scheduler's network pool.
@@ -23,6 +25,7 @@
 
 pub mod client;
 pub mod credentials;
+pub mod git_credential;
 pub mod github;
 pub mod gitlab;
 pub mod http;

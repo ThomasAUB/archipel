@@ -12,6 +12,10 @@
 //! "Launch from a directory"); without it, the last project reopens. When
 //! Archipel is already running, the request goes to that process, which
 //! opens a new window ([`instance`]); `--standalone` skips that hand-off.
+//!
+//! `archipel git-credential <op>` is not for people: the core hands it to
+//! `git` as a credential helper serving the forge tokens to HTTPS fetch and
+//! push. It answers on stdout and exits, before any window or hand-off.
 
 // Render functions are declarative element trees: splitting them by line
 // count hurts readability more than it helps.
@@ -34,7 +38,7 @@ mod workspace;
 
 use std::path::PathBuf;
 
-use archipel_compose::{AppDirs, ComposeError, Composition};
+use archipel_compose::{AppDirs, ComposeError, ComposeOptions, Composition};
 use gpui_kit::{App, Global, KeyBinding};
 
 /// Keeps the core's async runtime alive for the lifetime of the GPUI app.
@@ -80,7 +84,12 @@ fn compose_and_open(
     dirs: AppDirs,
     dir: Option<PathBuf>,
 ) -> Result<(Composition, Vec<String>), ComposeError> {
-    let composition = archipel_compose::compose(dirs)?;
+    let options = ComposeOptions {
+        credential_helper: std::env::current_exe()
+            .ok()
+            .map(|exe| archipel_compose::credential_helper_command(&exe)),
+    };
+    let composition = archipel_compose::compose_with(dirs, options)?;
     for (step, d) in &composition.timings {
         startup::mark(&format!(
             "compose/{step} (+{:.1} ms)",
@@ -112,7 +121,37 @@ fn compose_and_open(
     Ok((composition, notices))
 }
 
+/// Runs as git's credential helper (`git-credential <op>`, request on
+/// stdin). Failures stay silent on stdout: git then asks its next helper.
+fn git_credential(op: &str) -> i32 {
+    use std::io::{Read, Write};
+    let mut input = String::new();
+    if std::io::stdin().read_to_string(&mut input).is_err() {
+        return 1;
+    }
+    let answer = AppDirs::resolve()
+        .map_err(|e| e.to_string())
+        .and_then(|dirs| {
+            archipel_compose::git_credential(&dirs, op, &input).map_err(|e| e.to_string())
+        });
+    match answer {
+        Ok(text) => {
+            let _ = std::io::stdout().write_all(text.as_bytes());
+            0
+        }
+        Err(e) => {
+            eprintln!("archipel git-credential: {e}");
+            1
+        }
+    }
+}
+
 fn main() {
+    let mut raw = std::env::args().skip(1);
+    if raw.next().as_deref() == Some("git-credential") {
+        let op = raw.next().unwrap_or_default();
+        std::process::exit(git_credential(&op));
+    }
     startup::begin();
     let args = match parse_args() {
         Ok(a) => a,

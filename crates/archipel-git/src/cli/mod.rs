@@ -23,6 +23,9 @@ pub struct CliConfig {
     pub network_timeout: Duration,
     /// Askpass helper forwarding credential prompts to the UI.
     pub askpass: Option<PathBuf>,
+    /// Credential helper consulted after the user's own ones (a
+    /// `credential.helper` value: the app serving its forge tokens).
+    pub credential_helper: Option<String>,
     /// Diffs above this size per file are truncated.
     pub max_diff_bytes: usize,
 }
@@ -36,6 +39,7 @@ impl CliConfig {
             local_timeout: Duration::from_secs(settings.local_timeout_secs),
             network_timeout: Duration::from_secs(settings.network_timeout_secs),
             askpass: None,
+            credential_helper: None,
             max_diff_bytes: settings.max_diff_bytes,
         }
     }
@@ -51,7 +55,8 @@ impl Default for CliConfig {
 ///
 /// Credential prompts never block: `GIT_TERMINAL_PROMPT=0` is always set, and
 /// the optional askpass helper receives prompts instead. The user's config
-/// (hooks, signing, credential helpers, LFS) is never overridden.
+/// (hooks, signing, credential helpers, LFS) is never overridden: the
+/// optional app credential helper is only appended after the user's ones.
 #[derive(Clone, Debug)]
 pub struct GitCli {
     runner: Runner,
@@ -68,6 +73,7 @@ impl GitCli {
                 local_timeout: config.local_timeout,
                 network_timeout: config.network_timeout,
                 askpass: config.askpass,
+                credential_helper: config.credential_helper,
             },
             max_diff_bytes: config.max_diff_bytes,
         }

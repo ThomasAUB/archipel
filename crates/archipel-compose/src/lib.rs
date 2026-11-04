@@ -15,8 +15,11 @@ use archipel_app::forge::ForgePorts;
 use archipel_app::settings::load_settings;
 use archipel_app::{App, Extensions, Services};
 use archipel_cache::{CacheRegistry, SqliteStore};
-use archipel_forge::{FileAccountStore, ForgeClient, KeychainCredentials, UreqTransport};
+use archipel_forge::{
+    FileAccountStore, ForgeClient, KeychainCredentials, UreqTransport, git_credential,
+};
 use archipel_git::{CliConfig, GitCli, GixReader, check_git_version};
+use archipel_model::ForgeError;
 use archipel_model::ports::{HistoryReader, RefReader, StashReader, StatusReader};
 use archipel_model::settings::{ReadBackend, Settings};
 use archipel_ops::GitPorts;
@@ -128,6 +131,37 @@ pub fn forge_ports(settings: &Settings, dirs: &AppDirs) -> ForgePorts {
     }
 }
 
+/// The `credential.helper` value running `exe git-credential`: git passes
+/// it to its shell, hence the quoting.
+#[must_use]
+pub fn credential_helper_command(exe: &Path) -> String {
+    let path = exe.to_string_lossy();
+    // Git for Windows runs helpers through its MSYS shell.
+    #[cfg(windows)]
+    let path = path.replace('\\', "/");
+    format!("!'{}' git-credential", path.replace('\'', r"'\''"))
+}
+
+/// Answers a git credential helper call (`op` and stdin as git sent them)
+/// with the token of a signed-in forge account
+/// ([`archipel_forge::git_credential`]).
+pub fn git_credential(dirs: &AppDirs, op: &str, input: &str) -> Result<String, ForgeError> {
+    git_credential::answer(
+        op,
+        input,
+        &FileAccountStore::new(dirs.forge_accounts_file()),
+        &KeychainCredentials::new(KEYCHAIN_SERVICE),
+    )
+}
+
+/// Options of [`compose_with`].
+#[derive(Clone, Debug, Default)]
+pub struct ComposeOptions {
+    /// Credential helper handed to every `git` command (see
+    /// [`credential_helper_command`]); only for a binary answering it.
+    pub credential_helper: Option<String>,
+}
+
 /// Everything a binary needs.
 pub struct Composition {
     /// The application.
@@ -198,12 +232,18 @@ pub fn git_ports(settings: &Settings, cli: &Arc<GitCli>) -> GitPorts {
 
 /// Builds the application from the user directories.
 pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
+    compose_with(dirs, ComposeOptions::default())
+}
+
+/// [`compose`] with options.
+pub fn compose_with(dirs: AppDirs, options: ComposeOptions) -> Result<Composition, ComposeError> {
     let mut steps = Steps::new();
     let mut warnings = Vec::new();
     let (settings, warning) = load_settings(&dirs.settings_file());
     warnings.extend(warning);
     steps.done("settings");
-    let cli_config = CliConfig::from_settings(&settings);
+    let mut cli_config = CliConfig::from_settings(&settings);
+    cli_config.credential_helper = options.credential_helper;
     let version = check_git_version(&cli_config.program, settings.min_git_version)?;
     tracing::info!(%version, "git found");
     steps.done("git version");
@@ -267,5 +307,13 @@ mod tests {
         assert!(c.app.projects().unwrap().is_empty());
         assert_eq!(c.warnings.len(), 1);
         assert!(home.path().join("data/archipel.db").exists());
+    }
+
+    #[test]
+    fn credential_helper_command_is_shell_quoted() {
+        assert_eq!(
+            credential_helper_command(Path::new("/opt/it's here/archipel")),
+            r"!'/opt/it'\''s here/archipel' git-credential"
+        );
     }
 }
