@@ -8,7 +8,9 @@ A Git client that is **fast, light on RAM and good-looking**, designed for worki
 
 **A project is a place, not a list.** Each project opens as its own dashboard, shaped to the work it holds: which repos show and how they are grouped, which columns and panels appear, its color, icon and window title. Switching projects should feel like walking into a different room, not re-filtering a repo list. That identity belongs to the project definition (`archipel.toml`), so the team shares it; purely personal view state (collapsed groups, layout) stays private.
 
-**Target user:** a developer juggling N related repos (app + libs + plugins, microservices, a product split across repos, …).
+**Built for the AI coding workflow.** A coding agent works across repo boundaries: in a single run it can change an app, the libs it depends on and their plugins all at once. Single-repo clients make you go through those edits one repo at a time. Archipel shows **all the edits of a run together**: the dashboard (§3) shows which repos changed, the multi-repo commit (§4) lets you review the staged files of every touched repo, and you commit the whole change set in one pass. Reviewing and landing what the agent did across the project is a first-class flow, not a chore repeated per repo.
+
+**Target user:** a developer juggling N related repos (app + libs + plugins, microservices, a product split across repos, …), often with an AI coding agent editing several of them at once.
 
 ## Non-goals (v1)
 
