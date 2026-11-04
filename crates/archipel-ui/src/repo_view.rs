@@ -44,6 +44,48 @@ enum Mode {
     Changes,
 }
 
+/// One fixed-height row of a flattened diff.
+#[derive(Clone, Copy)]
+enum DiffRow {
+    /// File header: file index.
+    File(usize),
+    /// A note in place of the hunks (binary, too large).
+    Note(&'static str),
+    /// Hunk header: file, hunk.
+    Hunk(usize, usize),
+    /// Diff line: file, hunk, line.
+    Line(usize, usize, usize),
+}
+
+/// A diff flattened into rows once, so the view renders only the visible
+/// ones (a diff may hold tens of thousands of lines).
+struct DiffDoc {
+    files: Vec<FileDiff>,
+    rows: Vec<DiffRow>,
+}
+
+impl DiffDoc {
+    fn new(files: Vec<FileDiff>) -> Self {
+        let mut rows = Vec::new();
+        for (f, file) in files.iter().enumerate() {
+            rows.push(DiffRow::File(f));
+            if file.binary {
+                rows.push(DiffRow::Note("Binary file"));
+                continue;
+            }
+            if file.truncated {
+                rows.push(DiffRow::Note("Diff too large to display"));
+                continue;
+            }
+            for (h, hunk) in file.hunks.iter().enumerate() {
+                rows.push(DiffRow::Hunk(f, h));
+                rows.extend((0..hunk.lines.len()).map(|l| DiffRow::Line(f, h, l)));
+            }
+        }
+        Self { files, rows }
+    }
+}
+
 type SharedView = Arc<Mutex<HistoryView>>;
 
 fn lock(v: &SharedView) -> std::sync::MutexGuard<'_, HistoryView> {
@@ -63,9 +105,9 @@ pub struct RepoView {
     meta: HashMap<u32, Arc<CommitMeta>>,
     pending: Option<Range<u32>>,
     selected: Option<(u32, Oid)>,
-    details: Option<(Oid, Vec<FileDiff>)>,
+    details: Option<(Oid, Arc<DiffDoc>)>,
     changes: Vec<FileChange>,
-    file_diff: Option<(String, DiffSide, Vec<FileDiff>)>,
+    file_diff: Option<(String, DiffSide, Arc<DiffDoc>)>,
     message: Entity<InputState>,
     amend: bool,
     status: Option<String>,
@@ -113,19 +155,46 @@ impl RepoView {
                 .open(&path, &NoProgress, &CancelToken::new())
                 .map_err(|e| e.to_string())?;
             let lanes = graph.max_width();
-            Ok::<_, String>((graph, report.rows, lanes))
+            let completion = graph.completion().filter(|c| !c.is_complete());
+            Ok::<_, String>((graph, report.rows, lanes, completion))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
+            let mut pending = None;
             let _ = this.update(cx, |v, cx| {
                 match result {
-                    Ok((graph, rows, lanes)) => {
-                        v.graph = Some(Arc::new(Mutex::new(graph)));
+                    Ok((graph, rows, lanes, completion)) => {
+                        let graph = Arc::new(Mutex::new(graph));
+                        pending = completion.map(|c| (c, Arc::clone(&graph)));
+                        v.graph = Some(graph);
                         v.row_count = rows;
                         v.lanes = lanes.clamp(1, MAX_LANES_SHOWN);
                         v.meta.clear();
                     }
                     Err(e) => v.graph_error = Some(e),
+                }
+                cx.notify();
+            });
+            // The first rows are shown; the rest of the topology is still
+            // being built. Wait for it without holding the view's lock.
+            let Some((completion, graph)) = pending else {
+                return;
+            };
+            let size = cx
+                .background_executor()
+                .spawn(async move { completion.wait(&NoProgress) })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                if !v.graph.as_ref().is_some_and(|g| Arc::ptr_eq(g, &graph)) {
+                    return; // reloaded meanwhile
+                }
+                match size {
+                    Ok(size) => {
+                        v.row_count = size.rows;
+                        v.lanes = size.max_width.clamp(1, MAX_LANES_SHOWN);
+                    }
+                    Err(e) if e.is_cancelled() => {}
+                    Err(e) => v.graph_error = Some(e.to_string()),
                 }
                 cx.notify();
             });
@@ -190,7 +259,11 @@ impl RepoView {
         self.selected = Some((row, oid));
         let diffs = self.core.diff_reader();
         let path = self.path.clone();
-        let task = cx.background_spawn(async move { diffs.commit_diff(&path, oid) });
+        let task = cx.background_spawn(async move {
+            diffs
+                .commit_diff(&path, oid)
+                .map(|d| Arc::new(DiffDoc::new(d)))
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
@@ -210,7 +283,11 @@ impl RepoView {
         let path = self.path.clone();
         let task = {
             let file = file.clone();
-            cx.background_spawn(async move { diffs.worktree_diff(&path, side, Some(&file)) })
+            cx.background_spawn(async move {
+                diffs
+                    .worktree_diff(&path, side, Some(&file))
+                    .map(|d| Arc::new(DiffDoc::new(d)))
+            })
         };
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -482,18 +559,28 @@ impl RepoView {
                     .overflow_hidden()
                     .child(lanes),
             )
-            .child(div().flex().gap_1().children(badges))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .children(badges),
+            )
             .child(div().flex_1().min_w(px(0.0)).truncate().child(summary))
             .child(
                 div()
                     .w(px(140.0))
-                    .overflow_hidden()
+                    .flex_none()
+                    .truncate()
                     .text_color(color(cx, T::FgMuted))
                     .child(author),
             )
             .child(
                 div()
                     .w(px(80.0))
+                    .flex_none()
+                    .truncate()
                     .text_xs()
                     .text_color(color(cx, T::FgSubtle))
                     .child(date),
@@ -510,22 +597,16 @@ impl RepoView {
     }
 
     fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some((oid, files)) = &self.details else {
+        let Some((oid, doc)) = &self.details else {
             return div()
                 .p_3()
                 .text_color(color(cx, T::FgMuted))
                 .child("Select a commit")
                 .into_any_element();
         };
+        let (oid, doc) = (*oid, doc.clone());
         let meta = self.selected.and_then(|(r, _)| self.meta.get(&r).cloned());
-        let mut el = div()
-            .id("details")
-            .flex_1()
-            .overflow_y_scroll()
-            .p_2()
-            .flex()
-            .flex_col()
-            .gap_1();
+        let mut el = div().p_2().flex().flex_col().gap_1();
         if let Some(m) = meta {
             el = el
                 .child(
@@ -547,10 +628,19 @@ impl RepoView {
                 .text_color(color(cx, T::FgSubtle))
                 .child(oid.to_hex()),
         );
-        for file in files {
-            el = el.child(render_file_diff(file, None, cx));
-        }
-        el.into_any_element()
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(el)
+            .child(diff_list(
+                SharedString::from(format!("details-{}", oid.to_hex())),
+                doc,
+                None,
+                cx,
+            ))
+            .into_any_element()
     }
 
     fn render_changes(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -588,8 +678,14 @@ impl RepoView {
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .on_click(cx.listener(move |v, _, _, cx| v.select_file(p1.clone(), side, cx)))
-                .child(div().w(px(14.0)).text_color(color(cx, token)).child(label))
-                .child(div().flex_1().overflow_hidden().child(path))
+                .child(
+                    div()
+                        .w(px(14.0))
+                        .flex_none()
+                        .text_color(color(cx, token))
+                        .child(label),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(path))
                 .when(side == DiffSide::Unstaged, |d| {
                     d.child(
                         button(SharedString::from(format!("discard-{p3}")), "Discard", cx)
@@ -690,13 +786,19 @@ impl RepoView {
                 .text_color(color(cx, T::FgMuted))
                 .child("Select a file")
                 .into_any_element(),
-            Some((_, side, files)) => {
-                let side = *side;
-                let mut el = div().id("file-diff").flex_1().overflow_y_scroll().p_2();
-                for f in files.clone() {
-                    el = el.child(render_file_diff(&f, Some(side), cx));
-                }
-                el.into_any_element()
+            Some((file, side, doc)) => {
+                let side_tag = if *side == DiffSide::Staged { "s" } else { "u" };
+                let id = SharedString::from(format!("file-diff-{side_tag}-{file}"));
+                let (side, doc) = (*side, doc.clone());
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .p_2()
+                    .child(diff_list(id, doc, Some(side), cx))
+                    .into_any_element()
             }
         };
         div()
@@ -763,117 +865,122 @@ fn graph_cell(row: &GraphRow, cx: &App) -> impl IntoElement {
     .size_full()
 }
 
-/// Renders one file diff; with `side`, hunks get a stage / unstage button.
-fn render_file_diff(
-    file: &FileDiff,
+/// A virtualized diff: only the visible rows are built each frame. With
+/// `side`, hunk headers get a stage / unstage button.
+fn diff_list(
+    id: SharedString,
+    doc: Arc<DiffDoc>,
     side: Option<DiffSide>,
     cx: &mut Context<RepoView>,
 ) -> AnyElement {
-    let (added, removed) = file.line_stats();
-    let mut el = div()
+    let count = doc.rows.len();
+    uniform_list(
+        id,
+        count,
+        cx.processor(
+            move |_this: &mut RepoView, range: Range<usize>, _window, cx| {
+                range
+                    .filter_map(|i| doc.rows.get(i).copied())
+                    .map(|row| render_diff_row(&doc, row, side, cx))
+                    .collect()
+            },
+        ),
+    )
+    .flex_1()
+    .into_any_element()
+}
+
+/// Renders one row of a flattened diff (all rows share one height).
+fn render_diff_row(
+    doc: &Arc<DiffDoc>,
+    row: DiffRow,
+    side: Option<DiffSide>,
+    cx: &mut Context<RepoView>,
+) -> AnyElement {
+    let base = div()
+        .w_full()
+        .h(row_height(cx))
         .flex()
-        .flex_col()
-        .mt_2()
-        .rounded(radius(cx))
-        .border_1()
-        .border_color(color(cx, T::BorderSubtle))
-        .child(
-            div()
-                .px_2()
-                .py_1()
+        .items_center()
+        .px_2()
+        .whitespace_nowrap()
+        .overflow_hidden();
+    match row {
+        DiffRow::File(f) => {
+            let file = &doc.files[f];
+            let (added, removed) = file.line_stats();
+            base.justify_between()
                 .bg(color(cx, T::BgPanel))
-                .flex()
-                .justify_between()
-                .child(file.display_path().to_owned())
+                .border_t_1()
+                .border_color(color(cx, T::BorderSubtle))
+                .child(div().truncate().child(file.display_path().to_owned()))
                 .child(
                     div()
+                        .flex_none()
                         .text_xs()
                         .text_color(color(cx, T::FgMuted))
                         .child(format!("+{added} −{removed}")),
-                ),
-        );
-    if file.binary {
-        return el
-            .child(
-                div()
-                    .p_2()
-                    .text_color(color(cx, T::FgMuted))
-                    .child("Binary file"),
-            )
-            .into_any_element();
-    }
-    if file.truncated {
-        return el
-            .child(
-                div()
-                    .p_2()
-                    .text_color(color(cx, T::FgMuted))
-                    .child("Diff too large to display"),
-            )
-            .into_any_element();
-    }
-    for (h, hunk) in file.hunks.iter().enumerate() {
-        let mut header = div()
-            .flex()
-            .justify_between()
-            .px_2()
-            .text_xs()
-            .text_color(color(cx, T::FgSubtle))
-            .child(format!(
-                "@@ -{},{} +{},{} @@ {}",
-                hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, hunk.header
-            ));
-        if let Some(side) = side {
-            let patch = hunk_patch(file, h);
-            let label = if side == DiffSide::Staged {
-                "Unstage hunk"
-            } else {
-                "Stage hunk"
-            };
-            header = header.child(
-                button(
-                    SharedString::from(format!("hunk-{}-{h}", file.display_path())),
-                    label,
-                    cx,
                 )
-                .on_click(cx.listener(move |v, _, _, cx| match patch.clone() {
-                    Ok(p) => {
-                        let direction = if side == DiffSide::Staged {
-                            PatchDirection::Reverse
-                        } else {
-                            PatchDirection::Forward
-                        };
-                        v.run("Stage hunk", cx, move |a, repo| {
-                            a.apply_patch(repo, &p, direction)
-                        });
-                    }
-                    Err(e) => {
-                        v.status = Some(e.to_string());
-                        cx.notify();
-                    }
-                })),
-            );
+                .into_any_element()
         }
-        el = el.child(header);
-        for line in &hunk.lines {
+        DiffRow::Note(note) => base
+            .text_color(color(cx, T::FgMuted))
+            .child(note)
+            .into_any_element(),
+        DiffRow::Hunk(f, h) => {
+            let file = &doc.files[f];
+            let hunk = &file.hunks[h];
+            let mut header = base
+                .justify_between()
+                .text_xs()
+                .text_color(color(cx, T::FgSubtle))
+                .child(format!(
+                    "@@ -{},{} +{},{} @@ {}",
+                    hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, hunk.header
+                ));
+            if let Some(side) = side {
+                let (label, direction) = if side == DiffSide::Staged {
+                    ("Unstage hunk", PatchDirection::Reverse)
+                } else {
+                    ("Stage hunk", PatchDirection::Forward)
+                };
+                let doc = doc.clone();
+                header = header.child(
+                    button(
+                        SharedString::from(format!("hunk-{}-{h}", file.display_path())),
+                        label,
+                        cx,
+                    )
+                    // The patch is built on click, not on every frame.
+                    .on_click(cx.listener(
+                        move |v, _, _, cx| match hunk_patch(&doc.files[f], h) {
+                            Ok(p) => {
+                                v.run(label, cx, move |a, repo| a.apply_patch(repo, &p, direction));
+                            }
+                            Err(e) => {
+                                v.status = Some(e.to_string());
+                                cx.notify();
+                            }
+                        },
+                    )),
+                );
+            }
+            header.into_any_element()
+        }
+        DiffRow::Line(f, h, l) => {
+            let line = &doc.files[f].hunks[h].lines[l];
             let (prefix, bg) = match line.origin {
                 LineOrigin::Added => ("+", Some(color(cx, T::DiffAddBg))),
                 LineOrigin::Removed => ("-", Some(color(cx, T::DiffDelBg))),
                 LineOrigin::Context => (" ", None),
             };
-            let text = format!("{prefix}{}", line.content.trim_end_matches('\r'));
-            el = el.child(
-                div()
-                    .px_2()
-                    .font_family(mono_font(cx))
-                    .text_xs()
-                    .whitespace_nowrap()
-                    .when_some(bg, gpui_kit::Styled::bg)
-                    .child(text),
-            );
+            base.font_family(mono_font(cx))
+                .text_xs()
+                .when_some(bg, gpui_kit::Styled::bg)
+                .child(format!("{prefix}{}", line.content.trim_end_matches('\r')))
+                .into_any_element()
         }
     }
-    el.into_any_element()
 }
 
 impl Render for RepoView {

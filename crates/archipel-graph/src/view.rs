@@ -12,12 +12,13 @@ use archipel_model::history::{CommitMeta, WalkOrder};
 use archipel_model::ports::{HistoryReader, RefReader};
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::settings::Settings;
-use archipel_model::{CancelToken, Oid, Progress, ProgressSink, RepoPath};
+use archipel_model::{CancelToken, Oid, ProgressSink, RepoPath};
 
 use crate::error::GraphError;
-use crate::layout::{Edge, LaneState, ParentLink};
+use crate::layout::{Edge, LaneState, RowLayout};
 use crate::search::{SearchQuery, SearchResult, Searcher};
-use crate::topology::{self, PROGRESS_EVERY_ROWS, TopologyFile, Unusable};
+use crate::stream::{BuildJob, Ready, Stream};
+use crate::topology::{self, TopologyFile, Unusable};
 
 /// Name prefix of the commit metadata caches in the [`CacheRegistry`].
 const META_CACHE_NAME: &str = "commit-meta";
@@ -41,12 +42,19 @@ pub struct GraphOptions {
     pub walk_order: WalkOrder,
     /// Rows whose metadata is loaded per search step.
     pub search_chunk_rows: usize,
+    /// When the topology has to be built, rows laid out while the walk runs:
+    /// `open` returns as soon as they are ready (or the walk ended), and they
+    /// are all the view serves until the build completes.
+    pub stream_rows: usize,
 }
 
 impl GraphOptions {
     /// Default rows per search step: large enough to amortize backend calls,
     /// small enough to react quickly to cancellation.
     pub const DEFAULT_SEARCH_CHUNK_ROWS: usize = 2048;
+    /// Default rows streamed before the build completes: a few screens, so the
+    /// first frame shows early and the user can start scrolling.
+    pub const DEFAULT_STREAM_ROWS: usize = 1024;
 
     /// Options taken from the application settings.
     #[must_use]
@@ -57,6 +65,7 @@ impl GraphOptions {
             meta_cache_bytes: settings.commit_cache_bytes,
             walk_order: WalkOrder::Topological,
             search_chunk_rows: Self::DEFAULT_SEARCH_CHUNK_ROWS,
+            stream_rows: Self::DEFAULT_STREAM_ROWS,
         }
     }
 
@@ -108,10 +117,62 @@ pub enum CacheStatus {
 /// Result of [`HistoryView::open`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenReport {
-    /// Number of rows.
+    /// Rows available now: all of them when `complete`, otherwise the rows
+    /// streamed so far (see [`HistoryView::completion`]).
     pub rows: u32,
     /// What happened to the cache file.
     pub cache: CacheStatus,
+    /// Whether the whole topology is loaded.
+    pub complete: bool,
+}
+
+/// Size of a complete topology.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphSize {
+    /// Number of rows.
+    pub rows: u32,
+    /// Widest row, in columns.
+    pub max_width: u32,
+}
+
+/// Waits for the topology of an open view to be complete, without holding
+/// the view (it can be locked by other readers meanwhile).
+#[derive(Clone, Debug)]
+pub struct Completion(CompletionInner);
+
+#[derive(Clone, Debug)]
+enum CompletionInner {
+    Done(GraphSize),
+    Building(Arc<Stream>),
+}
+
+impl Completion {
+    /// Blocks until the topology is complete, relaying the build progress.
+    /// Fails with the build error, or with [`GitError::Cancelled`] when the
+    /// view was unloaded first.
+    ///
+    /// [`GitError::Cancelled`]: archipel_model::GitError::Cancelled
+    pub fn wait(&self, progress: &dyn ProgressSink) -> Result<GraphSize, GraphError> {
+        match &self.0 {
+            CompletionInner::Done(size) => Ok(*size),
+            CompletionInner::Building(stream) => {
+                let ready = stream.wait_ready(progress)?;
+                Ok(GraphSize {
+                    rows: ready.file.rows(),
+                    max_width: ready.max_width,
+                })
+            }
+        }
+    }
+
+    /// Whether the topology is complete.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        match &self.0 {
+            CompletionInner::Done(_) => true,
+            CompletionInner::Building(stream) => stream.ready().is_some(),
+        }
+    }
 }
 
 /// Result of [`HistoryView::refresh`].
@@ -153,22 +214,89 @@ impl MemoryUsage {
 
 pub(crate) type MetaCache = SharedLru<Oid, Arc<CommitMeta>>;
 
+/// The topology of an open repository.
+enum Topo {
+    Ready(Ready),
+    /// Being built: the streamed rows are served until it is ready.
+    Streaming(Arc<Stream>),
+}
+
 /// State of an open repository.
 struct Loaded {
     repo: RepoPath,
     key: u64,
-    file: Arc<TopologyFile>,
-    checkpoints: Vec<LaneState>,
-    max_width: u32,
+    topo: Topo,
     tips: Vec<RefTip>,
     badges: HashMap<Oid, Vec<RefTip>>,
     meta: Arc<MetaCache>,
 }
 
+impl Loaded {
+    fn ready(&self) -> Option<&Ready> {
+        match &self.topo {
+            Topo::Ready(r) => Some(r),
+            Topo::Streaming(s) => s.ready(),
+        }
+    }
+
+    /// Rows that can be served now.
+    fn available(&self) -> u32 {
+        match (&self.topo, self.ready()) {
+            (_, Some(r)) => r.file.rows(),
+            (Topo::Streaming(s), None) => s.head_len(),
+            (Topo::Ready(_), None) => 0,
+        }
+    }
+
+    fn wait_ready(&self, progress: &dyn ProgressSink) -> Result<&Ready, GraphError> {
+        match &self.topo {
+            Topo::Ready(r) => Ok(r),
+            Topo::Streaming(s) => s.wait_ready(progress),
+        }
+    }
+
+    fn graph_row(&self, row: u32, oid: Oid, layout: RowLayout) -> GraphRow {
+        GraphRow {
+            row,
+            oid,
+            column: layout.column,
+            color: layout.color,
+            edges: layout.edges,
+            width: layout.width,
+            hidden_parents: layout.hidden_parents,
+            refs: self.badges.get(&oid).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// Object ids of `range` (clamped to the available rows).
+    fn oids(&self, range: Range<u32>) -> Result<Vec<Oid>, GraphError> {
+        let range = clamp(range, self.available());
+        if let Topo::Streaming(s) = &self.topo
+            && let Some(head) = s.head(range.clone())
+        {
+            return Ok(head.into_iter().map(|(_, r)| r.oid).collect());
+        }
+        match self.ready() {
+            Some(r) => r.file.read_oids(clamp(range, r.file.rows())),
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+impl Drop for Loaded {
+    fn drop(&mut self) {
+        if let Topo::Streaming(s) = &self.topo {
+            s.abandon();
+        }
+    }
+}
+
 /// Paged, virtualized history of one repository (PLAN §2.5).
 ///
-/// * `open` loads (or builds) the on-disk topology cache and computes lane
-///   checkpoints in one sequential pass;
+/// * `open` loads the on-disk topology cache and computes lane checkpoints in
+///   one sequential pass; when the cache must be (re)built, the build runs on
+///   a worker thread and `open` returns once the first
+///   [`GraphOptions::stream_rows`] rows are laid out (see [`Self::completion`]);
 /// * `rows` lays out any window by replaying from the nearest checkpoint;
 /// * `meta` loads commit metadata for a window ± overscan through a
 ///   byte-budgeted LRU registered in the [`CacheRegistry`];
@@ -229,19 +357,53 @@ impl HistoryView {
             self.options.meta_cache_bytes,
         );
         let (loaded, cache) = self.load(repo, tips, meta, progress, cancel)?;
-        let rows = loaded.file.rows();
+        let rows = loaded.available();
+        let complete = loaded.ready().is_some();
         self.loaded = Some(loaded);
-        Ok(OpenReport { rows, cache })
+        Ok(OpenReport {
+            rows,
+            cache,
+            complete,
+        })
+    }
+
+    /// A handle to wait for the complete topology (`None` when nothing is open).
+    #[must_use]
+    pub fn completion(&self) -> Option<Completion> {
+        let loaded = self.loaded.as_ref()?;
+        Some(Completion(match (&loaded.topo, loaded.ready()) {
+            (Topo::Streaming(s), None) => CompletionInner::Building(Arc::clone(s)),
+            (_, ready) => CompletionInner::Done(GraphSize {
+                rows: ready.map_or(0, |r| r.file.rows()),
+                max_width: ready.map_or(0, |r| r.max_width),
+            }),
+        }))
+    }
+
+    /// Blocks until the topology is complete; see [`Completion::wait`].
+    pub fn wait_complete(&self, progress: &dyn ProgressSink) -> Result<GraphSize, GraphError> {
+        self.completion().ok_or(GraphError::NotOpen)?.wait(progress)
+    }
+
+    /// Whether the whole topology is loaded (false when nothing is open).
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.loaded.as_ref().is_some_and(|l| l.ready().is_some())
     }
 
     /// Re-reads the refs: rebuilds the topology when the set of tips changed,
     /// otherwise only refreshes the badges. Commit metadata stays cached
-    /// (it is keyed by commit id).
+    /// (it is keyed by commit id). Waits for a build in progress first, and
+    /// returns once the new topology is complete.
     pub fn refresh(
         &mut self,
         progress: &dyn ProgressSink,
         cancel: &CancelToken,
     ) -> Result<RefreshOutcome, GraphError> {
+        self.loaded
+            .as_ref()
+            .ok_or(GraphError::NotOpen)?
+            .wait_ready(progress)?;
         let loaded = self.loaded.as_mut().ok_or(GraphError::NotOpen)?;
         let tips = self.refs.ref_tips(&loaded.repo)?;
         let key = topology::topology_key(&loaded.repo, self.options.walk_order, &tips);
@@ -257,9 +419,10 @@ impl HistoryView {
         let Some(old) = self.loaded.take() else {
             return Err(GraphError::NotOpen);
         };
-        let Loaded { repo, meta, .. } = old;
+        let (repo, meta) = (old.repo.clone(), Arc::clone(&old.meta));
+        drop(old);
         let (loaded, _) = self.load(&repo, tips, meta, progress, cancel)?;
-        let rows = loaded.file.rows();
+        let rows = loaded.wait_ready(progress)?.file.rows();
         self.loaded = Some(loaded);
         Ok(RefreshOutcome::Rebuilt { rows })
     }
@@ -281,86 +444,92 @@ impl HistoryView {
         self.loaded.as_ref().map(|l| &l.repo)
     }
 
-    /// Number of rows (0 when nothing is open).
+    /// Number of rows available (0 when nothing is open): all of them once
+    /// the topology is complete, the streamed rows while it is being built.
     #[must_use]
     pub fn row_count(&self) -> u32 {
-        self.loaded.as_ref().map_or(0, |l| l.file.rows())
+        self.loaded.as_ref().map_or(0, Loaded::available)
     }
 
-    /// Widest row of the whole graph, in columns (for horizontal sizing).
+    /// Widest row of the whole graph, in columns (for horizontal sizing);
+    /// of the streamed rows while the topology is being built.
     #[must_use]
     pub fn max_width(&self) -> u32 {
-        self.loaded.as_ref().map_or(0, |l| l.max_width)
+        let Some(loaded) = &self.loaded else { return 0 };
+        match (&loaded.topo, loaded.ready()) {
+            (_, Some(r)) => r.max_width,
+            (Topo::Streaming(s), None) => s.head_width(),
+            (Topo::Ready(_), None) => 0,
+        }
     }
 
-    /// Lays out rows `range` (clamped to the row count) by replaying from the
-    /// nearest checkpoint at or before `range.start`.
+    /// Lays out rows `range` (clamped to the available rows) by replaying from
+    /// the nearest checkpoint at or before `range.start`.
     pub fn rows(&self, range: Range<u32>) -> Result<Vec<GraphRow>, GraphError> {
         let loaded = self.loaded.as_ref().ok_or(GraphError::NotOpen)?;
-        let range = clamp(range, loaded.file.rows());
+        if let Topo::Streaming(s) = &loaded.topo
+            && let Some(head) = s.head(range.clone())
+        {
+            return Ok(head
+                .into_iter()
+                .map(|(row, r)| loaded.graph_row(row, r.oid, r.layout))
+                .collect());
+        }
+        let Some(ready) = loaded.ready() else {
+            return Ok(Vec::new());
+        };
+        let file = &ready.file;
+        let range = clamp(range, file.rows());
         if range.is_empty() {
             return Ok(Vec::new());
         }
         let interval = self.options.interval();
         let index = range.start / interval;
         let replay_start = index * interval;
-        let mut state = loaded
+        let mut state = ready
             .checkpoints
             .get(usize::try_from(index).unwrap_or(usize::MAX))
             .cloned()
             .unwrap_or_default();
-        let records = loaded.file.read_parent_records(replay_start..range.end)?;
-        let oids = loaded.file.read_oids(range.clone())?;
+        let records = file.read_parent_records(replay_start..range.end)?;
+        let oids = file.read_oids(range.clone())?;
         let mut links = Vec::new();
         let mut out = Vec::with_capacity(oids.len());
         for (row, record) in (replay_start..).zip(records) {
-            loaded.file.decode_parents(row, record, &mut links)?;
+            file.decode_parents(row, record, &mut links)?;
             let layout = state.step(row, &links);
             if row < range.start {
                 continue;
             }
             let oid = oids[usize::try_from(row - range.start).unwrap_or(usize::MAX)];
-            out.push(GraphRow {
-                row,
-                oid,
-                column: layout.column,
-                color: layout.color,
-                edges: layout.edges,
-                width: layout.width,
-                hidden_parents: layout.hidden_parents,
-                refs: loaded.badges.get(&oid).cloned().unwrap_or_default(),
-            });
+            out.push(loaded.graph_row(row, oid, layout));
         }
         Ok(out)
     }
 
-    /// Object ids of rows `range` (clamped).
+    /// Object ids of rows `range` (clamped to the available rows).
     pub fn oids(&self, range: Range<u32>) -> Result<Vec<Oid>, GraphError> {
-        let loaded = self.loaded.as_ref().ok_or(GraphError::NotOpen)?;
-        loaded.file.read_oids(clamp(range, loaded.file.rows()))
+        self.loaded.as_ref().ok_or(GraphError::NotOpen)?.oids(range)
     }
 
-    /// Metadata of rows `range` (clamped), in row order. Rows of the window ±
-    /// overscan missing from the LRU are loaded in one backend call.
+    /// Metadata of rows `range` (clamped to the available rows), in row
+    /// order. Rows of the window ± overscan missing from the LRU are loaded in
+    /// one backend call.
     pub fn meta(&self, range: Range<u32>) -> Result<Vec<Arc<CommitMeta>>, GraphError> {
         let loaded = self.loaded.as_ref().ok_or(GraphError::NotOpen)?;
-        let rows = loaded.file.rows();
+        let rows = loaded.available();
         let range = clamp(range, rows);
         if range.is_empty() {
             return Ok(Vec::new());
         }
-        let oids = loaded.file.read_oids(range.clone())?;
+        let oids = loaded.oids(range.clone())?;
         let mut out: Vec<Option<Arc<CommitMeta>>> =
             oids.iter().map(|oid| loaded.meta.get(oid)).collect();
         if out.iter().any(Option::is_none) {
             // Load every missing row of the window ± overscan in one call.
             let overscan = u32::try_from(self.options.overscan).unwrap_or(u32::MAX);
-            let before = loaded
-                .file
-                .read_oids(range.start.saturating_sub(overscan)..range.start)?;
-            let after = loaded
-                .file
-                .read_oids(range.end..range.end.saturating_add(overscan).min(rows))?;
+            let before = loaded.oids(range.start.saturating_sub(overscan)..range.start)?;
+            let after = loaded.oids(range.end..range.end.saturating_add(overscan).min(rows))?;
             let mut missing: Vec<Oid> = oids
                 .iter()
                 .zip(&out)
@@ -395,12 +564,14 @@ impl HistoryView {
 
     /// A handle to search the open history from another thread. It keeps the
     /// current snapshot alive (its rows stay valid even after a refresh).
+    /// Waits for the topology to be complete.
     pub fn searcher(&self) -> Result<Searcher, GraphError> {
         let loaded = self.loaded.as_ref().ok_or(GraphError::NotOpen)?;
+        let ready = loaded.wait_ready(&archipel_model::NoProgress)?;
         Ok(Searcher::new(
             Arc::clone(&self.history),
             loaded.repo.clone(),
-            Arc::clone(&loaded.file),
+            Arc::clone(&ready.file),
             self.options.search_chunk_rows,
         ))
     }
@@ -425,13 +596,22 @@ impl HistoryView {
         let Some(l) = &self.loaded else {
             return MemoryUsage::default();
         };
+        let (checkpoints, checkpoint_count) = match (&l.topo, l.ready()) {
+            (_, Some(r)) => (
+                r.checkpoints.capacity() * std::mem::size_of::<LaneState>()
+                    + r.checkpoints
+                        .iter()
+                        .map(LaneState::heap_bytes)
+                        .sum::<usize>(),
+                r.checkpoints.len(),
+            ),
+            // The streamed rows stand in for the checkpoints while building.
+            (Topo::Streaming(s), None) => (s.head_bytes(), 0),
+            (Topo::Ready(_), None) => (0, 0),
+        };
         MemoryUsage {
-            checkpoints: l.checkpoints.capacity() * std::mem::size_of::<LaneState>()
-                + l.checkpoints
-                    .iter()
-                    .map(LaneState::heap_bytes)
-                    .sum::<usize>(),
-            checkpoint_count: l.checkpoints.len(),
+            checkpoints,
+            checkpoint_count,
             badges: badges_bytes(&l.badges, &l.tips),
             meta_cache: l.meta.bytes(),
             meta_budget: self.options.meta_cache_bytes,
@@ -448,13 +628,25 @@ impl HistoryView {
     ) -> Result<(Loaded, CacheStatus), GraphError> {
         let key = topology::topology_key(repo, self.options.walk_order, &tips);
         let path = self.cache_path(repo);
+        let interval = self.options.interval();
+        let assemble = move |topo| Loaded {
+            repo: repo.clone(),
+            key,
+            topo,
+            badges: index_badges(&tips),
+            tips,
+            meta,
+        };
         let status = match TopologyFile::open(&path, key)? {
-            Ok(file) => match self.checkpoint(file, progress, cancel) {
-                Ok(layout) => {
-                    return Ok((
-                        Self::assemble(repo, key, tips, meta, layout),
-                        CacheStatus::Reused,
-                    ));
+            Ok(file) => match topology::checkpoints(&file, interval, progress, cancel) {
+                Ok((checkpoints, max_width)) => {
+                    debug_assert_eq!(file.key(), key);
+                    let ready = Ready {
+                        file: Arc::new(file),
+                        checkpoints,
+                        max_width,
+                    };
+                    return Ok((assemble(Topo::Ready(ready)), CacheStatus::Reused));
                 }
                 Err(GraphError::Corrupt { reason, .. }) => {
                     tracing::warn!(path = %path.display(), %reason, "topology cache corrupt, rebuilding");
@@ -469,77 +661,23 @@ impl HistoryView {
                 CacheStatus::BuiltCorrupt(reason)
             }
         };
-        topology::build(
-            &path,
-            self.history.as_ref(),
-            repo,
-            self.options.walk_order,
-            key,
-            progress,
-            cancel,
-        )?;
-        let file = match TopologyFile::open(&path, key)? {
-            Ok(f) => f,
-            Err(why) => {
-                return Err(GraphError::corrupt(
-                    &path,
-                    format!("freshly built cache unusable: {why:?}"),
-                ));
-            }
-        };
-        let layout = self.checkpoint(file, progress, cancel)?;
-        Ok((Self::assemble(repo, key, tips, meta, layout), status))
-    }
-
-    /// One sequential pass over the file: verifies it and saves the lane
-    /// state every `checkpoint_interval` rows.
-    fn checkpoint(
-        &self,
-        file: TopologyFile,
-        progress: &dyn ProgressSink,
-        cancel: &CancelToken,
-    ) -> Result<(TopologyFile, Vec<LaneState>, u32), GraphError> {
-        let interval = self.options.interval();
-        let total = u64::from(file.rows());
-        let mut checkpoints =
-            Vec::with_capacity(usize::try_from(file.rows() / interval + 1).unwrap_or(0));
-        let mut state = LaneState::new();
-        let mut max_width = 0u32;
-        file.scan(cancel, &mut |row, links: &[ParentLink]| {
-            if row % interval == 0 {
-                checkpoints.push(state.clone());
-            }
-            if row % PROGRESS_EVERY_ROWS == 0 {
-                progress.report(Progress {
-                    phase: "Laying out graph".into(),
-                    current: u64::from(row),
-                    total: Some(total),
-                });
-            }
-            max_width = max_width.max(state.advance(row, links));
-        })?;
-        checkpoints.shrink_to_fit();
-        Ok((file, checkpoints, max_width))
-    }
-
-    fn assemble(
-        repo: &RepoPath,
-        key: u64,
-        tips: Vec<RefTip>,
-        meta: Arc<MetaCache>,
-        (file, checkpoints, max_width): (TopologyFile, Vec<LaneState>, u32),
-    ) -> Loaded {
-        debug_assert_eq!(file.key(), key);
-        Loaded {
+        cancel.check()?;
+        let stream = Stream::spawn(BuildJob {
+            path,
+            history: Arc::clone(&self.history),
             repo: repo.clone(),
+            order: self.options.walk_order,
             key,
-            file: Arc::new(file),
-            checkpoints,
-            max_width,
-            badges: index_badges(&tips),
-            tips,
-            meta,
+            checkpoint_interval: interval,
+            head_rows: u32::try_from(self.options.stream_rows.max(1)).unwrap_or(u32::MAX),
+            cancel: cancel.clone(),
+        })?;
+        // On failure, dropping `loaded` stops the worker.
+        let loaded = assemble(Topo::Streaming(stream));
+        if let Topo::Streaming(s) = &loaded.topo {
+            s.wait_first_window(progress)?;
         }
+        Ok((loaded, status))
     }
 
     /// Directory holding the cache files.

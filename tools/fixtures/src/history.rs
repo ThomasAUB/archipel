@@ -37,7 +37,8 @@ impl Default for HistoryShape {
 }
 
 /// Creates a repository at `dir` containing a history of the given shape on
-/// `main`, with a few feature branches left open and some tags.
+/// `main`, with a few feature branches left open and some tags. Like a
+/// repository maintained by `git gc`, it has a commit-graph file.
 pub fn generate_history(dir: &Path, shape: HistoryShape) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     git(dir, &["init", "-q", "-b", "main"])?;
@@ -63,6 +64,7 @@ pub fn generate_history(dir: &Path, shape: HistoryShape) -> Result<()> {
         );
     }
     git(dir, &["reset", "-q", "--hard", "main"])?;
+    git(dir, &["commit-graph", "write", "--reachable"])?;
     Ok(())
 }
 

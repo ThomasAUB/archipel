@@ -142,7 +142,6 @@ fn main() {
         eprintln!("generating 100k-commit history…");
         let big = tmp.path().join("big");
         generate_history(&big, HistoryShape::default()).unwrap();
-        git(&big, &["commit-graph", "write", "--reachable"]).unwrap();
         let big = RepoPath::new(big);
         let readers: [(&str, &dyn HistoryReader); 3] = [
             ("cli", &cli),

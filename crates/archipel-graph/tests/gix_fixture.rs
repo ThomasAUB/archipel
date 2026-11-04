@@ -44,9 +44,12 @@ fn view(cache_dir: &Path, caches: &Arc<CacheRegistry>, options: GraphOptions) ->
 }
 
 fn open(v: &mut HistoryView, repo: &RepoPath) -> CacheStatus {
-    v.open(repo, &NoProgress, &CancelToken::new())
+    let cache = v
+        .open(repo, &NoProgress, &CancelToken::new())
         .unwrap()
-        .cache
+        .cache;
+    v.wait_complete(&NoProgress).unwrap();
+    cache
 }
 
 fn options(interval: usize) -> GraphOptions {

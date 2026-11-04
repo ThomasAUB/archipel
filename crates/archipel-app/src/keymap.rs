@@ -95,6 +95,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl-h", "repos.toggle_hidden"),
     ("ctrl-shift-h", "repos.show_hidden"),
     ("ctrl-shift-t", "view.dependency_tree"),
+    ("ctrl-n", "window.new"),
     ("ctrl-shift-n", "window.new"),
 ];
 

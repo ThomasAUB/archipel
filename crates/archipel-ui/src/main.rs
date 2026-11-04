@@ -16,6 +16,10 @@
 // Render functions are declarative element trees: splitting them by line
 // count hurts readability more than it helps.
 #![allow(clippy::too_many_lines)]
+// Release builds are GUI-subsystem executables on Windows: launching from
+// Explorer opens no console window. Debug builds keep the console so logs
+// and panics stay visible during development.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commit_panel;
 mod forge_panel;
@@ -158,6 +162,7 @@ fn main() {
             let ui_theme =
                 theme::UiTheme::load(&themes_dir, archipel_theme::builtin::DEFAULT_ID, cx);
             cx.set_global(ui_theme);
+            theme::sync_toolkit_theme(cx);
             startup::mark("gpui-kit init + theme");
             let (composition, notices) = match core.map_err(|e| e.to_string()).and_then(|h| {
                 h.join()

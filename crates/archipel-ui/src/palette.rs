@@ -1,5 +1,6 @@
 //! A fuzzy palette (project switcher, action palette) that can also act as a
-//! one-line prompt (branch or tag name).
+//! one-line prompt (branch or tag name), optionally with suggestions
+//! (category name).
 
 use archipel_app::fuzzy;
 use archipel_theme::ColorToken as T;
@@ -39,13 +40,17 @@ pub struct Palette {
     selected: usize,
     /// Prompt mode: Enter confirms the typed text.
     prompt: bool,
+    /// The selection was moved with the arrow keys since the last edit.
+    moved: bool,
     _subscription: Subscription,
 }
 
 impl EventEmitter<PaletteEvent> for Palette {}
 
 impl Palette {
-    /// A palette over `items`; with `prompt`, Enter returns the typed text.
+    /// A palette over `items`; with `prompt`, Enter returns the typed text,
+    /// or an item when it was picked with the arrows, when its label is the
+    /// typed text (case-insensitive) or when nothing is typed.
     pub fn new(
         title: impl Into<SharedString>,
         items: Vec<PaletteItem>,
@@ -66,6 +71,7 @@ impl Palette {
                 |this: &mut Self, _, event: &InputEvent, cx| match event {
                     InputEvent::Change => {
                         this.selected = 0;
+                        this.moved = false;
                         cx.notify();
                     }
                     InputEvent::PressEnter { .. } => this.confirm(cx),
@@ -78,6 +84,7 @@ impl Palette {
             query,
             selected: 0,
             prompt,
+            moved: false,
             _subscription: subscription,
         }
     }
@@ -91,14 +98,24 @@ impl Palette {
     }
 
     fn confirm(&mut self, cx: &mut Context<Self>) {
+        let matches = self.matches(cx);
         if self.prompt {
             let text = self.query.read(cx).value().trim().to_owned();
-            if !text.is_empty() {
+            let item = if self.moved || text.is_empty() {
+                matches.get(self.selected)
+            } else {
+                matches
+                    .iter()
+                    .find(|i| i.label.to_lowercase() == text.to_lowercase())
+            };
+            if let Some(item) = item {
+                cx.emit(PaletteEvent::Confirmed(item.id.clone()));
+            } else if !text.is_empty() {
                 cx.emit(PaletteEvent::Confirmed(text));
             }
             return;
         }
-        if let Some(item) = self.matches(cx).get(self.selected) {
+        if let Some(item) = matches.get(self.selected) {
             cx.emit(PaletteEvent::Confirmed(item.id.clone()));
         }
     }
@@ -106,8 +123,14 @@ impl Palette {
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let count = self.matches(cx).len();
         match event.keystroke.key.as_str() {
-            "down" if count > 0 => self.selected = (self.selected + 1).min(count - 1),
-            "up" => self.selected = self.selected.saturating_sub(1),
+            "down" if count > 0 => {
+                self.selected = (self.selected + 1).min(count - 1);
+                self.moved = true;
+            }
+            "up" => {
+                self.selected = self.selected.saturating_sub(1);
+                self.moved = true;
+            }
             "escape" => cx.emit(PaletteEvent::Dismissed),
             _ => return,
         }

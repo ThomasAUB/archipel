@@ -40,6 +40,13 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - A "show hidden repos" toggle lists them, dimmed, with an "unhide" action.
 - Hiding is a personal choice: stored in the private project state, never in the shared `.gitproject.toml`. Removing a repo from the project stays a separate, explicit action.
 
+**Repo categories — P1**
+
+- Any repo can be given a category (a free-form name: "apps", "libs", "plugins", …), individually or in batch, from the repo context menu or the action palette; picking an existing category or typing a new one, or clearing it.
+- The sidebar groups repos by category under collapsible headers (name + repo count), categories sorted by name, repos keeping project order inside each group; repos without a category come last under "Uncategorized". With no category at all, the sidebar stays a flat list.
+- A category header's context menu renames the category (on every repo using it; an existing name merges into that category) or removes it (its repos become uncategorized, they stay in the project). A category exists only while a repo uses it.
+- Categories describe the project, so they are stored on each repo entry of the project definition (`category = "libs"` in `.gitproject.toml`) and shared with the team. Which groups are collapsed is personal (private project state).
+
 ### 2. Project switching — P0
 - Fast keyboard switcher (`Ctrl+P` style), plus a recent-projects list.
 - Each project keeps its own UI state (selected repo, filters, layout).
@@ -70,7 +77,7 @@ A minimal view, one row per repo:
 | Branch | current branch (or detached HEAD)                  |
 | Sync   | ahead / behind upstream                            |
 | Changes| modified / staged / untracked file counts, stashes |
-| Version| latest tag + `git describe`                        |
+| Version| tag when HEAD is exactly on one, else the branch (short commit if detached) |
 | Fetch  | time of last fetch                                 |
 
 - Live updates through a file watcher (no expensive polling).

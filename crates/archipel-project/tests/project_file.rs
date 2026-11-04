@@ -23,6 +23,7 @@ fn entry(path: PathBuf, alias: Option<&str>) -> RepoEntry {
     RepoEntry {
         path: RepoPath::new(path),
         alias: alias.map(str::to_owned),
+        category: None,
     }
 }
 
@@ -31,7 +32,10 @@ fn sample(root: &Path) -> ProjectDef {
         name: "My product".to_owned(),
         repos: vec![
             entry(root.join("proj").join("app"), None),
-            entry(root.join("shared").join("libfoo"), Some("libfoo")),
+            RepoEntry {
+                category: Some("libs".to_owned()),
+                ..entry(root.join("shared").join("libfoo"), Some("libfoo"))
+            },
             entry(root.join("proj"), Some("root")),
         ],
         settings: ProjectSettings {
@@ -96,6 +100,19 @@ fn saved_paths_are_relative_with_forward_slashes() {
         "{text}"
     );
     assert!(text.contains("[[settings.template]]"), "{text}");
+    assert!(text.contains(r#"category = "libs""#), "{text}");
+    assert_eq!(text.matches("category").count(), 1, "{text}");
+}
+
+#[test]
+fn blank_category_is_no_category() {
+    let (_dir, result) = load_text(
+        "version = 1\nname = \"x\"\n[[repo]]\npath = \"a\"\ncategory = \"  \"\n\
+         [[repo]]\npath = \"b\"\ncategory = \" libs \"\n",
+    );
+    let repos = result.unwrap().repos;
+    assert_eq!(repos[0].category, None);
+    assert_eq!(repos[1].category.as_deref(), Some("libs"));
 }
 
 #[test]

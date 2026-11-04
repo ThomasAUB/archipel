@@ -72,6 +72,7 @@ fn ui_state() -> UiState {
         show_hidden: true,
         show_dependency_tree: true,
         collapsed_nodes: vec!["k".into()],
+        collapsed_categories: vec!["libs".into()],
         accent: Some("#112233".into()),
         icon: Some("🧪".into()),
     }
@@ -92,6 +93,7 @@ fn project_def() -> ProjectDef {
         repos: vec![RepoEntry {
             path: RepoPath::new("/work/a"),
             alias: Some("alpha".into()),
+            category: None,
         }],
         settings: ProjectSettings {
             require_same_branch: true,

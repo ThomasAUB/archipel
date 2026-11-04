@@ -14,7 +14,7 @@ same change in several repos with a clear per-repo report.
 | Area | State |
 |---|---|
 | Core (projects, dashboard, live updates, batch ops, multi-repo commit, undo/redo, graph, stats, themes) | implemented, tested headless |
-| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch, launch from a directory, hidden repos, several windows in one process with per-project color / icon / title, repo dependency tree, forge integration (GitHub / GitLab: pull request column, linked pull requests across repos, clone from an account) |
+| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch, launch from a directory, hidden repos, repo categories (grouped sidebar), several windows in one process with per-project color / icon / title, repo dependency tree, forge integration (GitHub / GitLab: pull request column, linked pull requests across repos, clone from an account) |
 | Packaging (MSI / AppImage) | not yet |
 
 ## Measured budgets
@@ -74,7 +74,7 @@ reopens.
 | `Ctrl+click` | add a repo to the selection (batch actions apply to it) |
 | `Ctrl+H` / `Ctrl+Shift+H` | hide (or unhide) the selected repos / list hidden repos |
 | `Ctrl+Shift+T` | dependency tree (nested submodules) |
-| `Ctrl+Shift+N` | new window |
+| `Ctrl+N` (or `Ctrl+Shift+N`) | new window |
 
 Right-click a repo for its menu. The project color and icon are set from the
 action palette ("Set the project color…", "Set the project icon…"); a team can

@@ -79,6 +79,7 @@ fn env() -> Env {
             .map(|p| RepoEntry {
                 path: p.clone(),
                 alias: None,
+                category: None,
             })
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),

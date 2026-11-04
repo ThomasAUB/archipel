@@ -326,29 +326,54 @@ impl DashboardColumn for VersionColumn {
         "Version"
     }
     fn cell(&self, row: &DashboardRow, _now: Timestamp) -> Cell {
-        match row.summary().and_then(|s| s.describe.clone()) {
-            Some(d) => {
-                // `v1.2.0-3-gabc123`: show the tag, keep the full text as detail.
-                let tag = d
-                    .rsplitn(3, '-')
-                    .nth(2)
-                    .filter(|_| d.contains("-g"))
-                    .unwrap_or(&d)
-                    .to_owned();
-                Cell {
-                    text: tag,
-                    detail: Some(d),
-                    tone: Tone::Normal,
-                }
-            }
-            None => Cell::new("—", Tone::Muted),
-        }
+        row.summary()
+            .map_or_else(|| Cell::new("—", Tone::Muted), version_cell)
     }
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
         row.summary()
-            .and_then(|s| s.describe.clone())
-            .map_or(SortKey::None, SortKey::Text)
+            .map_or(SortKey::None, |s| SortKey::Text(version_cell(s).text))
     }
+}
+
+/// What `HEAD` is "at": the tag when `HEAD` is exactly on one, otherwise the
+/// checked-out branch (or the short commit when detached). The nearest tag of
+/// `git describe` is not used: in a shared library it is often another
+/// product's release tag on an old commit, which reads as a wrong version.
+fn version_cell(s: &RepoSummary) -> Cell {
+    if let Some(tag) = s.describe.as_deref().filter(|d| is_exact_tag(d)) {
+        return Cell {
+            text: tag.to_owned(),
+            detail: Some(format!("tag {tag}")),
+            tone: Tone::Normal,
+        };
+    }
+    match &s.head {
+        HeadState::Branch(b) => Cell {
+            text: b.clone(),
+            detail: Some(format!("branch {b} (not on a tag)")),
+            tone: Tone::Normal,
+        },
+        HeadState::Unborn(b) => Cell::new(b.clone(), Tone::Muted),
+        HeadState::Detached(oid) => Cell {
+            text: oid.short(8),
+            detail: Some("detached, not on a tag".into()),
+            tone: Tone::Muted,
+        },
+    }
+}
+
+/// `git describe --tags` prints `<tag>-<n>-g<hash>` when `HEAD` is past the
+/// tag, and just `<tag>` when `HEAD` is exactly on it.
+fn is_exact_tag(describe: &str) -> bool {
+    let mut parts = describe.rsplitn(3, '-');
+    let past_tag = matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(hash), Some(count), Some(_))
+            if hash.starts_with('g')
+                && !count.is_empty()
+                && count.bytes().all(|b| b.is_ascii_digit())
+    );
+    !past_tag
 }
 
 struct FetchColumn;
@@ -587,12 +612,22 @@ mod tests {
         assert_eq!(cell("sync").text, "↑2 ↓1");
         assert_eq!(cell("sync").tone, Tone::Behind);
         assert_eq!(cell("changes").text, "●1 ✎3");
-        assert_eq!(cell("version").text, "v1.2.0");
+        // Past a tag: the branch, not the nearest tag.
+        assert_eq!(cell("version").text, "main");
         assert_eq!(cell("fetch").text, "2 h ago");
         assert_eq!(
             cell("repo").detail.as_deref(),
             Some(r.path.as_path().display().to_string().as_str())
         );
+    }
+
+    #[test]
+    fn exact_tag_detection() {
+        assert!(is_exact_tag("TAPE_J37"));
+        assert!(is_exact_tag("release-1-2"));
+        assert!(is_exact_tag("my-tag-good"));
+        assert!(!is_exact_tag("TAPE_J37-2-g37b2f70"));
+        assert!(!is_exact_tag("release-1-2-12-gdeadbeef"));
     }
 
     #[test]

@@ -280,6 +280,7 @@ fn presence_of_repositories() {
     let entry = |name: &str| archipel_model::project::RepoEntry {
         path: RepoPath::new(root.join(name)),
         alias: None,
+        category: None,
     };
     let project = ProjectDef {
         name: "p".to_owned(),

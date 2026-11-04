@@ -6,7 +6,8 @@
 use std::collections::HashSet;
 
 use archipel_app::dashboard::Tone;
-use archipel_theme::{Color, ColorToken, Theme, ThemeRegistry, builtin};
+use archipel_theme::{Appearance, Color, ColorToken, Theme, ThemeRegistry, builtin};
+use gpui_kit::component::{Theme as KitTheme, ThemeMode};
 use gpui_kit::{App, Global, Hsla, Pixels, Rgba, px};
 
 /// The active theme, as a GPUI global.
@@ -102,6 +103,114 @@ impl UiTheme {
     }
 }
 
+/// Projects the user's theme onto the gpui-component theme, which colors
+/// the toolkit widgets (text inputs, text areas, scrollbars, the window
+/// surface).
+///
+/// Left alone, that theme stays in its default *light* mode while Archipel
+/// draws with its own (usually dark) tokens: inputs then got a white
+/// background under Archipel's light-gray text, unreadable. Call it once the
+/// [`UiTheme`] global is set and after every theme change. It uses the
+/// user's theme without the window accent: the toolkit theme is global, so
+/// a per-window value would flip at every frame of a multi-window session.
+pub fn sync_toolkit_theme(cx: &mut App) {
+    let ui = cx.global::<UiTheme>();
+    let t = &ui.selected;
+    let c = |token| hsla(t.color(token));
+    let dark = t.appearance() == Appearance::Dark;
+    let ui_family = ui.ui_family.clone();
+    let mono_family = ui.mono_family.clone();
+    let radius = px(t.radius);
+    let (bg_app, bg_panel, bg_elevated, bg_hover, bg_selected) = (
+        c(ColorToken::BgApp),
+        c(ColorToken::BgPanel),
+        c(ColorToken::BgElevated),
+        c(ColorToken::BgHover),
+        c(ColorToken::BgSelected),
+    );
+    let (fg, fg_muted, fg_subtle) = (
+        c(ColorToken::FgDefault),
+        c(ColorToken::FgMuted),
+        c(ColorToken::FgSubtle),
+    );
+    let (accent, accent_hover, accent_fg, accent_subtle) = (
+        c(ColorToken::Accent),
+        c(ColorToken::AccentHover),
+        c(ColorToken::AccentFg),
+        c(ColorToken::AccentSubtle),
+    );
+    let (border, border_subtle, focus) = (
+        c(ColorToken::Border),
+        c(ColorToken::BorderSubtle),
+        c(ColorToken::BorderFocus),
+    );
+    let (error, success, warning) = (
+        c(ColorToken::StatusError),
+        c(ColorToken::StatusSuccess),
+        c(ColorToken::StatusWarning),
+    );
+    if KitTheme::global(cx).is_dark() != dark {
+        KitTheme::change(
+            if dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
+            None,
+            cx,
+        );
+    }
+    KitTheme::update(cx, |k| {
+        k.font_family = ui_family.into();
+        k.mono_font_family = mono_family.into();
+        k.radius = radius;
+        let k = &mut k.colors;
+        k.background = bg_app;
+        k.foreground = fg;
+        k.border = border;
+        k.input = border;
+        k.ring = focus;
+        k.caret = fg;
+        k.selection = accent_subtle;
+        k.muted = bg_panel;
+        k.muted_foreground = fg_subtle;
+        k.popover = bg_elevated;
+        k.popover_foreground = fg;
+        k.accent = bg_hover;
+        k.accent_foreground = fg;
+        k.primary = accent;
+        k.primary_hover = accent_hover;
+        k.primary_active = accent_hover;
+        k.primary_foreground = accent_fg;
+        k.secondary = bg_elevated;
+        k.secondary_hover = bg_hover;
+        k.secondary_active = bg_selected;
+        k.secondary_foreground = fg;
+        k.list = bg_panel;
+        k.list_hover = bg_hover;
+        k.list_active = bg_selected;
+        k.list_active_border = accent;
+        k.scrollbar_thumb = border;
+        k.scrollbar_thumb_hover = fg_muted;
+        k.danger = error;
+        k.success = success;
+        k.warning = warning;
+        k.link = accent;
+        k.link_hover = accent_hover;
+        k.title_bar = bg_panel;
+        k.title_bar_border = border_subtle;
+        k.window_border = border;
+        k.tab_bar = bg_panel;
+        k.tab = bg_panel;
+        k.tab_active = bg_app;
+        k.tab_foreground = fg_muted;
+        k.tab_active_foreground = fg;
+        k.sidebar = bg_panel;
+        k.sidebar_foreground = fg;
+        k.sidebar_border = border_subtle;
+    });
+}
+
 /// Re-derives the theme with the accent of the window about to be drawn
 /// (`None`: the user's theme as is). Cheap when the accent is unchanged.
 pub fn apply_window_accent(cx: &mut App, accent: Option<Color>) {
@@ -142,6 +251,12 @@ fn hsla(c: Color) -> Hsla {
 /// The color of a token in the active theme.
 pub fn color(cx: &App, token: ColorToken) -> Hsla {
     hsla(cx.global::<UiTheme>().theme.color(token))
+}
+
+/// Fill of the "clean" status dot in the sidebar: a fixed green, not derived
+/// from the theme.
+pub fn clean_dot() -> Hsla {
+    hsla(Color::rgb(0x30, 0x98, 0x5e))
 }
 
 /// The color of graph lane `index` (wraps around the palette).

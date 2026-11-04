@@ -66,6 +66,29 @@ impl GraphError {
         }
     }
 
+    /// A copy of this error, for reporting one background failure to several
+    /// waiters (`std::io::Error` is not `Clone`: its kind and message are kept).
+    pub(crate) fn duplicate(&self) -> Self {
+        match self {
+            Self::Git(e) => Self::Git(e.clone()),
+            Self::Io { path, source } => Self::Io {
+                path: path.clone(),
+                source: std::io::Error::new(source.kind(), source.to_string()),
+            },
+            Self::Corrupt { path, reason } => Self::Corrupt {
+                path: path.clone(),
+                reason: reason.clone(),
+            },
+            Self::MixedHashLengths { expected, found } => Self::MixedHashLengths {
+                expected: *expected,
+                found: *found,
+            },
+            Self::TooManyRows { max } => Self::TooManyRows { max: *max },
+            Self::MissingMeta(oid) => Self::MissingMeta(*oid),
+            Self::NotOpen => Self::NotOpen,
+        }
+    }
+
     /// Whether this error means the operation was cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {

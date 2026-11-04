@@ -109,6 +109,7 @@ impl Env {
         let mut v = self.view(options);
         v.open(&self.repo, &NoProgress, &CancelToken::new())
             .unwrap();
+        v.wait_complete(&NoProgress).unwrap();
         v
     }
 }
@@ -170,6 +171,50 @@ fn rows_match_direct_layout_including_octopus() {
     assert_eq!(rows[0].refs[0].name, "refs/heads/main");
     assert!(rows[1].refs.is_empty());
     assert_eq!(view.max_width(), 4);
+}
+
+#[test]
+fn first_window_is_served_while_the_topology_builds() {
+    let parents = random_dag(5000, 9);
+    let env = Env::new(&parents);
+    let expected = reference_layout(&parents);
+    let mut view = env.view(GraphOptions {
+        stream_rows: 100,
+        ..options(64)
+    });
+    let report = view
+        .open(&env.repo, &NoProgress, &CancelToken::new())
+        .unwrap();
+    assert_eq!(report.cache, CacheStatus::BuiltMissing);
+    // Either the first window only, or everything if the build already ended.
+    assert!(report.rows == 100 || (report.complete && report.rows == 5000));
+    let completion = view.completion().unwrap();
+    // The streamed rows are laid out like the finished file lays them out.
+    let first = view.rows(0..100).unwrap();
+    assert_eq!(shape(&first), expected[..100]);
+    assert_eq!(view.meta(0..100).unwrap().len(), 100);
+    assert!(view.rows(0..view.row_count()).unwrap().len() >= 100);
+
+    let size = completion.wait(&NoProgress).unwrap();
+    assert_eq!(size.rows, 5000);
+    assert!(view.is_complete() && completion.is_complete());
+    assert_eq!(view.row_count(), 5000);
+    assert_eq!(size.max_width, view.max_width());
+    assert_eq!(view.rows(0..100).unwrap(), first);
+    assert_eq!(shape(&view.rows(0..5000).unwrap()), expected);
+
+    // Unloading during a build stops it; the next open starts over cleanly.
+    std::fs::remove_file(view.cache_path(&env.repo)).unwrap();
+    view.open(&env.repo, &NoProgress, &CancelToken::new())
+        .unwrap();
+    let pending = view.completion().unwrap();
+    view.unload();
+    match pending.wait(&NoProgress) {
+        Ok(size) => assert_eq!(size.rows, 5000),
+        Err(e) => assert!(e.is_cancelled()),
+    }
+    let view = env.opened(options(64));
+    assert_eq!(shape(&view.rows(0..5000).unwrap()), expected);
 }
 
 #[test]
@@ -509,6 +554,7 @@ fn open_reports_progress_and_honors_cancel() {
     let seen = std::sync::Mutex::new(Vec::new());
     let sink = |p: archipel_model::Progress| seen.lock().unwrap().push(p.phase);
     view.open(&env.repo, &sink, &CancelToken::new()).unwrap();
+    view.wait_complete(&sink).unwrap();
     let phases = seen.into_inner().unwrap();
     assert!(phases.iter().any(|p| p == "Reading history"));
     assert!(phases.iter().any(|p| p == "Laying out graph"));

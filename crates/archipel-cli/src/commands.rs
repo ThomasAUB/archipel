@@ -35,6 +35,7 @@ fn open_target(app: &App, target: &Path) -> Result<ProjectId> {
                 .map(|r| RepoEntry {
                     path: r.path,
                     alias: None,
+                    category: None,
                 })
                 .collect(),
             settings: archipel_model::project::ProjectSettings::default(),
@@ -232,9 +233,11 @@ pub fn graph(dirs: AppDirs, repo: &Path, start: u32, count: u32) -> Result<()> {
     let mut view = c.app.history_view();
     let started = Instant::now();
     let report = view.open(&repo, &NoProgress, &CancelToken::new())?;
+    let first_window = started.elapsed();
+    let size = view.wait_complete(&NoProgress)?;
     eprintln!(
-        "{} commits, cache {:?}, opened in {:?}",
-        report.rows,
+        "{} commits, cache {:?}, first rows in {first_window:?}, complete in {:?}",
+        size.rows,
         report.cache,
         started.elapsed()
     );

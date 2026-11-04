@@ -35,6 +35,7 @@ use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use archipel_model::history::{TopologyNode, WalkOrder};
 use archipel_model::ports::HistoryReader;
@@ -42,7 +43,7 @@ use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::{CancelToken, GitError, Oid, Progress, ProgressSink, RepoPath};
 
 use crate::error::GraphError;
-use crate::layout::ParentLink;
+use crate::layout::{LaneState, ParentLink};
 
 const MAGIC: [u8; 8] = *b"ARCHTOPO";
 /// Version of the file format; bump on any layout change.
@@ -427,24 +428,37 @@ impl Builder {
     }
 }
 
-/// Streams the topology of `repo` into a new cache file at `path`.
+/// Distinguishes the temporary files of builds running at the same time (an
+/// abandoned build may still be finishing while the next one starts).
+static BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// What a build reads and where it writes.
+pub(crate) struct BuildSpec<'a> {
+    pub(crate) path: &'a Path,
+    pub(crate) history: &'a dyn HistoryReader,
+    pub(crate) repo: &'a RepoPath,
+    pub(crate) order: WalkOrder,
+    pub(crate) key: u64,
+}
+
+/// Streams the topology of `repo` into a new cache file at `path`, calling
+/// `observe` with the row index of every commit as soon as it is walked.
 ///
 /// Peak memory is 8 bytes per row (parent fields) plus the walk frontier; it
 /// is released when this function returns.
 pub(crate) fn build(
-    path: &Path,
-    history: &dyn HistoryReader,
-    repo: &RepoPath,
-    order: WalkOrder,
-    key: u64,
+    spec: &BuildSpec<'_>,
     progress: &dyn ProgressSink,
     cancel: &CancelToken,
+    observe: &mut dyn FnMut(u32, &TopologyNode),
 ) -> Result<BuildStats, GraphError> {
+    let path = spec.path;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| GraphError::io(dir, e))?;
     }
-    let tmp = path.with_extension("topo.tmp");
-    let result = build_into(&tmp, history, repo, order, key, progress, cancel).and_then(|stats| {
+    let seq = BUILD_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("topo.{}-{seq}.tmp", std::process::id()));
+    let result = build_into(&tmp, spec, progress, cancel, observe).and_then(|stats| {
         std::fs::rename(&tmp, path).map_err(|e| GraphError::io(path, e))?;
         Ok(stats)
     });
@@ -457,12 +471,10 @@ pub(crate) fn build(
 
 fn build_into(
     tmp: &Path,
-    history: &dyn HistoryReader,
-    repo: &RepoPath,
-    order: WalkOrder,
-    key: u64,
+    spec: &BuildSpec<'_>,
     progress: &dyn ProgressSink,
     cancel: &CancelToken,
+    observe: &mut dyn FnMut(u32, &TopologyNode),
 ) -> Result<BuildStats, GraphError> {
     let file = File::create(tmp).map_err(|e| GraphError::io(tmp, e))?;
     let mut builder = Builder {
@@ -480,14 +492,15 @@ fn build_into(
         .write_all(&[0u8; 64])
         .map_err(|e| GraphError::io(tmp, e))?;
     let mut failure = None;
-    history.walk_topology(
-        repo,
-        order,
+    spec.history.walk_topology(
+        spec.repo,
+        spec.order,
         &mut |node| {
             if let Err(e) = builder.push(&node) {
                 failure = Some(e);
                 return ControlFlow::Break(());
             }
+            observe(builder.rows - 1, &node);
             if builder.rows % PROGRESS_EVERY_ROWS == 0 {
                 if cancel.is_cancelled() {
                     failure = Some(GitError::Cancelled.into());
@@ -506,7 +519,38 @@ fn build_into(
     if let Some(e) = failure {
         return Err(e);
     }
-    builder.finish(key)
+    builder.finish(spec.key)
+}
+
+/// Lane checkpoints of a whole file: one sequential pass that verifies it and
+/// saves the lane state every `interval` rows. Returns the checkpoints and the
+/// widest row.
+pub(crate) fn checkpoints(
+    file: &TopologyFile,
+    interval: u32,
+    progress: &dyn ProgressSink,
+    cancel: &CancelToken,
+) -> Result<(Vec<LaneState>, u32), GraphError> {
+    let interval = interval.max(1);
+    let total = u64::from(file.rows());
+    let mut checkpoints = Vec::with_capacity(to_usize(file.rows() / interval + 1));
+    let mut state = LaneState::new();
+    let mut max_width = 0u32;
+    file.scan(cancel, &mut |row, links: &[ParentLink]| {
+        if row % interval == 0 {
+            checkpoints.push(state.clone());
+        }
+        if row % PROGRESS_EVERY_ROWS == 0 {
+            progress.report(Progress {
+                phase: "Laying out graph".into(),
+                current: u64::from(row),
+                total: Some(total),
+            });
+        }
+        max_width = max_width.max(state.advance(row, links));
+    })?;
+    checkpoints.shrink_to_fit();
+    Ok((checkpoints, max_width))
 }
 
 /// Why an existing cache file cannot be used.

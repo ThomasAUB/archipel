@@ -95,6 +95,7 @@ fn env(extra: &[&str]) -> Env {
             .map(|p| RepoEntry {
                 path: p.clone(),
                 alias: None,
+                category: None,
             })
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),
@@ -199,6 +200,107 @@ fn multi_selection_drives_batch_actions() {
     assert_eq!(e.app.action_context().selected, vec![b]);
     e.app.dispatch(Command::Select(Some(a))).unwrap();
     assert_eq!(e.app.action_context().selected, vec![a]);
+}
+
+#[test]
+fn categories_group_the_sidebar_and_are_saved_in_the_project() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let ids: Vec<_> = e.repos.iter().map(RepoPath::id).collect();
+    let groups = e.app.sidebar_groups();
+    assert_eq!(groups.len(), 1, "no category: flat list");
+    assert_eq!(groups[0].category, None);
+
+    let set = |repos: Vec<_>, c: Option<&str>| {
+        e.app
+            .dispatch(Command::SetCategory(repos, c.map(str::to_owned)))
+            .unwrap();
+    };
+    set(vec![ids[0], ids[2]], Some(" Libs "));
+    set(vec![ids[1]], Some("apps"));
+    // Same name but for case: the existing spelling is reused.
+    set(vec![ids[2]], Some("libs"));
+    let summary = |app: &App| -> Vec<(Option<String>, Vec<String>)> {
+        app.sidebar_groups()
+            .into_iter()
+            .map(|g| (g.category, g.rows.into_iter().map(|r| r.name).collect()))
+            .collect()
+    };
+    assert_eq!(
+        summary(&e.app),
+        [
+            (Some("apps".into()), vec!["r1".to_owned()]),
+            (Some("Libs".into()), vec!["r0".to_owned(), "r2".to_owned()]),
+        ]
+    );
+    assert_eq!(e.app.categories(), ["apps", "Libs"]);
+
+    // Stored in the project definition, so it survives a reopen.
+    let (_, def) = e.app.project().unwrap();
+    assert_eq!(def.repos[0].category.as_deref(), Some("Libs"));
+    open_fresh(&e);
+    assert_eq!(e.app.categories(), ["apps", "Libs"]);
+
+    // Collapsing is personal UI state.
+    e.app
+        .dispatch(Command::ToggleCategory("Libs".into()))
+        .unwrap();
+    let groups = e.app.sidebar_groups();
+    assert!(groups[1].collapsed && !groups[0].collapsed);
+    assert_eq!(e.app.ui_state().unwrap().collapsed_categories, ["Libs"]);
+
+    // Clearing: back under "Uncategorized", listed last.
+    set(vec![ids[1]], None);
+    assert_eq!(
+        summary(&e.app),
+        [
+            (Some("Libs".into()), vec!["r0".to_owned(), "r2".to_owned()]),
+            (None, vec!["r1".to_owned()]),
+        ]
+    );
+    // Hidden repos are not listed.
+    e.app.dispatch(Command::ToggleHidden(vec![ids[1]])).unwrap();
+    assert_eq!(e.app.sidebar_groups().len(), 1);
+}
+
+#[test]
+fn categories_are_renamed_merged_and_removed() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let ids: Vec<_> = e.repos.iter().map(RepoPath::id).collect();
+    let cmd = |c: Command| e.app.dispatch(c).unwrap();
+    let rename = |old: &str, new: Option<&str>| {
+        cmd(Command::RenameCategory(old.into(), new.map(str::to_owned)));
+    };
+    cmd(Command::SetCategory(
+        vec![ids[0], ids[1]],
+        Some("libs".into()),
+    ));
+    cmd(Command::SetCategory(vec![ids[2]], Some("apps".into())));
+    cmd(Command::ToggleCategory("libs".into()));
+
+    // A change of case only is kept; the collapsed state follows.
+    rename("libs", Some("Libs"));
+    assert_eq!(e.app.categories(), ["apps", "Libs"]);
+    assert_eq!(e.app.ui_state().unwrap().collapsed_categories, ["Libs"]);
+
+    // Onto another existing category (any case): merged into it.
+    rename("Libs", Some(" APPS "));
+    assert_eq!(e.app.categories(), ["apps"]);
+    let groups = e.app.sidebar_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].rows.len(), 3);
+    assert_eq!(e.app.ui_state().unwrap().collapsed_categories, ["apps"]);
+
+    // Removed: every repo uncategorized, still in the project; flat list.
+    rename("apps", None);
+    assert!(e.app.categories().is_empty());
+    let (_, def) = e.app.project().unwrap();
+    assert_eq!(def.repos.len(), 3);
+    assert!(def.repos.iter().all(|r| r.category.is_none()));
+    assert!(e.app.ui_state().unwrap().collapsed_categories.is_empty());
+    let groups = e.app.sidebar_groups();
+    assert_eq!((groups.len(), groups[0].category.clone()), (1, None));
 }
 
 #[test]

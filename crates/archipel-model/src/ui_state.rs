@@ -60,6 +60,9 @@ pub struct UiState {
     pub show_dependency_tree: bool,
     /// Collapsed nodes of the dependency tree (absolute paths).
     pub collapsed_nodes: Vec<String>,
+    /// Collapsed category groups of the sidebar (spec §1); the empty name
+    /// is the "Uncategorized" group.
+    pub collapsed_categories: Vec<String>,
     /// Personal project accent color (`#rrggbb`), overriding the team default
     /// and the automatic one (spec §2).
     pub accent: Option<String>,
@@ -105,6 +108,7 @@ impl Default for UiState {
             show_hidden: false,
             show_dependency_tree: false,
             collapsed_nodes: Vec::new(),
+            collapsed_categories: Vec::new(),
             accent: None,
             icon: None,
         }

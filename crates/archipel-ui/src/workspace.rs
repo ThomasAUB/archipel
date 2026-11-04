@@ -24,7 +24,7 @@ use crate::commit_panel::{CommitPanel, CommitPanelEvent};
 use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::repo_view::RepoView;
-use crate::theme::{UiTheme, color, radius, row_height, text_size, tone, ui_font};
+use crate::theme::{UiTheme, clean_dot, color, radius, row_height, text_size, tone, ui_font};
 use crate::widgets::{button, chip, dot, primary_button, section};
 
 gpui_kit::actions!(
@@ -86,6 +86,8 @@ enum PaletteKind {
     Tag,
     Color,
     Icon,
+    Category,
+    RenameCategory,
 }
 
 enum Overlay {
@@ -108,6 +110,12 @@ pub struct Workspace {
     warnings: Vec<String>,
     /// Open repo context menu: repo and mouse position.
     row_menu: Option<(RepoId, Point<Pixels>)>,
+    /// Repos the open category palette applies to.
+    category_targets: Vec<RepoId>,
+    /// Open category header menu: category and mouse position.
+    category_menu: Option<(String, Point<Pixels>)>,
+    /// Category the open rename palette applies to.
+    renaming_category: Option<String>,
     /// Folder scan progress: repos found, still running.
     scan: Option<(usize, bool)>,
     /// Window title last set.
@@ -140,6 +148,9 @@ impl Workspace {
             notice: None,
             warnings,
             row_menu: None,
+            category_targets: Vec::new(),
+            category_menu: None,
+            renaming_category: None,
             scan: None,
             title: String::new(),
         }
@@ -212,6 +223,7 @@ impl Workspace {
             AppEvent::ProjectOpened(_) => {
                 self.repo_views.clear();
                 self.row_menu = None;
+                self.category_menu = None;
                 self.scan = None;
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
@@ -320,7 +332,66 @@ impl Workspace {
                 true,
             ),
             PaletteKind::Icon => ("Project icon or emoji (empty: none)", Vec::new(), true),
+            PaletteKind::RenameCategory => {
+                // A plain prompt: an empty Enter must not pick (merge into)
+                // another category. Typing an existing name merges into it.
+                let old = self.renaming_category.clone().unwrap_or_default();
+                return self.show_palette(
+                    kind,
+                    format!("Rename category “{old}” (an existing name merges into it)"),
+                    Vec::new(),
+                    true,
+                    window,
+                    cx,
+                );
+            }
+            PaletteKind::Category => {
+                let n = self.category_targets.len();
+                let title = if n > 1 {
+                    format!("Category of {n} repos: pick one or type a new name")
+                } else {
+                    "Category: pick one or type a new name".to_owned()
+                };
+                let groups = self.core.sidebar_groups();
+                let count = |c: &str| {
+                    groups
+                        .iter()
+                        .find(|g| g.category.as_deref() == Some(c))
+                        .map_or(0, |g| g.rows.len())
+                };
+                let mut items: Vec<PaletteItem> = self
+                    .core
+                    .categories()
+                    .into_iter()
+                    .map(|c| PaletteItem {
+                        detail: match count(&c) {
+                            1 => "1 repo".to_owned(),
+                            k => format!("{k} repos"),
+                        },
+                        id: c.clone(),
+                        label: c,
+                    })
+                    .collect();
+                items.push(PaletteItem {
+                    id: String::new(),
+                    label: "No category".into(),
+                    detail: "listed under Uncategorized".into(),
+                });
+                return self.show_palette(kind, title, items, true, window, cx);
+            }
         };
+        self.show_palette(kind, title, items, prompt, window, cx);
+    }
+
+    fn show_palette(
+        &mut self,
+        kind: PaletteKind,
+        title: impl Into<SharedString>,
+        items: Vec<PaletteItem>,
+        prompt: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let palette = cx.new(|cx| Palette::new(title, items, prompt, window, cx));
         let sub = cx.subscribe_in(
             &palette,
@@ -366,7 +437,26 @@ impl Workspace {
             PaletteKind::Tag => self.dispatch(Command::CreateTagAll(value, targets), cx),
             PaletteKind::Color => self.dispatch(Command::SetAccent(Some(value)), cx),
             PaletteKind::Icon => self.dispatch(Command::SetIcon(Some(value)), cx),
+            PaletteKind::Category => {
+                let ids = std::mem::take(&mut self.category_targets);
+                let category = Some(value).filter(|v| !v.is_empty());
+                self.dispatch(Command::SetCategory(ids, category), cx);
+            }
+            PaletteKind::RenameCategory => {
+                if let Some(old) = self.renaming_category.take() {
+                    self.dispatch(Command::RenameCategory(old, Some(value)), cx);
+                }
+            }
         }
+    }
+
+    /// Opens the category palette for `targets`.
+    fn set_category(&mut self, targets: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
+        if targets.is_empty() {
+            return;
+        }
+        self.category_targets = targets;
+        self.open_palette(PaletteKind::Category, window, cx);
     }
 
     fn run_action(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -399,6 +489,10 @@ impl Workspace {
             "window.new" => crate::windows::open(cx, None),
             "project.set_color" => self.open_palette(PaletteKind::Color, window, cx),
             "project.set_icon" => self.open_palette(PaletteKind::Icon, window, cx),
+            "repos.set_category" => {
+                let targets = self.core.action_context().selected;
+                self.set_category(targets, window, cx);
+            }
             "forge.accounts" => self.open_forge(ForgeTab::Accounts, window, cx),
             "forge.create_pull_requests" => {
                 let ids = self.selected_or_all();
@@ -487,6 +581,7 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
         cx.global_mut::<UiTheme>().set(&next);
+        crate::theme::sync_toolkit_theme(cx);
         self.notice = Some(format!("Theme: {}", cx.global::<UiTheme>().theme.name));
         window.refresh();
         crate::windows::refresh_all(cx);
@@ -558,6 +653,7 @@ impl Workspace {
                             .map(|r| RepoEntry {
                                 path: r.path,
                                 alias: None,
+                                category: None,
                             })
                             .collect(),
                         settings: ProjectSettings::default(),
@@ -609,7 +705,7 @@ impl Workspace {
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let identity = self.core.identity();
-        let rows = self.core.rows();
+        let groups = self.core.sidebar_groups();
         let selected = self
             .core
             .ui_state()
@@ -617,7 +713,9 @@ impl Workspace {
             .unwrap_or_default();
         let hover = color(cx, T::BgHover);
         let selected_bg = color(cx, T::BgSelected);
-        let repos = rows.into_iter().map(|row| {
+        // Headers only once at least one repo has a category (spec §1).
+        let grouped = groups.len() > 1 || groups.first().is_some_and(|g| g.category.is_some());
+        let repo_row = |row: DashboardRow, cx: &mut Context<Self>| {
             let id = row.id;
             let (token, extra) = match &row.status {
                 RepoStatus::Ready(s) if s.changes.conflicted > 0 || s.in_progress.is_some() => {
@@ -648,6 +746,7 @@ impl Workspace {
                 .items_center()
                 .gap_2()
                 .px_2()
+                .when(grouped, Styled::pl_5)
                 .h(row_height(cx))
                 .rounded(radius(cx))
                 .cursor_pointer()
@@ -663,15 +762,84 @@ impl Workspace {
                         cx.notify();
                     }),
                 )
-                .child(dot(token, cx))
-                .child(div().flex_1().overflow_hidden().child(row.name))
+                .child(dot(if token == T::StatusSuccess {
+                    clean_dot()
+                } else {
+                    color(cx, token)
+                }))
+                .child(div().flex_1().min_w_0().truncate().child(row.name))
                 .child(
                     div()
+                        .flex_none()
+                        .whitespace_nowrap()
                         .text_xs()
                         .text_color(color(cx, T::FgMuted))
                         .child(extra),
                 )
-        });
+                .into_any_element()
+        };
+        let mut repos: Vec<AnyElement> = Vec::new();
+        for (i, group) in groups.into_iter().enumerate() {
+            if grouped {
+                let key = group.key().to_owned();
+                // A collapsed group holding the selection stays noticeable.
+                let holds_selection =
+                    group.collapsed && group.rows.iter().any(|r| selected.contains(&r.id));
+                repos.push(
+                    div()
+                        .id(SharedString::from(format!("side-group-{i}")))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .h(row_height(cx))
+                        .rounded(radius(cx))
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(color(
+                            cx,
+                            if holds_selection {
+                                T::Accent
+                            } else {
+                                T::FgSubtle
+                            },
+                        ))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dispatch(Command::ToggleCategory(key.clone()), cx);
+                        }))
+                        .when_some(group.category.clone(), |d, category| {
+                            d.on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                                    this.category_menu = Some((category.clone(), e.position));
+                                    cx.notify();
+                                }),
+                            )
+                        })
+                        .child(div().w(px(12.0)).flex_none().child(if group.collapsed {
+                            "▸"
+                        } else {
+                            "▾"
+                        }))
+                        .child(
+                            div().flex_1().min_w_0().truncate().child(
+                                group
+                                    .category
+                                    .clone()
+                                    .unwrap_or_else(|| "Uncategorized".into()),
+                            ),
+                        )
+                        .child(div().flex_none().child(group.rows.len().to_string()))
+                        .into_any_element(),
+                );
+            }
+            if !group.collapsed {
+                for row in group.rows {
+                    repos.push(repo_row(row, cx));
+                }
+            }
+        }
         div()
             .w(px(240.0))
             .h_full()
@@ -761,6 +929,8 @@ impl Workspace {
                 .gap_2()
                 .px_3()
                 .h_full()
+                .flex_shrink_0()
+                .whitespace_nowrap()
                 .cursor_pointer()
                 .border_b_2()
                 .border_color(if active {
@@ -784,6 +954,9 @@ impl Workspace {
                         .id(SharedString::from(format!("tab-close-{i}")))
                         .text_color(color(cx, T::FgSubtle))
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            // Stop the click bubbling to the tab itself, whose handler
+                            // would otherwise activate index `i` — now the next tab.
+                            cx.stop_propagation();
                             this.dispatch(Command::CloseTab(i), cx);
                         }))
                         .child("×"),
@@ -960,6 +1133,8 @@ impl Workspace {
                     .id(SharedString::from(format!("col-{id}")))
                     .flex_grow(widths.get(i).copied().unwrap_or(1.0))
                     .flex_basis(px(0.0))
+                    .min_w_0()
+                    .truncate()
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.dispatch(Command::SortBy(id.clone()), cx);
@@ -1251,6 +1426,65 @@ impl Workspace {
         }
     }
 
+    /// Right-click menu of a sidebar category header: rename, remove.
+    fn render_category_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (category, position) = self.category_menu.clone()?;
+        let hover = color(cx, T::BgHover);
+        let rename = category.clone();
+        let menu = div()
+            .occlude()
+            .min_w(px(200.0))
+            .py_1()
+            .flex()
+            .flex_col()
+            .font_family(ui_font(cx))
+            .text_size(text_size(cx))
+            .text_color(color(cx, T::FgDefault))
+            .whitespace_nowrap()
+            .bg(color(cx, T::BgElevated))
+            .border_1()
+            .border_color(color(cx, T::Border))
+            .rounded(radius(cx))
+            .shadow_md()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.category_menu = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("category-menu-rename")
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.category_menu = None;
+                        this.renaming_category = Some(rename.clone());
+                        this.open_palette(PaletteKind::RenameCategory, window, cx);
+                    }))
+                    .child("Rename category…"),
+            )
+            .child(
+                div()
+                    .id("category-menu-remove")
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .text_color(color(cx, T::StatusError))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.category_menu = None;
+                        this.dispatch(Command::RenameCategory(category.clone(), None), cx);
+                    }))
+                    .child("Remove category (repos stay in the project)"),
+            );
+        Some(
+            deferred(anchored().position(position).snap_to_window().child(menu))
+                .with_priority(1)
+                .into_any_element(),
+        )
+    }
+
     fn render_row_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (id, position) = self.row_menu?;
         let ui = self.core.ui_state()?;
@@ -1264,9 +1498,17 @@ impl Workspace {
         let all_hidden = targets.iter().all(|r| ui.is_hidden(*r));
         let n = targets.len();
         let hover = color(cx, T::BgHover);
-        let item = |eid: &'static str, label: String, command: Command, cx: &mut Context<Self>| {
+        let subtle = color(cx, T::FgSubtle);
+        let item = |eid: &'static str,
+                    label: String,
+                    shortcut: Option<&'static str>,
+                    command: Command,
+                    cx: &mut Context<Self>| {
             div()
                 .id(eid)
+                .flex()
+                .justify_between()
+                .gap_6()
                 .px_3()
                 .py_1()
                 .cursor_pointer()
@@ -1276,16 +1518,17 @@ impl Workspace {
                     this.dispatch(command.clone(), cx);
                 }))
                 .child(label)
+                .children(shortcut.map(|k| div().text_color(subtle).child(k)))
         };
         let plural = if n > 1 {
             format!(" {n} repos")
         } else {
             String::new()
         };
-        let hide_label = if all_hidden {
-            format!("Unhide{plural}")
+        let (hide_label, hide_shortcut) = if all_hidden {
+            (format!("Unhide{plural}"), None)
         } else {
-            format!("Hide{plural}    Ctrl+H")
+            (format!("Hide{plural}"), Some("Ctrl+H"))
         };
         let menu = div()
             .occlude()
@@ -1293,7 +1536,10 @@ impl Workspace {
             .py_1()
             .flex()
             .flex_col()
+            .font_family(ui_font(cx))
             .text_size(text_size(cx))
+            .text_color(color(cx, T::FgDefault))
+            .whitespace_nowrap()
             .bg(color(cx, T::BgElevated))
             .border_1()
             .border_color(color(cx, T::Border))
@@ -1306,18 +1552,39 @@ impl Workspace {
             .child(item(
                 "menu-open",
                 "Open".into(),
+                None,
                 Command::OpenRepoTab(id),
                 cx,
             ))
             .child(item(
                 "menu-hide",
                 hide_label,
+                hide_shortcut,
                 Command::ToggleHidden(targets.clone()),
                 cx,
             ))
+            .child({
+                let targets = targets.clone();
+                div()
+                    .id("menu-category")
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.row_menu = None;
+                        this.set_category(targets.clone(), window, cx);
+                    }))
+                    .child(if n > 1 {
+                        format!("Set category of{plural}…")
+                    } else {
+                        "Set category…".to_owned()
+                    })
+            })
             .child(item(
                 "menu-fetch",
                 format!("Fetch{plural}"),
+                None,
                 Command::Fetch(targets.clone()),
                 cx,
             ))
@@ -1373,7 +1640,7 @@ impl Workspace {
 
     fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let text = self.notice.clone().or_else(|| self.warnings.first().cloned()).unwrap_or_else(|| {
-            "Ctrl+P switch project · Ctrl+Shift+P actions · Ctrl+K commit · Ctrl+Z undo · Ctrl+H hide · Ctrl+Shift+N new window".into()
+            "Ctrl+P switch project · Ctrl+Shift+P actions · Ctrl+K commit · Ctrl+Z undo · Ctrl+H hide · Ctrl+N new window".into()
         });
         div()
             .id("status")
@@ -1392,7 +1659,7 @@ impl Workspace {
                 this.notice = None;
                 cx.notify();
             }))
-            .child(text)
+            .child(div().flex_1().min_w_0().truncate().child(text))
     }
 
     fn active_repo_view(
@@ -1430,6 +1697,7 @@ impl Render for Workspace {
             self.title = title;
         }
         let row_menu = self.render_row_menu(cx);
+        let category_menu = self.render_category_menu(cx);
         let content: AnyElement = match self.active_repo_view(window, cx) {
             Some(view) => div()
                 .flex_1()
@@ -1534,6 +1802,7 @@ impl Render for Workspace {
             .child(self.render_status(cx))
             .children(overlay)
             .children(row_menu)
+            .children(category_menu)
     }
 }
 

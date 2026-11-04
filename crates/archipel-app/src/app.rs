@@ -35,6 +35,7 @@ use crate::actions::{ActionContext, ActionRegistry, Command};
 use crate::dashboard::{ColumnRegistry, DashboardRow, FilterRegistry, RepoStatus, visible_rows};
 use crate::deptree::{DependencySource, SubmoduleSource, TreeInput, TreeRow, build_tree};
 use crate::forge::{ForgePorts, ForgeRegistry, ForgeStatus};
+use crate::groups::{RepoGroup, distinct_categories, group_by_category, normalize_category};
 
 mod forge_flow;
 
@@ -814,6 +815,7 @@ impl App {
                     s.def.repos.push(RepoEntry {
                         path: p.clone(),
                         alias: None,
+                        category: None,
                     });
                     s.rows.push(DashboardRow {
                         id: p.id(),
@@ -857,6 +859,121 @@ impl App {
         self.start_watching();
         self.emit(AppEvent::RowsChanged(vec![repo]));
         Ok(())
+    }
+
+    /// Sets (or clears, when `None` or blank) the category of repos and
+    /// saves the project definition (spec §1). A name matching an existing
+    /// category but for case reuses that category's spelling.
+    pub fn set_category(&self, ids: &[RepoId], category: Option<&str>) -> Result<(), AppError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let (location, def) = {
+            let mut guard = lock(&self.session);
+            let s = guard.as_mut().ok_or(AppError::NoProject)?;
+            let category = normalize_category(category).map(|c| {
+                distinct_categories(s.def.repos.iter().map(|r| r.category.as_deref()))
+                    .into_iter()
+                    .find(|existing| existing.to_lowercase() == c.to_lowercase())
+                    .unwrap_or(c)
+            });
+            for entry in s
+                .def
+                .repos
+                .iter_mut()
+                .filter(|r| ids.contains(&r.path.id()))
+            {
+                entry.category.clone_from(&category);
+            }
+            (s.location.clone(), s.def.clone())
+        };
+        self.services.projects.save(&location, &def)?;
+        self.emit(AppEvent::RowsChanged(ids.to_vec()));
+        Ok(())
+    }
+
+    /// Renames a category on every repo using it, or removes it (its repos
+    /// become uncategorized) when `new` is `None` or blank. Renaming onto
+    /// another existing category (any case) merges into it; a change of
+    /// case only is kept as typed. The collapsed state follows the rename.
+    pub fn rename_category(&self, old: &str, new: Option<&str>) -> Result<(), AppError> {
+        let new = normalize_category(new);
+        let (location, def, ids) = {
+            let mut guard = lock(&self.session);
+            let s = guard.as_mut().ok_or(AppError::NoProject)?;
+            let new = new.map(|c| {
+                distinct_categories(s.def.repos.iter().map(|r| r.category.as_deref()))
+                    .into_iter()
+                    .find(|e| e != old && e.to_lowercase() == c.to_lowercase())
+                    .unwrap_or(c)
+            });
+            let mut ids = Vec::new();
+            for entry in s
+                .def
+                .repos
+                .iter_mut()
+                .filter(|r| r.category.as_deref() == Some(old))
+            {
+                entry.category.clone_from(&new);
+                ids.push(entry.path.id());
+            }
+            if ids.is_empty() {
+                return Ok(());
+            }
+            let ui = &mut s.ui;
+            let was_collapsed = ui.collapsed_categories.iter().any(|k| k == old);
+            ui.collapsed_categories.retain(|k| k != old);
+            if let Some(new) = new.filter(|_| was_collapsed) {
+                if !ui.collapsed_categories.contains(&new) {
+                    ui.collapsed_categories.push(new);
+                }
+            }
+            (s.location.clone(), s.def.clone(), ids)
+        };
+        self.services.projects.save(&location, &def)?;
+        self.emit(AppEvent::RowsChanged(ids));
+        self.emit(AppEvent::UiStateChanged);
+        Ok(())
+    }
+
+    /// Collapses or expands a sidebar category group (empty: "Uncategorized").
+    fn toggle_category(&self, key: String) {
+        self.update_ui_state(|ui| {
+            if let Some(i) = ui.collapsed_categories.iter().position(|k| *k == key) {
+                ui.collapsed_categories.remove(i);
+            } else {
+                ui.collapsed_categories.push(key);
+            }
+        });
+    }
+
+    /// Categories of the open project's repos, sorted by name.
+    #[must_use]
+    pub fn categories(&self) -> Vec<String> {
+        lock(&self.session).as_ref().map_or_else(Vec::new, |s| {
+            distinct_categories(s.def.repos.iter().map(|r| r.category.as_deref()))
+        })
+    }
+
+    /// The sidebar: rows that are not hidden, grouped by category (spec §1).
+    #[must_use]
+    pub fn sidebar_groups(&self) -> Vec<RepoGroup> {
+        let guard = lock(&self.session);
+        let Some(s) = guard.as_ref() else {
+            return Vec::new();
+        };
+        let categories: HashMap<RepoId, &str> = s
+            .def
+            .repos
+            .iter()
+            .filter_map(|r| Some((r.path.id(), r.category.as_deref()?)))
+            .collect();
+        let rows = s.rows.iter().filter(|r| !r.hidden).cloned().collect();
+        group_by_category(
+            rows,
+            |id| categories.get(&id).copied(),
+            &s.ui.collapsed_categories,
+        )
     }
 
     // ----- dashboard ------------------------------------------------------
@@ -1328,6 +1445,9 @@ impl App {
             Command::ToggleShowHidden => {
                 self.update_ui_state(|ui| ui.show_hidden = !ui.show_hidden);
             }
+            Command::SetCategory(ids, category) => self.set_category(&ids, category.as_deref())?,
+            Command::ToggleCategory(key) => self.toggle_category(key),
+            Command::RenameCategory(old, new) => self.rename_category(&old, new.as_deref())?,
             Command::CancelScan => {
                 let scan = lock(&self.session).as_ref().and_then(|s| s.scan.clone());
                 if let Some(scan) = scan {

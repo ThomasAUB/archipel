@@ -54,6 +54,13 @@ pub enum Command {
     ToggleHidden(Vec<RepoId>),
     /// List hidden repos (dimmed) in the dashboard, or not.
     ToggleShowHidden,
+    /// Set the category of repos (spec §1); `None` or blank clears it.
+    SetCategory(Vec<RepoId>, Option<String>),
+    /// Collapse or expand a sidebar category group (empty: "Uncategorized").
+    ToggleCategory(String),
+    /// Rename a category on every repo using it; `None` or blank removes
+    /// it (its repos become uncategorized).
+    RenameCategory(String, Option<String>),
     /// Stop the folder scan of a launch from a directory.
     CancelScan,
     /// Add repositories to the open project.
@@ -294,6 +301,11 @@ impl ActionRegistry {
             with_selection,
             |c| Some(Command::ToggleHidden(c.selected.clone())),
         )));
+        r.register(ui(
+            "repos.set_category",
+            "Set the category of selected repos…",
+            with_selection,
+        ));
         r.register(Arc::new(SimpleAction::new(
             "repos.show_hidden",
             "Show / don't show hidden repos",

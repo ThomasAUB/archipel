@@ -10,6 +10,7 @@
 //! [[repo]]
 //! path = "../shared/libfoo"
 //! alias = "libfoo"
+//! category = "libs"     # sidebar group (spec §1)
 //!
 //! [settings]
 //! require_same_branch = true
@@ -61,6 +62,8 @@ struct RepoV1 {
     path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +138,7 @@ pub(crate) fn render(file: &Path, project: &ProjectDef) -> Result<String, Projec
             Ok(RepoV1 {
                 path,
                 alias: entry.alias.clone(),
+                category: entry.category.clone(),
             })
         })
         .collect::<Result<Vec<_>, ProjectError>>()?;
@@ -187,6 +191,10 @@ fn resolve_repos(file: &Path, base: &Path, raw: Vec<RepoV1>) -> Vec<RepoEntry> {
         repos.push(RepoEntry {
             path: RepoPath::new(path),
             alias: repo.alias,
+            category: repo
+                .category
+                .map(|c| c.trim().to_owned())
+                .filter(|c| !c.is_empty()),
         });
     }
     repos

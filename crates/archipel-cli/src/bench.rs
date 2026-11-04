@@ -53,6 +53,58 @@ fn rss_mib() -> f64 {
     memory_stats::memory_stats().map_or(0.0, |m| m.physical_mem as f64 / (1024.0 * 1024.0))
 }
 
+/// Private (anonymous) memory in MiB: the heap and other process-owned
+/// pages, without file-backed mappings such as Git pack files, which count in
+/// the RSS but belong to the OS file cache and are reclaimable.
+#[allow(clippy::cast_precision_loss)] // byte counts far below 2^52
+fn private_mib() -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        // `RssAnon` in kB; `memory_stats` only exposes the total RSS on Linux.
+        let anon_kb = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("RssAnon:"))
+                    .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            });
+        if let Some(kb) = anon_kb {
+            return kb as f64 / 1024.0;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // `virtual_mem` is the private commit (`PagefileUsage`) on Windows.
+        if let Some(m) = memory_stats::memory_stats() {
+            return m.virtual_mem as f64 / (1024.0 * 1024.0);
+        }
+    }
+    rss_mib()
+}
+
+/// Reads every file under `dir` once, so the measures start with a warm OS
+/// file cache (PLAN §5.1) and do not include the first read of files the
+/// fixture generator just wrote (on Windows, the antivirus scans them then).
+fn warm_file_cache(dir: &Path) -> Result<()> {
+    use std::io::Read;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(d) = pending.pop() {
+        for entry in std::fs::read_dir(&d)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                let mut f = std::fs::File::open(entry.path())?;
+                while f.read(&mut buf)? > 0 {}
+            }
+        }
+    }
+    Ok(())
+}
+
 struct Fixtures {
     _temp: Option<tempfile::TempDir>,
     project_repos: Vec<RepoPath>,
@@ -86,9 +138,11 @@ fn fixtures(dir: Option<PathBuf>, quick: bool) -> Result<Fixtures> {
             ..HistoryShape::default()
         };
         eprintln!("generating a {}-commit history…", shape.commits);
+        // The generated history has a commit-graph, like a repo after `git gc`.
         generate_history(&history, shape)?;
-        archipel_fixtures::git(&history, &["commit-graph", "write", "--reachable"])?;
     }
+    warm_file_cache(&project_dir)?;
+    warm_file_cache(&history)?;
     Ok(Fixtures {
         _temp: temp,
         project_repos,
@@ -104,6 +158,7 @@ fn project(name: &str, repos: &[RepoPath]) -> ProjectDef {
             .map(|p| RepoEntry {
                 path: p.clone(),
                 alias: None,
+                category: None,
             })
             .collect(),
         settings: ProjectSettings::default(),
@@ -189,7 +244,7 @@ fn second_session(home: &Path, quick: bool, out: &mut Vec<Measure>) -> Result<Co
 fn graph(session: &Composition, history: &RepoPath, out: &mut Vec<Measure>) -> Result<()> {
     let mut view = session.app.history_view();
     let started = Instant::now();
-    let report = view.open(history, &NoProgress, &CancelToken::new())?;
+    view.open(history, &NoProgress, &CancelToken::new())?;
     let window = view.rows(0..SCREEN)?.len();
     view.meta(0..SCREEN)?;
     out.push(measure(
@@ -201,6 +256,14 @@ fn graph(session: &Composition, history: &RepoPath, out: &mut Vec<Measure>) -> R
     if window == 0 {
         bail!("the graph returned no rows");
     }
+    // The rest of the topology is built in the background.
+    let total = view.wait_complete(&NoProgress)?.rows;
+    out.push(measure(
+        "graph_complete_cold",
+        ms(started.elapsed()),
+        "ms",
+        None,
+    ));
     let started = Instant::now();
     view.open(history, &NoProgress, &CancelToken::new())?;
     view.rows(0..SCREEN)?;
@@ -213,10 +276,11 @@ fn graph(session: &Composition, history: &RepoPath, out: &mut Vec<Measure>) -> R
     ));
 
     let rss_before = rss_mib();
+    let private_before = private_mib();
     let budget_mib = to_mib(session.app.settings().commit_cache_bytes);
     let started = Instant::now();
     let mut worst = Duration::ZERO;
-    for first in (0..report.rows).step_by(SCREEN as usize) {
+    for first in (0..total).step_by(SCREEN as usize) {
         let screen = Instant::now();
         view.rows(first..first + SCREEN)?;
         view.meta(first..first + SCREEN)?;
@@ -234,11 +298,20 @@ fn graph(session: &Composition, history: &RepoPath, out: &mut Vec<Measure>) -> R
         "ms",
         Some(50.0),
     ));
+    // Memory stays flat beyond the metadata LRU budget. Budgeted on private
+    // memory: the RSS also grows by the pages of the memory-mapped pack files
+    // read for the metadata (file cache, reclaimable), reported for information.
+    out.push(measure(
+        "graph_scroll_private_growth",
+        private_mib() - private_before,
+        "MiB",
+        Some(budget_mib + 32.0),
+    ));
     out.push(measure(
         "graph_scroll_rss_growth",
         rss_mib() - rss_before,
         "MiB",
-        Some(budget_mib + 32.0),
+        None,
     ));
     view.unload();
     out.push(measure("rss_after_unload", rss_mib(), "MiB", Some(150.0)));

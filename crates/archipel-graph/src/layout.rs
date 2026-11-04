@@ -229,6 +229,16 @@ impl LaneState {
         }
     }
 
+    /// Renames the target of every lane heading to `from` (used while streaming,
+    /// when a provisional parent id becomes a known row).
+    pub(crate) fn retarget(&mut self, from: u32, to: u32) {
+        for lane in self.lanes.iter_mut().flatten() {
+            if lane.target == from {
+                lane.target = to;
+            }
+        }
+    }
+
     /// First free column at or after `from`, growing the lane vector if needed.
     fn free_slot(&mut self, from: usize) -> usize {
         if let Some(offset) = self.lanes.iter().skip(from).position(Option::is_none) {

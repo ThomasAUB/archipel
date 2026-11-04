@@ -20,6 +20,7 @@
 mod error;
 mod layout;
 mod search;
+mod stream;
 mod topology;
 mod view;
 
@@ -27,5 +28,6 @@ pub use error::GraphError;
 pub use layout::{Edge, EdgeKind, LaneState, ParentLink, RowLayout};
 pub use search::{SearchQuery, SearchResult, Searcher};
 pub use view::{
-    CacheStatus, GraphOptions, GraphRow, HistoryView, MemoryUsage, OpenReport, RefreshOutcome,
+    CacheStatus, Completion, GraphOptions, GraphRow, GraphSize, HistoryView, MemoryUsage,
+    OpenReport, RefreshOutcome,
 };

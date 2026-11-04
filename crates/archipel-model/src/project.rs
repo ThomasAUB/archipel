@@ -13,6 +13,9 @@ pub struct RepoEntry {
     pub path: RepoPath,
     /// Optional display name overriding the folder name.
     pub alias: Option<String>,
+    /// Optional category grouping repos in the sidebar (spec §1).
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 impl RepoEntry {

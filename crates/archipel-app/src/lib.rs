@@ -16,6 +16,7 @@
 //!   through the forge ports of [`forge::ForgePorts`].
 //! * [`deptree`]: the repo dependency tree view-model (spec §9), with the
 //!   [`deptree::DependencySource`] extension point.
+//! * [`groups`]: sidebar grouping of repos by category (spec §1).
 //! * [`settings`]: loading the settings file.
 //!
 //! Dependencies: `archipel-model` and the feature crates (`ops`, `project`,
@@ -31,6 +32,7 @@ pub mod dashboard;
 pub mod deptree;
 pub mod forge;
 pub mod fuzzy;
+pub mod groups;
 pub mod keymap;
 pub mod message;
 pub mod settings;

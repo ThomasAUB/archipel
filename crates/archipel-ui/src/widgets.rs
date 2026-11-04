@@ -2,7 +2,7 @@
 
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Div, ElementId, SharedString, Stateful, div, px};
+use gpui_kit::{App, Div, ElementId, Hsla, SharedString, Stateful, div, px};
 
 use crate::theme::{color, radius};
 
@@ -75,11 +75,11 @@ pub fn chip(
 }
 
 /// A small round status dot.
-pub fn dot(token: T, cx: &App) -> Div {
+pub fn dot(fill: Hsla) -> Div {
     div()
         .size(px(8.0))
         .rounded_full()
-        .bg(color(cx, token))
+        .bg(fill)
         .flex_none()
 }
 
