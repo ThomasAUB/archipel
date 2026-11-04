@@ -15,9 +15,9 @@ use archipel_ops::OpEventKind;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Action, AnyElement, ClickEvent, Context, Entity, FocusHandle, MouseButton, MouseDownEvent,
-    ObjectFit, PathPromptOptions, Pixels, Point, SharedString, Subscription, Window, anchored,
-    deferred, div, img, px, rems,
+    Action, AnyElement, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, MouseButton,
+    MouseDownEvent, ObjectFit, PathPromptOptions, Pixels, Point, SharedString, Subscription,
+    TextRun, Window, anchored, deferred, div, font, img, px, rems,
 };
 
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
@@ -25,7 +25,9 @@ use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::repo_view::RepoView;
 use crate::theme::{UiTheme, clean_dot, color, radius, row_height, text_size, tone, ui_font};
-use crate::widgets::{button, chip, dot, primary_button, section};
+use crate::widgets::{
+    Pane, PaneDrag, button, chip, dot, primary_button, resize_pane, section, splitter,
+};
 
 gpui_kit::actions!(
     archipel,
@@ -228,8 +230,17 @@ impl Workspace {
                 self.scan = None;
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
-            AppEvent::RowsChanged(_)
-            | AppEvent::UiStateChanged
+            AppEvent::RowsChanged(ids) => {
+                let rows = self.core.rows();
+                for id in ids {
+                    let Some(view) = self.repo_views.get(&id) else {
+                        continue;
+                    };
+                    let summary = rows.iter().find(|r| r.id == id).and_then(|r| r.summary());
+                    view.update(cx, |v, cx| v.on_summary(summary, cx));
+                }
+            }
+            AppEvent::UiStateChanged
             | AppEvent::ProjectsChanged
             | AppEvent::TreeChanged
             | AppEvent::ForgeAccountsChanged => {}
@@ -651,20 +662,20 @@ impl Workspace {
     }
 
     #[allow(clippy::unused_self)] // called like every other view action
+    fn pick_icon_image(&mut self, cx: &mut Context<Self>) {
+        Self::pick(false, cx, |w, file, cx| {
+            let icon = file.to_string_lossy().into_owned();
+            w.dispatch(Command::SetIcon(Some(icon)), cx);
+        });
+    }
+
+    #[allow(clippy::unused_self)] // called like every other view action
     fn new_project_from_folder(&mut self, cx: &mut Context<Self>) {
         Self::pick(true, cx, |w, dir, cx| {
             if let Err(e) = w.core.new_project_from_folder(&dir) {
                 w.notice = Some(e.to_string());
             }
             cx.notify();
-        });
-    }
-
-    #[allow(clippy::unused_self)] // called like every other view action
-    fn pick_icon_image(&mut self, cx: &mut Context<Self>) {
-        Self::pick(false, cx, |w, file, cx| {
-            let icon = file.to_string_lossy().into_owned();
-            w.dispatch(Command::SetIcon(Some(icon)), cx);
         });
     }
 
@@ -700,7 +711,7 @@ impl Workspace {
 
     // ----- rendering ----------------------------------------------------
 
-    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let identity = self.core.identity();
         let groups = self.core.sidebar_groups();
         let selected = self
@@ -714,29 +725,7 @@ impl Workspace {
         let grouped = groups.len() > 1 || groups.first().is_some_and(|g| g.category.is_some());
         let repo_row = |row: DashboardRow, cx: &mut Context<Self>| {
             let id = row.id;
-            let (token, extra) = match &row.status {
-                RepoStatus::Ready(s) if s.changes.conflicted > 0 || s.in_progress.is_some() => {
-                    (T::StatusConflict, String::new())
-                }
-                RepoStatus::Ready(s) => {
-                    let sync = match (s.ahead(), s.behind()) {
-                        (0, 0) => String::new(),
-                        (a, 0) => format!("↑{a}"),
-                        (0, b) => format!("↓{b}"),
-                        (a, b) => format!("↑{a}↓{b}"),
-                    };
-                    (
-                        if s.changes.is_dirty() {
-                            T::StatusDirty
-                        } else {
-                            T::StatusSuccess
-                        },
-                        sync,
-                    )
-                }
-                RepoStatus::Loading => (T::FgSubtle, String::new()),
-                RepoStatus::Missing | RepoStatus::Error(_) => (T::StatusError, String::new()),
-            };
+            let (token, extra) = side_status(&row.status);
             div()
                 .id(SharedString::from(format!("side-{}", row.id)))
                 .flex()
@@ -775,6 +764,24 @@ impl Workspace {
                 )
                 .into_any_element()
         };
+        // Wide enough for every name, collapsed groups' included, so the
+        // pane does not jump when a group opens; capped at half the window.
+        let (size, xs) = (text_size(cx), rems(0.75).to_pixels(window.rem_size()));
+        let measure = |text: &str, size| text_width(text, size, window, cx);
+        let indent = if grouped { 20.0 } else { 8.0 };
+        let mut fit: f32 = 0.0;
+        for group in &groups {
+            if grouped {
+                let name = group.category.as_deref().unwrap_or("Uncategorized");
+                let count = group.rows.len().to_string();
+                fit = fit.max(36.0 + measure(name, xs) + measure(&count, xs));
+            }
+            for row in &group.rows {
+                let extra = side_status(&row.status).1;
+                fit = fit.max(indent + 32.0 + measure(&row.name, size) + measure(&extra, xs));
+            }
+        }
+        let fit = (fit + 8.0).min(f32::from(window.viewport_size().width) / 2.0);
         let mut repos: Vec<AnyElement> = Vec::new();
         for (i, group) in groups.into_iter().enumerate() {
             if grouped {
@@ -837,15 +844,14 @@ impl Workspace {
                 }
             }
         }
+        let width = self.core.ui_state().unwrap_or_default().sidebar_width;
         div()
-            .w(px(240.0))
+            .w(px(width.max(fit)))
             .h_full()
             .flex()
             .flex_col()
             .flex_none()
             .bg(color(cx, T::BgPanel))
-            .border_r_1()
-            .border_color(color(cx, T::BorderSubtle))
             .child(
                 div()
                     .id("project-switcher")
@@ -1788,7 +1794,20 @@ impl Render for Workspace {
                     .flex_1()
                     .flex()
                     .overflow_hidden()
-                    .child(self.render_sidebar(cx))
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PaneDrag>, _, cx| {
+                        // Every row listening for `PaneDrag` sees every
+                        // splitter's drag: only the sidebar is ours.
+                        let pane = e.drag(cx).0;
+                        if pane != Pane::Sidebar {
+                            return;
+                        }
+                        let (x, bounds) = (e.event.position.x, e.bounds);
+                        this.core
+                            .update_ui_state(|ui| resize_pane(ui, pane, x, bounds));
+                        cx.notify();
+                    }))
+                    .child(self.render_sidebar(window, cx))
+                    .child(splitter(Pane::Sidebar, cx))
                     .child(
                         div()
                             .flex_1()
@@ -1805,6 +1824,49 @@ impl Render for Workspace {
             .children(row_menu)
             .children(category_menu)
     }
+}
+
+/// A sidebar row's status dot color and its ahead/behind badge.
+fn side_status(status: &RepoStatus) -> (T, String) {
+    match status {
+        RepoStatus::Ready(s) if s.changes.conflicted > 0 || s.in_progress.is_some() => {
+            (T::StatusConflict, String::new())
+        }
+        RepoStatus::Ready(s) => {
+            let sync = match (s.ahead(), s.behind()) {
+                (0, 0) => String::new(),
+                (a, 0) => format!("↑{a}"),
+                (0, b) => format!("↓{b}"),
+                (a, b) => format!("↑{a}↓{b}"),
+            };
+            (
+                if s.changes.is_dirty() {
+                    T::StatusDirty
+                } else {
+                    T::StatusSuccess
+                },
+                sync,
+            )
+        }
+        RepoStatus::Loading => (T::FgSubtle, String::new()),
+        RepoStatus::Missing | RepoStatus::Error(_) => (T::StatusError, String::new()),
+    }
+}
+
+/// Width of one line of `text` in the UI font at `size`.
+fn text_width(text: &str, size: Pixels, window: &Window, cx: &gpui_kit::App) -> f32 {
+    let run = TextRun {
+        len: text.len(),
+        font: font(ui_font(cx)),
+        color: color(cx, T::FgDefault),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(text.to_owned().into(), size, &[run], None);
+    f32::from(line.width)
 }
 
 /// Plain click selects, Ctrl+click adds to the selection, double click opens.
