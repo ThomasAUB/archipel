@@ -42,7 +42,7 @@ crates/
   archipel-watch     file watching → fine-grained invalidations
   archipel-cache     byte-budgeted LRUs + SQLite store
   archipel-forge     GitHub / GitLab REST clients, OS keychain tokens
-  archipel-project   .gitproject.toml, folder scan, submodules
+  archipel-project   archipel.toml, folder scan, submodules
   archipel-ops       scheduler, journal, undo/redo, batch ops, multi-repo commit, line staging
   archipel-graph     on-disk topology cache, lane layout, paged history
   archipel-stats     incremental statistics
@@ -61,7 +61,7 @@ xtask                quality gates (dependency directions, theme tokens)
 archipel path/to/folder
 ```
 
-Opens the folder's `.gitproject.toml`, or a private project listing the repos
+Opens the folder's `archipel.toml`, or a private project listing the repos
 found around it (scanned in the background; launching from inside a repo opens
 the outermost repo). Launching again while Archipel runs opens another window
 in the same process, or focuses the window already showing that project
@@ -77,13 +77,14 @@ reopens.
 | `Ctrl+N` (or `Ctrl+Shift+N`) | new window |
 
 Right-click a repo for its menu. The project color and icon are set from the
-action palette ("Set the project color…", "Set the project icon…"); a team can
-set defaults in `.gitproject.toml` (`[settings] accent = "#3b82f6"`,
-`icon = "🚀"`).
+action palette ("Set the project color…", "Set the project icon…") and saved
+in the project, so `archipel.toml` shares them with the team
+(`[settings] accent = "#3b82f6"`, `icon = "🚀"`). F5 reloads the project file
+(after a hand edit or a pull) and refreshes every repo.
 
 Forges: "Forge accounts…" in the action palette signs in to GitHub, GitLab or
 a self-hosted instance with a personal access token (stored in the OS
-keychain, never in `.gitproject.toml`). The dashboard then shows each repo's
+keychain, never in `archipel.toml`). The dashboard then shows each repo's
 open pull request with its CI and review state; "Create pull requests…" opens
 one per selected repo, linked together, and "Clone repositories from a forge
 account…" adds clones to the project. On Linux the keychain is the Secret

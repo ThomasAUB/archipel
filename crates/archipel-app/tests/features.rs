@@ -335,7 +335,7 @@ fn open_directory_scans_then_never_re_adds_hidden_repos() {
 
     // A folder holding a project file opens that file.
     std::fs::write(
-        e.dir.path().join(".gitproject.toml"),
+        e.dir.path().join("archipel.toml"),
         "version = 1\nname = \"x\"\n",
     )
     .unwrap();
@@ -361,7 +361,7 @@ fn sibling_sessions_are_independent() {
 }
 
 #[test]
-fn identity_is_automatic_then_personal() {
+fn identity_is_automatic_then_saved_in_the_project() {
     let e = env(&[]);
     open_fresh(&e);
     let auto = e.app.identity().unwrap();
@@ -380,6 +380,9 @@ fn identity_is_automatic_then_personal() {
     assert!(!mine.automatic_accent);
     assert_eq!(mine.accent.to_hex(), "#ff8800");
     assert_eq!(mine.window_title(), "🚀 My product — Archipel");
+    let settings = e.app.project().unwrap().1.settings;
+    assert_eq!(settings.accent.as_deref(), Some("#ff8800"));
+    assert_eq!(settings.icon.as_deref(), Some("🚀"));
     assert!(
         e.app
             .dispatch(Command::SetAccent(Some("nope".into())))
@@ -461,4 +464,48 @@ fn dependency_tree_nests_submodules_and_updates_them() {
         ui.tabs[ui.active_tab],
         archipel_model::ui_state::TabState::Repo(vendor.id())
     );
+}
+
+#[test]
+fn new_project_from_folder_is_a_shared_project_file() {
+    let e = env(&[]);
+    let id = e.app.new_project_from_folder(e.dir.path()).unwrap();
+    let file = e.dir.path().join("archipel.toml");
+    assert_eq!(id, archipel_app::file_project_id(&file));
+    let entry = e
+        .app
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == id)
+        .unwrap();
+    assert_eq!(entry.location, ProjectLocation::SharedFile(file));
+    let (open, def) = e.app.project().unwrap();
+    assert_eq!(open, id);
+    assert_eq!(def.repos.len(), 3);
+    // The automatic color is written to the file, shared with the team.
+    let identity = e.app.identity().unwrap();
+    assert_eq!(def.settings.accent, Some(identity.accent.to_hex()));
+    assert!(!identity.automatic_accent);
+}
+
+#[test]
+fn refresh_reloads_the_project_definition() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let before = e.app.identity().unwrap().accent;
+
+    // Another window (or a hand edit of the file) changes the project.
+    let other = e.app.sibling();
+    other.open_project(&ProjectId("p1".into())).unwrap();
+    other
+        .dispatch(Command::SetAccent(Some("#22c55e".into())))
+        .unwrap();
+    other.remove_repo(e.repos[2].id()).unwrap();
+    assert_eq!(e.app.identity().unwrap().accent, before);
+
+    e.app.dispatch(Command::RefreshAll).unwrap();
+    assert_eq!(e.app.identity().unwrap().accent.to_hex(), "#22c55e");
+    let rows: Vec<_> = e.app.all_rows().iter().map(|r| r.id).collect();
+    assert_eq!(rows, [e.repos[0].id(), e.repos[1].id()]);
 }

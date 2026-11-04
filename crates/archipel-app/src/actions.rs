@@ -10,7 +10,8 @@ use archipel_model::{RepoId, RepoPath};
 /// A request to the application, executed by `App::dispatch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// Recompute every summary of the current project.
+    /// Reload the current project's definition (project file), then
+    /// recompute every summary.
     RefreshAll,
     /// Recompute one repo.
     RefreshRepo(RepoId),
@@ -82,9 +83,10 @@ pub enum Command {
     },
     /// Open a submodule as a repo tab (adding it to the project if needed).
     OpenSubmodule(RepoPath),
-    /// Personal project accent color (`#rrggbb`; automatic when `None`).
+    /// Project accent color (`#rrggbb`; automatic when `None`), saved in
+    /// the project definition.
     SetAccent(Option<String>),
-    /// Personal project icon / emoji (`None`: team default or none).
+    /// Project icon / emoji (`None`: none), saved in the project definition.
     SetIcon(Option<String>),
     /// UI-only commands (palettes, dialogs) the frontend handles itself.
     Ui(String),

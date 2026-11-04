@@ -8,7 +8,7 @@ use std::sync::Arc;
 use archipel_app::dashboard::{DashboardRow, RepoStatus};
 use archipel_app::deptree::TreeRow;
 use archipel_app::{App as Core, AppEvent, Command, Extensions};
-use archipel_model::project::{ProjectDef, ProjectLocation, ProjectSettings, RepoEntry};
+use archipel_model::project::ProjectLocation;
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, RepoPath, Timestamp};
 use archipel_ops::OpEventKind;
@@ -261,7 +261,7 @@ impl Workspace {
                     },
                     PaletteItem {
                         id: "+file".into(),
-                        label: "Open a .gitproject.toml…".into(),
+                        label: "Open an archipel.toml…".into(),
                         detail: "shared project file".into(),
                     },
                 ];
@@ -636,36 +636,8 @@ impl Workspace {
     #[allow(clippy::unused_self)] // called like every other view action
     fn new_project_from_folder(&mut self, cx: &mut Context<Self>) {
         Self::pick(true, cx, |w, dir, cx| {
-            let result = w
-                .core
-                .scan(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|repos| {
-                    if repos.is_empty() {
-                        return Err(format!("no repository found below {}", dir.display()));
-                    }
-                    let def = ProjectDef {
-                        name: dir
-                            .file_name()
-                            .map_or_else(|| "Project".into(), |n| n.to_string_lossy().into_owned()),
-                        repos: repos
-                            .into_iter()
-                            .map(|r| RepoEntry {
-                                path: r.path,
-                                alias: None,
-                                category: None,
-                            })
-                            .collect(),
-                        settings: ProjectSettings::default(),
-                    };
-                    let id = archipel_app::directory_project_id(&dir);
-                    w.core
-                        .create_project(ProjectLocation::Private(id.clone()), &def)
-                        .map_err(|e| e.to_string())?;
-                    w.core.open_project(&id).map_err(|e| e.to_string())
-                });
-            if let Err(e) = result {
-                w.notice = Some(e);
+            if let Err(e) = w.core.new_project_from_folder(&dir) {
+                w.notice = Some(e.to_string());
             }
             cx.notify();
         });
@@ -1100,7 +1072,7 @@ impl Workspace {
                                 ),
                         )
                         .child(
-                            button("open-project", "Open a .gitproject.toml…", cx)
+                            button("open-project", "Open an archipel.toml…", cx)
                                 .on_click(cx.listener(|this, _, _, cx| this.open_project_file(cx))),
                         ),
                 )

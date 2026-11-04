@@ -80,7 +80,7 @@ pub trait CredentialStore: Send + Sync {
     fn delete_token(&self, host: &str) -> Result<(), ForgeError>;
 }
 
-/// The list of signed-in hosts (non-secret; never in `.gitproject.toml`).
+/// The list of signed-in hosts (non-secret; never in `archipel.toml`).
 pub trait ForgeAccountStore: Send + Sync {
     /// Every account.
     fn accounts(&self) -> Result<Vec<ForgeAccount>, ForgeError>;

@@ -9,7 +9,7 @@
 The forge integration talks to the GitHub REST API (v3, also GitHub
 Enterprise Server) and the GitLab REST API (v4, gitlab.com and
 self-hosted). It needs an HTTP client and a place to keep personal access
-tokens that is **not** `.gitproject.toml` nor any plain file.
+tokens that is **not** `archipel.toml` nor any plain file.
 
 Constraints:
 

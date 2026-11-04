@@ -26,7 +26,7 @@ struct Cli {
 enum Cmd {
     /// Print the dashboard of a project file or of every repo below a folder.
     Dashboard {
-        /// A `.gitproject.toml` or a folder to scan.
+        /// An `archipel.toml` or a folder to scan.
         target: PathBuf,
         /// Print JSON instead of a table.
         #[arg(long)]
@@ -35,7 +35,7 @@ enum Cmd {
     /// Print the repo dependency tree (nested submodules) of a project file
     /// or of every repo below a folder.
     Tree {
-        /// A `.gitproject.toml` or a folder to scan.
+        /// An `archipel.toml` or a folder to scan.
         target: PathBuf,
     },
     /// List the repositories found below a folder.
@@ -45,7 +45,7 @@ enum Cmd {
     },
     /// Fetch every repo of a project file or folder.
     Fetch {
-        /// A `.gitproject.toml` or a folder to scan.
+        /// An `archipel.toml` or a folder to scan.
         target: PathBuf,
     },
     /// Print a window of the commit graph of a repository.

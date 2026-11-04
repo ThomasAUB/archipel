@@ -28,7 +28,7 @@ Section numbers like "§3" refer to the spec's feature sections.
 | Write backend | `git` CLI subprocess, `-c` overrides only when needed, `--porcelain`/`-z` outputs | Full compatibility with hooks, credentials, GPG/SSH signing, LFS. |
 | Async runtime | `tokio` for orchestration + subprocess I/O; `rayon` (or `spawn_blocking`) for CPU-bound `gix` work | Standard, well-supported on Windows/Linux. |
 | File watching | `notify` + `notify-debouncer-full` | Cross-platform; debouncing avoids refresh storms. |
-| Project file | TOML, `.gitproject.toml`, repo paths **relative** to the file | Readable, diffable, shareable (§1). |
+| Project file | TOML, `archipel.toml`, repo paths **relative** to the file | Readable, diffable, shareable (§1). |
 | Persistent local data | SQLite (`rusqlite`) in the user data dir: recent projects, UI state, dashboard summaries, stats | One durable store; stats stream to disk instead of RAM. |
 | Platforms | Windows + Linux in CI from Phase 0; macOS best-effort later | Per spec. |
 | License | MIT (already in repo) | — |
@@ -60,7 +60,7 @@ These are decided; each can be revisited without architectural changes.
 |---|---|
 | GitHub/GitLab integration (PR, CI status) | Out of v1. Only "open in browser" links derived from the remote URL (repo, branch, commit, "create PR" compare URL). Keep a `ForgeProvider` trait slot for P2. |
 | Submodules | Not added automatically. Detected and shown as a badge on the parent repo; one-click "add submodules to project" (P1). Full manifest/workspace import stays P2. |
-| Project file location | Both: a shareable `.gitproject.toml` at a folder root **or** a private project stored in the user data dir. A user-level registry points to either; per-user UI state never goes in the shared file. |
+| Project file location | Both: a shareable `archipel.toml` at a folder root **or** a private project stored in the user data dir. A user-level registry points to either; per-user UI state never goes in the shared file. |
 | Multi-repo commit: same branch everywhere? | Not imposed. Each repo's branch is shown in the commit dialog with a warning when they differ; per-project setting "require same branch" for teams that want it. |
 | Which stats matter | Three in P1: commits/week per author, branch age + merged-not-deleted branches (with batch delete), file hotspots by churn. Everything else waits for real usage. |
 | Personal vs distributed | Open source (MIT), built to be distributable: signed installers, no telemetry. |
@@ -101,7 +101,7 @@ archipel/
 ├─ Cargo.toml                  # workspace
 ├─ crates/
 │  ├─ archipel-model/          # pure data types (Project, RepoSummary, CommitRow, ...) + port traits, no I/O
-│  ├─ archipel-project/        # .gitproject.toml load/save, folder scan, user registry
+│  ├─ archipel-project/        # archipel.toml load/save, folder scan, user registry
 │  ├─ archipel-git/            # gix + CLI adapters implementing the Git reader/writer traits, output parsers
 │  ├─ archipel-ops/            # operation scheduler, per-repo queues, batch ops, results, undo journal
 │  ├─ archipel-watch/          # file watching, debouncing, event → invalidation mapping
@@ -238,7 +238,7 @@ Goal: lock the UI stack and validate the Git backend with numbers.
 
 ### Phase 1 — Projects (§1, P0)
 
-1. `.gitproject.toml` schema (versioned):
+1. `archipel.toml` schema (versioned):
    ```toml
    version = 1
    name = "My product"
@@ -320,7 +320,7 @@ The largest phase.
 4. Settings: external merge/diff tool, pull strategy, concurrency limits, cache budget.
 5. Error UX: every failed Git command shows the exact command and stderr.
 6. Packaging: Windows installer (MSI or MSIX, signed) + winget manifest; Linux AppImage and `.deb` (Flatpak later). Auto-update optional.
-7. Docs: README with screenshots, user guide for `.gitproject.toml`, `docs/EXTENDING.md` listing every extension point with a minimal example (for forks).
+7. Docs: README with screenshots, user guide for `archipel.toml`, `docs/EXTENDING.md` listing every extension point with a minimal example (for forks).
 
 **Exit = MVP (all P0 features).**
 

@@ -495,7 +495,7 @@ impl ForgePanel {
             .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
                 "GitHub: classic token with the repo and read:org scopes (or a fine-grained \
                          token with pull requests, checks and contents). GitLab: api scope. \
-                         The token goes to the OS keychain, never to .gitproject.toml.",
+                         The token goes to the OS keychain, never to archipel.toml.",
             ))
             .child(
                 div().flex().justify_end().child(

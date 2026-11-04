@@ -1,4 +1,4 @@
-//! [`FileProjectSource`]: shared `.gitproject.toml` files and private projects.
+//! [`FileProjectSource`]: shared `archipel.toml` files and private projects.
 
 use std::fs;
 use std::io::{self, Write};

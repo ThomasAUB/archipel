@@ -1,7 +1,7 @@
 //! Lexical path helpers: normalization, relative paths and portable rendering.
 //!
 //! Everything here is purely lexical: no file system access, no symlink
-//! resolution. Paths stored in `.gitproject.toml` use `/` separators.
+//! resolution. Paths stored in `archipel.toml` use `/` separators.
 
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};

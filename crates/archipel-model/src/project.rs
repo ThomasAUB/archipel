@@ -38,10 +38,10 @@ pub struct ProjectSettings {
     pub ticket_from_branch: Option<String>,
     /// Commit message templates.
     pub message_templates: Vec<MessageTemplateDef>,
-    /// Team default accent color of the project's windows (`#rrggbb`);
-    /// a personal choice in the private state wins (spec §2).
+    /// Accent color of the project's windows (`#rrggbb`; automatic when
+    /// `None`), shared through the project file (spec §2).
     pub accent: Option<String>,
-    /// Team default project icon / emoji.
+    /// Project icon / emoji, shared through the project file.
     pub icon: Option<String>,
 }
 
@@ -68,7 +68,7 @@ pub struct ProjectDef {
 /// Where a project definition is stored.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProjectLocation {
-    /// A shareable `.gitproject.toml` file.
+    /// A shareable `archipel.toml` file.
     SharedFile(PathBuf),
     /// A private project kept in the user data dir.
     Private(ProjectId),

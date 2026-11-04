@@ -24,7 +24,7 @@ pub enum SortDirection {
 }
 
 /// UI state remembered per project: the *private* project state, never
-/// written to the shared `.gitproject.toml`.
+/// written to the shared `archipel.toml`.
 ///
 /// Fields added after the first release are `#[serde(default)]` so states
 /// saved by older builds still load.
@@ -63,10 +63,10 @@ pub struct UiState {
     /// Collapsed category groups of the sidebar (spec §1); the empty name
     /// is the "Uncategorized" group.
     pub collapsed_categories: Vec<String>,
-    /// Personal project accent color (`#rrggbb`), overriding the team default
-    /// and the automatic one (spec §2).
+    /// Legacy personal accent color (`#rrggbb`), still honored over the
+    /// project's; cleared when the color is changed (spec §2).
     pub accent: Option<String>,
-    /// Personal project icon / emoji, overriding the team default.
+    /// Legacy personal icon / emoji; cleared when the icon is changed.
     pub icon: Option<String>,
 }
 

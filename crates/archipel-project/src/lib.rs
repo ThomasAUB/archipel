@@ -4,7 +4,7 @@
 //! project definition storage, the folder scan and submodule detection.
 //!
 //! * [`FileProjectSource`] implements [`ProjectSource`]: shared
-//!   `.gitproject.toml` files (schema v1, see [`format`](crate::format)
+//!   `archipel.toml` files (schema v1, see [`format`](crate::format)
 //!   for the layout) written atomically, and private projects delegated to an
 //!   injected [`PrivateProjectStore`].
 //! * [`FsRepoDiscovery`] implements [`RepoDiscovery`]: a depth-limited walk
@@ -38,7 +38,7 @@ pub use source::FileProjectSource;
 pub use submodules::submodule_paths;
 
 /// File name of a shared project definition.
-pub const PROJECT_FILE_NAME: &str = ".gitproject.toml";
+pub const PROJECT_FILE_NAME: &str = "archipel.toml";
 
 /// Absolute, lexically normalized form of a directory given on the command
 /// line (relative paths are resolved against the current directory).

@@ -82,7 +82,7 @@ fn registry_entry(id: &str) -> RegistryEntry {
     RegistryEntry {
         id: pid(id),
         name: format!("Project {id}"),
-        location: ProjectLocation::SharedFile(PathBuf::from(format!("/work/{id}.gitproject.toml"))),
+        location: ProjectLocation::SharedFile(PathBuf::from(format!("/work/{id}archipel.toml"))),
         last_opened: None,
     }
 }

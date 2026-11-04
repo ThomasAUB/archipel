@@ -1,6 +1,6 @@
 [package]
 name = "archipel-project"
-description = "Project definitions (.gitproject.toml), folder scan and submodule detection."
+description = "Project definitions (archipel.toml), folder scan and submodule detection."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

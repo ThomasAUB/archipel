@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! `.gitproject.toml` round trips, error cases and private-project delegation.
+//! `archipel.toml` round trips, error cases and private-project delegation.
 
 use std::fs;
 use std::path::{Path, PathBuf};

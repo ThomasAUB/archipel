@@ -1,4 +1,4 @@
-//! The `.gitproject.toml` file format (schema v1).
+//! The `archipel.toml` file format (schema v1).
 //!
 //! ```toml
 //! version = 1
@@ -17,8 +17,8 @@
 //! ticket_prefix = "JIRA-123"
 //! ticket_from_branch = "([A-Z]+-[0-9]+)"
 //!
-//! accent = "#3b82f6"   # team default window color (spec §2)
-//! icon = "🚀"           # team default project icon
+//! accent = "#3b82f6"   # window color (spec §2)
+//! icon = "🚀"           # project icon
 //!
 //! [[settings.template]]
 //! name = "fix"

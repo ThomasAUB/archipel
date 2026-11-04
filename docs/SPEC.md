@@ -6,6 +6,8 @@ This spec defines **what** the product is and **why**. The implementation path (
 
 A Git client that is **fast, light on RAM and good-looking**, designed for working on **several repos at once**, grouped into *projects*. GitKraken, Fork and SourceTree are centered on a single repo; Archipel is centered on the project: see the state of all its repos at a glance and act on them in batch.
 
+**A project is a place, not a list.** Each project opens as its own dashboard, shaped to the work it holds: which repos show and how they are grouped, which columns and panels appear, its color, icon and window title. Switching projects should feel like walking into a different room, not re-filtering a repo list. That identity belongs to the project definition (`archipel.toml`), so the team shares it; purely personal view state (collapsed groups, layout) stays private.
+
 **Target user:** a developer juggling N related repos (app + libs + plugins, microservices, a product split across repos, …).
 
 ## Non-goals (v1)
@@ -21,14 +23,14 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 ### 1. Projects (groups of repos) — P0
 - A project = a name + a list of local repos.
 - Add repos by manual selection **or** by scanning a parent folder (automatic `.git` detection).
-- The definition is stored in a readable file (`.gitproject.toml`), so it can be versioned and shared with the team.
+- The definition is stored in a readable file (`archipel.toml`), so it can be versioned and shared with the team.
 - P2: import from submodules, `repo` manifest, VS Code workspace.
 
 **Launch from a directory — P1**
 > Implemented: `archipel <dir>`. Not yet: the file-manager "Open with Archipel" entry (needs the installer, see Packaging in the README).
 
 - `archipel <dir>` (or `archipel .`, or "Open with Archipel" from the file manager) opens the app on that directory.
-- If the directory holds a `.gitproject.toml`, that project is opened.
+- If the directory holds an `archipel.toml`, that project is opened.
 - Otherwise the repos around are detected automatically and added to the list: the directory is scanned downward (same depth-limited scan as "scan a parent folder"); if it is itself inside a repo, the scan starts from the outermost enclosing repo root.
 - The result is a private project tied to that directory (in the user data dir); launching again from the same directory reopens it and adds any newly found repos — it never re-adds hidden ones.
 - No confirmation dialog: the list appears immediately and fills in as the scan progresses (cancellable).
@@ -38,14 +40,14 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - Any repo of a project can be hidden when it isn't wanted (context menu or keyboard), individually or in batch.
 - Hidden repos disappear from the dashboard, graph switcher, batch actions and multi-repo commit; they are neither watched nor refreshed (saves CPU and RAM).
 - A "show hidden repos" toggle lists them, dimmed, with an "unhide" action.
-- Hiding is a personal choice: stored in the private project state, never in the shared `.gitproject.toml`. Removing a repo from the project stays a separate, explicit action.
+- Hiding is a personal choice: stored in the private project state, never in the shared `archipel.toml`. Removing a repo from the project stays a separate, explicit action.
 
 **Repo categories — P1**
 
 - Any repo can be given a category (a free-form name: "apps", "libs", "plugins", …), individually or in batch, from the repo context menu or the action palette; picking an existing category or typing a new one, or clearing it.
 - The sidebar groups repos by category under collapsible headers (name + repo count), categories sorted by name, repos keeping project order inside each group; repos without a category come last under "Uncategorized". With no category at all, the sidebar stays a flat list.
 - A category header's context menu renames the category (on every repo using it; an existing name merges into that category) or removes it (its repos become uncategorized, they stay in the project). A category exists only while a repo uses it.
-- Categories describe the project, so they are stored on each repo entry of the project definition (`category = "libs"` in `.gitproject.toml`) and shared with the team. Which groups are collapsed is personal (private project state).
+- Categories describe the project, so they are stored on each repo entry of the project definition (`category = "libs"` in `archipel.toml`) and shared with the team. Which groups are collapsed is personal (private project state).
 
 ### 2. Project switching — P0
 - Fast keyboard switcher (`Ctrl+P` style), plus a recent-projects list.
@@ -66,7 +68,7 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - **Project name first in the window title** (`myproject — Archipel`), so the taskbar, Alt+Tab and window lists stay readable when titles are truncated.
 - **Taskbar badge:** a small dot in the project color with its initials, overlaid on the taskbar icon (native overlay on Windows; best effort on Linux), to tell grouped windows apart.
 - **Optional project icon / emoji**, chosen by the user, shown next to the name in the title bar and the project switcher.
-- Color and icon are personal: stored in the private project state, unless the team sets them in `.gitproject.toml` as a default.
+- Color and icon belong to the project: stored in the project definition, so `archipel.toml` shares them with the team (a new file gets the automatic color written in it).
 
 ### 3. Project dashboard — P0
 A minimal view, one row per repo:
@@ -115,7 +117,7 @@ Anything else waits for real usage.
 
 Easy, low-friction integration with code hosting forges:
 - Providers: GitHub, GitLab (including self-hosted), then Gitea / Forgejo, Bitbucket, Azure DevOps — each as a pluggable provider behind one small trait, so a fork can add its own without patching the core.
-- Setup in a few clicks: provider auto-detected from the remote URL; sign-in by OAuth device flow or personal access token, stored in the OS keychain (never in `.gitproject.toml`).
+- Setup in a few clicks: provider auto-detected from the remote URL; sign-in by OAuth device flow or personal access token, stored in the OS keychain (never in `archipel.toml`).
 - Clone from an account / organization / group: browse and pick repos, clone several at once straight into a project.
 - Per-repo forge status in the dashboard: open PR/MR for the current branch, its CI status, review state.
 - Create a PR/MR from a branch (title, description, target branch prefilled); multi-repo: one PR per repo for the same branch, linked together.
@@ -156,7 +158,7 @@ Show how the repos of a project depend on each other, as a small tree:
 
 - **GitHub / GitLab integration:** out of v1. Only "open in browser" links (repo, branch, commit, create PR). Full integration is §8 (P2).
 - **Submodules:** not added automatically; detected (badge) with an "add submodules to project" action (P1). Nested display as a toggleable tree is §9 (P2).
-- **Project file:** both — a shareable `.gitproject.toml` at a folder root, or a private project in the user data dir. UI state never goes in the shared file.
+- **Project file:** both — a shareable `archipel.toml` at a folder root, or a private project in the user data dir. UI state never goes in the shared file.
 - **Multi-repo commit:** the same branch is not required; warning when branches differ, plus a per-project "require same branch" option.
 - **Distribution:** open source (MIT), signed installers, no telemetry.
 - **Adding a repo by cloning** (URL): P1.

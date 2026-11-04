@@ -108,7 +108,7 @@ pub enum AppEvent {
 pub struct DirectoryTarget {
     /// The project that opens.
     pub id: ProjectId,
-    /// The `.gitproject.toml` found in the directory, if any.
+    /// The `archipel.toml` found in the directory, if any.
     pub project_file: Option<PathBuf>,
     /// The folder scanned for repositories (no project file): the directory,
     /// or the outermost repository containing it.
@@ -155,6 +155,24 @@ pub fn initials(name: &str) -> String {
         [a, b, ..] => a.chars().take(1).chain(b.chars().take(1)).collect(),
     };
     letters.to_uppercase()
+}
+
+/// A user-typed accent color as `#rrggbb` (`None` when blank).
+fn parse_accent(accent: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(hex) = accent
+        .map(|a| a.trim().to_owned())
+        .filter(|a| !a.is_empty())
+    else {
+        return Ok(None);
+    };
+    let hex = if hex.starts_with('#') {
+        hex
+    } else {
+        format!("#{hex}")
+    };
+    archipel_theme::Color::from_hex(&hex)
+        .map_err(|e| AppError::InvalidInput(format!("{hex} is not a color (#rrggbb): {e}")))?;
+    Ok(Some(hex))
 }
 
 /// Id of the project registered for a shared project file.
@@ -496,7 +514,7 @@ impl App {
         Ok(id)
     }
 
-    /// Registers an existing `.gitproject.toml` (e.g. from a teammate).
+    /// Registers an existing `archipel.toml` (e.g. from a teammate).
     pub fn import_project_file(&self, path: &Path) -> Result<ProjectId, AppError> {
         let location = ProjectLocation::SharedFile(path.to_path_buf());
         let def = self.services.projects.load(&location)?;
@@ -508,6 +526,51 @@ impl App {
             last_opened: None,
         })?;
         self.emit(AppEvent::ProjectsChanged);
+        Ok(id)
+    }
+
+    /// Creates a shared project for a folder: writes `<dir>/archipel.toml`
+    /// listing the repos found below it, registers and opens it. A folder
+    /// that already holds a project file opens that file instead (never
+    /// overwritten).
+    pub fn new_project_from_folder(&self, dir: &Path) -> Result<ProjectId, AppError> {
+        let dir = archipel_project::normalize_dir(dir).map_err(|e| ProjectError::Io {
+            path: dir.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let file = dir.join(archipel_project::PROJECT_FILE_NAME);
+        let id = if file.is_file() {
+            self.import_project_file(&file)?
+        } else {
+            let repos = self.scan(&dir)?;
+            if repos.is_empty() {
+                return Err(AppError::NotFound(format!(
+                    "no repository found below {}",
+                    dir.display()
+                )));
+            }
+            let def = ProjectDef {
+                name: dir
+                    .file_name()
+                    .map_or_else(|| "Project".into(), |n| n.to_string_lossy().into_owned()),
+                repos: repos
+                    .into_iter()
+                    .map(|r| RepoEntry {
+                        path: r.path,
+                        alias: None,
+                        category: None,
+                    })
+                    .collect(),
+                settings: ProjectSettings {
+                    accent: Some(
+                        archipel_theme::accent_for_key(&file_project_id(&file).0).to_hex(),
+                    ),
+                    ..ProjectSettings::default()
+                },
+            };
+            self.create_project(ProjectLocation::SharedFile(file), &def)?
+        };
+        self.open_project(&id)?;
         Ok(id)
     }
 
@@ -564,7 +627,7 @@ impl App {
     }
 
     /// Opens the app on a directory (spec §1 "Launch from a directory"):
-    /// its `.gitproject.toml` when there is one, otherwise a private project
+    /// its `archipel.toml` when there is one, otherwise a private project
     /// tied to the directory, shown at once and filled in by a background,
     /// cancellable scan. Relaunching adds newly found repos and never
     /// re-adds hidden ones (they stay in the project, hidden).
@@ -1083,8 +1146,9 @@ impl App {
             .icon
     }
 
-    /// How the open project's window is recognized (spec §2): personal
-    /// choice, else team default from the project file, else automatic.
+    /// How the open project's window is recognized (spec §2): the color
+    /// and icon of the project definition (a legacy personal choice wins),
+    /// else automatic.
     #[must_use]
     pub fn identity(&self) -> Option<ProjectIdentity> {
         let guard = lock(&self.session);
@@ -1145,6 +1209,68 @@ impl App {
     }
 
     // ----- refresh --------------------------------------------------------
+
+    /// Reloads the open project's definition from where it is stored (the
+    /// project file, edited by hand or by a teammate): name, color, icon and
+    /// repo list. Repos that stay keep their status; new ones are added,
+    /// removed ones dropped. The UI state is kept.
+    pub fn reload_project(&self) -> Result<(), AppError> {
+        let Some(location) = lock(&self.session).as_ref().map(|s| s.location.clone()) else {
+            return Err(AppError::NoProject);
+        };
+        let def = self.services.projects.load(&location)?;
+        let (id, name) = {
+            let mut guard = lock(&self.session);
+            let s = guard.as_mut().ok_or(AppError::NoProject)?;
+            let mut old = std::mem::take(&mut s.rows);
+            s.rows = def
+                .repos
+                .iter()
+                .map(|repo| {
+                    let rid = repo.path.id();
+                    match old.iter().position(|r| r.id == rid) {
+                        Some(i) => DashboardRow {
+                            name: repo.display_name(),
+                            ..old.swap_remove(i)
+                        },
+                        None => DashboardRow {
+                            id: rid,
+                            name: repo.display_name(),
+                            path: repo.path.clone(),
+                            status: if repo.path.as_path().exists() {
+                                RepoStatus::Loading
+                            } else {
+                                RepoStatus::Missing
+                            },
+                            stale: true,
+                            hidden: s.ui.is_hidden(rid),
+                            forge: ForgeStatus::Unknown,
+                        },
+                    }
+                })
+                .collect();
+            let kept: HashSet<RepoId> = s.rows.iter().map(|r| r.id).collect();
+            s.ui.selection.retain(|r| kept.contains(r));
+            s.dependencies.retain(|r, _| kept.contains(r));
+            s.def = def;
+            (s.id.clone(), s.def.name.clone())
+        };
+        let entry = self
+            .services
+            .registry
+            .list_projects()?
+            .into_iter()
+            .find(|e| e.id == id && e.name != name);
+        if let Some(entry) = entry {
+            self.services
+                .registry
+                .upsert_project(&RegistryEntry { name, ..entry })?;
+            self.emit(AppEvent::ProjectsChanged);
+        }
+        self.start_watching();
+        self.emit(AppEvent::UiStateChanged);
+        Ok(())
+    }
 
     /// Recomputes every summary in parallel, then caches them.
     pub fn refresh_all(&self) {
@@ -1322,7 +1448,11 @@ impl App {
     /// Executes a command. Long work runs in the background.
     pub fn dispatch(&self, command: Command) -> Result<(), AppError> {
         match command {
-            Command::RefreshAll => self.refresh_all(),
+            Command::RefreshAll => {
+                self.reload_project()?;
+                self.refresh_all();
+                self.load_tree_if_shown();
+            }
             Command::RefreshForge => self.refresh_forge_all(),
             Command::RefreshRepo(r) => self.refresh_repo(r),
             Command::Fetch(ids) => self.spawn_batch("Fetch", &ids, |b, t| async move {
@@ -1488,32 +1618,40 @@ impl App {
                 self.dispatch(Command::OpenRepoTab(id))?;
             }
             Command::SetAccent(accent) => {
-                let accent = match accent
-                    .map(|a| a.trim().to_owned())
-                    .filter(|a| !a.is_empty())
-                {
-                    None => None,
-                    Some(hex) => {
-                        let hex = if hex.starts_with('#') {
-                            hex
-                        } else {
-                            format!("#{hex}")
-                        };
-                        archipel_theme::Color::from_hex(&hex).map_err(|e| {
-                            AppError::InvalidInput(format!("{hex} is not a color (#rrggbb): {e}"))
-                        })?;
-                        Some(hex)
-                    }
-                };
-                self.update_ui_state(|ui| ui.accent = accent);
+                let accent = parse_accent(accent)?;
+                self.save_identity(|settings, ui| {
+                    settings.accent = accent;
+                    ui.accent = None;
+                })?;
             }
             Command::SetIcon(icon) => {
                 let icon = icon.map(|i| i.trim().to_owned()).filter(|i| !i.is_empty());
-                self.update_ui_state(|ui| ui.icon = icon);
+                self.save_identity(|settings, ui| {
+                    settings.icon = icon;
+                    ui.icon = None;
+                })?;
             }
             // Every other command is handled by `dispatch`.
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Changes the project's color or icon in its definition, so a project
+    /// file carries them for the whole team (spec §2), and drops any older
+    /// personal override.
+    fn save_identity(
+        &self,
+        f: impl FnOnce(&mut ProjectSettings, &mut UiState),
+    ) -> Result<(), AppError> {
+        let (location, def) = {
+            let mut guard = lock(&self.session);
+            let s = guard.as_mut().ok_or(AppError::NoProject)?;
+            f(&mut s.def.settings, &mut s.ui);
+            (s.location.clone(), s.def.clone())
+        };
+        self.services.projects.save(&location, &def)?;
+        self.emit(AppEvent::UiStateChanged);
         Ok(())
     }
 

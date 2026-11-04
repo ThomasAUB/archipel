@@ -1,7 +1,7 @@
 //! Where forge credentials live: tokens in the OS keychain
 //! ([`KeychainCredentials`]), the non-secret account list in a TOML file of
 //! the user config directory ([`FileAccountStore`]). Neither ever touches
-//! `.gitproject.toml`.
+//! `archipel.toml`.
 
 use std::path::PathBuf;
 
