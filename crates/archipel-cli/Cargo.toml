@@ -1,0 +1,31 @@
+[package]
+name = "archipel-cli"
+description = "Headless Archipel binary: dashboard dump, batch operations, graph and stats, and the perf/RAM benchmark harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "archipel-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+archipel-app.workspace = true
+archipel-compose.workspace = true
+archipel-fixtures.workspace = true
+archipel-graph.workspace = true
+archipel-model.workspace = true
+archipel-ops.workspace = true
+archipel-project.workspace = true
+archipel-stats.workspace = true
+clap.workspace = true
+memory-stats = "1"
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

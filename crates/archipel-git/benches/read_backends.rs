@@ -90,7 +90,12 @@ fn main() {
     let tmp = tempfile::tempdir().unwrap();
     let cli = GitCli::default();
     let gix = GixReader::default();
-    let backends: [(&str, &dyn StatusReader); 2] = [("cli", &cli), ("gix", &gix)];
+    let gix_uncached = GixReader::uncached(4 * 1024 * 1024);
+    let backends: [(&str, &dyn StatusReader); 3] = [
+        ("cli", &cli),
+        ("gix", &gix),
+        ("gix-uncached", &gix_uncached),
+    ];
 
     if enabled("summary") {
         eprintln!("generating 20-repo project…");
@@ -139,7 +144,11 @@ fn main() {
         generate_history(&big, HistoryShape::default()).unwrap();
         git(&big, &["commit-graph", "write", "--reachable"]).unwrap();
         let big = RepoPath::new(big);
-        let readers: [(&str, &dyn HistoryReader); 2] = [("cli", &cli), ("gix", &gix)];
+        let readers: [(&str, &dyn HistoryReader); 3] = [
+            ("cli", &cli),
+            ("gix", &gix),
+            ("gix-uncached", &gix_uncached),
+        ];
         let total = walk_count(&cli, &big, usize::MAX);
         for (name, reader) in readers {
             measure("walk_100k_full", name, 5, || {

@@ -1,5 +1,11 @@
 //! Batch operations, multi-repo commit and partial staging on real repositories.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::similar_names, clippy::format_collect)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::similar_names,
+    clippy::format_collect
+)]
 
 use std::sync::Arc;
 

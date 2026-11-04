@@ -290,7 +290,8 @@ index 6666666..0000000
 
     #[test]
     fn keeps_carriage_returns() {
-        let diff = "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1 +1 @@\n-a\r\n+b\r\n";
+        let diff =
+            "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1 +1 @@\n-a\r\n+b\r\n";
         let files = parse_unified_diff(diff, usize::MAX);
         assert_eq!(files[0].hunks[0].lines[1].content, "b\r");
     }

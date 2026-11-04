@@ -1,0 +1,205 @@
+//! # archipel-compose
+//!
+//! The composition root shared by the binaries (`archipel-cli`, `archipel-ui`):
+//! the **only** place that knows which concrete adapter sits behind which
+//! port trait (ARCHITECTURE §4). Swapping an implementation is a one-line
+//! change in [`compose`], or a setting (`read_backend`).
+//!
+//! It also sets up logging (PLAN §3.6) and resolves the user directories.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use archipel_app::settings::load_settings;
+use archipel_app::{App, Extensions, Services};
+use archipel_cache::{CacheRegistry, SqliteStore};
+use archipel_git::{CliConfig, GitCli, GixReader, check_git_version};
+use archipel_model::ports::{HistoryReader, RefReader, StashReader, StatusReader};
+use archipel_model::settings::{ReadBackend, Settings};
+use archipel_ops::GitPorts;
+use archipel_project::{FileProjectSource, FsRepoDiscovery};
+use archipel_watch::NotifyChangeSource;
+
+/// Errors while starting the application.
+#[derive(Debug, thiserror::Error)]
+pub enum ComposeError {
+    /// No usable data directory.
+    #[error("cannot determine the user data directory; set ARCHIPEL_HOME")]
+    NoDataDir,
+    /// `git` missing or too old.
+    #[error(transparent)]
+    Git(#[from] archipel_model::GitError),
+    /// The SQLite store could not be opened.
+    #[error(transparent)]
+    Store(#[from] archipel_model::StoreError),
+    /// The watcher could not start.
+    #[error(transparent)]
+    Watch(#[from] archipel_model::WatchError),
+    /// Async runtime creation failed.
+    #[error("cannot start the async runtime: {0}")]
+    Runtime(String),
+}
+
+/// User directories of the application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppDirs {
+    /// Settings, keymap and themes.
+    pub config: PathBuf,
+    /// SQLite store and logs.
+    pub data: PathBuf,
+    /// Disposable caches (graph topology files).
+    pub cache: PathBuf,
+}
+
+impl AppDirs {
+    /// `ARCHIPEL_HOME` (all three under it) or the platform directories.
+    pub fn resolve() -> Result<Self, ComposeError> {
+        if let Some(home) = std::env::var_os("ARCHIPEL_HOME") {
+            return Ok(Self::under(Path::new(&home)));
+        }
+        let dirs = directories::ProjectDirs::from("dev", "Archipel", "Archipel")
+            .ok_or(ComposeError::NoDataDir)?;
+        Ok(Self {
+            config: dirs.config_dir().to_path_buf(),
+            data: dirs.data_dir().to_path_buf(),
+            cache: dirs.cache_dir().to_path_buf(),
+        })
+    }
+
+    /// Every directory under one root (tests, portable installs).
+    #[must_use]
+    pub fn under(root: &Path) -> Self {
+        Self {
+            config: root.join("config"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+        }
+    }
+
+    /// The settings file.
+    #[must_use]
+    pub fn settings_file(&self) -> PathBuf {
+        self.config.join("settings.toml")
+    }
+
+    /// The keymap file.
+    #[must_use]
+    pub fn keymap_file(&self) -> PathBuf {
+        self.config.join("keymap.toml")
+    }
+
+    /// The user themes folder.
+    #[must_use]
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config.join("themes")
+    }
+}
+
+/// Everything a binary needs.
+pub struct Composition {
+    /// The application.
+    pub app: Arc<App>,
+    /// The async runtime the app runs on (keep it alive).
+    pub runtime: tokio::runtime::Runtime,
+    /// Directories in use.
+    pub dirs: AppDirs,
+    /// Warnings to show (broken settings or keymap file…).
+    pub warnings: Vec<String>,
+}
+
+/// Initializes logging: a daily rolling file in the data directory (level
+/// from `ARCHIPEL_LOG`, default `info`). Returns the guard flushing the file.
+#[must_use]
+pub fn init_logging(dirs: &AppDirs) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::EnvFilter;
+    let logs = dirs.data.join("logs");
+    std::fs::create_dir_all(&logs).ok()?;
+    let (writer, guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(logs, "archipel.log"));
+    let filter = EnvFilter::try_from_env("ARCHIPEL_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .try_init()
+        .ok()?;
+    Some(guard)
+}
+
+/// Git ports for the chosen read backend; writes always use the CLI.
+#[must_use]
+pub fn git_ports(settings: &Settings, cli: &Arc<GitCli>) -> GitPorts {
+    let mut ports = GitPorts::from_backend(cli.clone());
+    if settings.read_backend == ReadBackend::Gix {
+        let gix = Arc::new(GixReader::default());
+        ports.status = gix.clone() as Arc<dyn StatusReader>;
+        ports.refs = gix.clone() as Arc<dyn RefReader>;
+        ports.history = gix.clone() as Arc<dyn HistoryReader>;
+        ports.stashes = gix as Arc<dyn StashReader>;
+    }
+    ports
+}
+
+/// Builds the application from the user directories.
+pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
+    let mut warnings = Vec::new();
+    let (settings, warning) = load_settings(&dirs.settings_file());
+    warnings.extend(warning);
+    let cli_config = CliConfig::from_settings(&settings);
+    let version = check_git_version(&cli_config.program, settings.min_git_version)?;
+    tracing::info!(%version, "git found");
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("archipel-worker")
+        .enable_all()
+        .build()
+        .map_err(|e| ComposeError::Runtime(e.to_string()))?;
+
+    let store = Arc::new(SqliteStore::open(dirs.data.join("archipel.db"))?);
+    let cli = Arc::new(GitCli::new(cli_config));
+    let services = Services {
+        git: git_ports(&settings, &cli),
+        projects: Arc::new(FileProjectSource::new(store.clone())),
+        discovery: Arc::new(FsRepoDiscovery::new()),
+        registry: store.clone(),
+        summaries: store.clone(),
+        ui_state: store.clone(),
+        journal: store.clone(),
+        watcher: Arc::new(NotifyChangeSource::from_settings(&settings)?),
+        churn: cli,
+        stats: store,
+        caches: Arc::new(CacheRegistry::new()),
+        cache_dir: dirs.cache.clone(),
+    };
+
+    let mut ext = Extensions::default();
+    if let Ok(text) = std::fs::read_to_string(dirs.keymap_file()) {
+        let (keymap, keymap_warnings) = ext.keymap.with_overrides(&text);
+        ext.keymap = keymap;
+        warnings.extend(keymap_warnings.into_iter().map(|w| w.0));
+    }
+    let app = App::new(services, settings, ext, runtime.handle().clone());
+    Ok(Composition {
+        app,
+        runtime,
+        dirs,
+        warnings,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composes_in_a_fresh_home() {
+        let home = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::under(home.path());
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        std::fs::write(dirs.keymap_file(), "\"bad-key-x\" = \"y\"").unwrap();
+        let c = compose(dirs).unwrap();
+        assert!(c.app.projects().unwrap().is_empty());
+        assert_eq!(c.warnings.len(), 1);
+        assert!(home.path().join("data/archipel.db").exists());
+    }
+}

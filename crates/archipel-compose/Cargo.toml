@@ -1,0 +1,29 @@
+[package]
+name = "archipel-compose"
+description = "Composition root shared by the Archipel binaries: wires concrete adapters behind the port traits."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+archipel-model.workspace = true
+archipel-app.workspace = true
+archipel-ops.workspace = true
+archipel-git.workspace = true
+archipel-cache.workspace = true
+archipel-project.workspace = true
+archipel-watch.workspace = true
+directories.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

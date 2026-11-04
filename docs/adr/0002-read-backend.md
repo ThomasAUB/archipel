@@ -42,6 +42,24 @@ spawns `status` and `describe`, ~40 ms each); it cannot meet the spec's
 - Readers not implemented with `gix` (diffs, churn, remotes) use the CLI;
   this is wired in the composition root, consumers only see traits.
 
+## Handle cache (follow-up measurement)
+
+`GixReader` keeps opened repositories (`ThreadSafeRepository`) per path and
+re-opens one when its `config` file changes (refs, index and objects are
+always read fresh; `tests/differential.rs` checks new commits, new
+branches, repacks and upstream edits are seen). Same benchmark, median:
+
+| Scenario | `gix`, reopen per call | `gix`, cached handle |
+|---|---:|---:|
+| summary, 20 repos parallel | 148 ms | 101 ms |
+| summary, one repo | 28.5 ms | 19.7 ms |
+| metadata of 200 commits | 12.7 ms | 2.9 ms |
+
+End to end (`archipel-cli bench --quick`), the worst graph screen while
+scrolling went from 50 ms to 6 ms. Kept as the default; `GixReader::uncached`
+remains for comparison. Changes to the *global* git config are only seen
+after a restart.
+
 ## Consequences
 
 - `gix` is pinned to a minor version; a `gix` upgrade must keep

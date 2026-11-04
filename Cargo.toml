@@ -21,6 +21,7 @@ archipel-graph = { path = "crates/archipel-graph" }
 archipel-stats = { path = "crates/archipel-stats" }
 archipel-theme = { path = "crates/archipel-theme" }
 archipel-app = { path = "crates/archipel-app" }
+archipel-compose = { path = "crates/archipel-compose" }
 archipel-fixtures = { path = "tools/fixtures" }
 
 anyhow = "1"

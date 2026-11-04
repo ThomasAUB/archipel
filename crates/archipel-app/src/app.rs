@@ -91,6 +91,14 @@ pub struct Services {
     pub journal: Arc<dyn archipel_model::ports::JournalStore>,
     /// File watching.
     pub watcher: Arc<dyn ChangeSource>,
+    /// Per-commit churn for statistics.
+    pub churn: Arc<dyn archipel_model::ports::ChurnReader>,
+    /// Statistics storage.
+    pub stats: Arc<dyn archipel_model::ports::StatsStore>,
+    /// Named in-memory caches (memory report).
+    pub caches: Arc<archipel_cache::CacheRegistry>,
+    /// Folder of on-disk caches (graph topology files).
+    pub cache_dir: std::path::PathBuf,
 }
 
 /// Registries a fork may extend before building the app.
@@ -263,6 +271,45 @@ impl App {
     #[must_use]
     pub fn batches(&self) -> &Arc<BatchOps> {
         &self.batches
+    }
+
+    /// A new commit-graph view for a repo tab (open it on a worker thread).
+    #[must_use]
+    pub fn history_view(&self) -> archipel_graph::HistoryView {
+        archipel_graph::HistoryView::new(
+            self.services.git.history.clone(),
+            self.services.git.refs.clone(),
+            self.services.caches.clone(),
+            self.services.cache_dir.join("graph"),
+            archipel_graph::GraphOptions::from_settings(&self.settings),
+        )
+    }
+
+    /// The incremental statistics engine (run it at low priority).
+    #[must_use]
+    pub fn stats_engine(&self) -> archipel_stats::StatsEngine {
+        archipel_stats::StatsEngine::new(
+            self.services.churn.clone(),
+            self.services.stats.clone(),
+            self.services.git.refs.clone(),
+            self.services.git.history.clone(),
+        )
+    }
+
+    /// Sources the statistics providers read from.
+    #[must_use]
+    pub fn stat_sources(&self) -> archipel_stats::StatSources {
+        archipel_stats::StatSources {
+            store: self.services.stats.clone(),
+            refs: self.services.git.refs.clone(),
+            history: self.services.git.history.clone(),
+        }
+    }
+
+    /// Memory used by every named cache (diagnostics).
+    #[must_use]
+    pub fn cache_report(&self) -> Vec<archipel_cache::CacheReport> {
+        self.services.caches.report()
     }
 
     // ----- projects -------------------------------------------------------
@@ -567,12 +614,14 @@ impl App {
         let path = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
-            let Some(row) = s.rows.iter().find(|r| r.id == repo) else {
-                return;
-            };
-            if !s.pending.insert(repo) {
+            if !s.rows.iter().any(|r| r.id == repo) || !s.pending.insert(repo) {
                 return;
             }
+            // Stale while the refresh is queued (the UI can show a spinner).
+            let Some(row) = s.rows.iter_mut().find(|r| r.id == repo) else {
+                return;
+            };
+            row.stale = true;
             row.path.clone()
         };
         let status = self.services.git.status.clone();

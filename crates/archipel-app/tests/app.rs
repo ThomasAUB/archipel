@@ -59,6 +59,10 @@ fn env() -> Env {
         ui_state: store.clone(),
         journal: store.clone(),
         watcher: watcher.clone(),
+        churn: git.clone(),
+        stats: store.clone(),
+        caches: Arc::new(archipel_cache::CacheRegistry::new()),
+        cache_dir: dir.path().join("cache"),
     };
     let app = App::new(
         services,

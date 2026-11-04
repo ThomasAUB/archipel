@@ -232,3 +232,46 @@ fn missing_repo_is_reported() {
         Err(archipel_model::GitError::NotARepository { .. })
     ));
 }
+
+#[test]
+fn cached_gix_handles_see_new_commits_refs_and_config() {
+    let repo = archipel_fixtures::TestRepo::new().unwrap();
+    repo.write("a.txt", "a").unwrap();
+    repo.commit_all("one").unwrap();
+    let path = RepoPath::new(repo.path());
+    let gix = GixReader::default();
+    let first = gix.summary(&path).unwrap();
+    assert!(first.upstream.is_none());
+    // New commit and new branch, written by the CLI behind the cached handle.
+    repo.write("b.txt", "b").unwrap();
+    let new = archipel_model::Oid::from_hex(&repo.commit_all("two").unwrap()).unwrap();
+    repo.git(&["branch", "side"]).unwrap();
+    assert_eq!(gix.summary(&path).unwrap().head_oid, Some(new));
+    assert_eq!(gix.commit_meta(&path, &[new]).unwrap()[0].summary, "two");
+    assert!(
+        gix.branches(&path)
+            .unwrap()
+            .iter()
+            .any(|b| b.name == "side")
+    );
+    // Repacking moves objects into a new pack.
+    repo.git(&["gc", "-q"]).unwrap();
+    assert_eq!(gix.commit_meta(&path, &[new]).unwrap()[0].summary, "two");
+    // Config edit (new upstream) is picked up.
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"])
+        .unwrap();
+    repo.git(&["config", "remote.origin.url", "https://example.com/r.git"])
+        .unwrap();
+    repo.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/origin/*",
+    ])
+    .unwrap();
+    repo.git(&["branch", "--set-upstream-to=origin/main"])
+        .unwrap();
+    assert_eq!(
+        gix.summary(&path).unwrap().upstream.unwrap().name,
+        "origin/main"
+    );
+}
