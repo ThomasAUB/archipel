@@ -61,9 +61,9 @@ xtask                quality gates (dependency directions, theme tokens)
 archipel path/to/folder
 ```
 
-Opens the folder's `archipel.toml`, or a private project listing the repos
-found around it (scanned in the background; launching from inside a repo opens
-the outermost repo). Launching again while Archipel runs opens another window
+Opens the folder's `archipel.toml`, or writes one listing the repos found
+around it (scanned in the background; launching from inside a repo uses the
+outermost repo). Launching again while Archipel runs opens another window
 in the same process, or focuses the window already showing that project
 (`--standalone` starts a separate process). Without a folder, the last project
 reopens.

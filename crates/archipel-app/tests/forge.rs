@@ -21,6 +21,14 @@ use archipel_model::testing::{
 use archipel_model::{HeadState, ProjectId, RepoPath, Timestamp, Upstream};
 use archipel_ops::GitPorts;
 
+/// Where the test project is stored (in memory: the fake source).
+const P_FILE: &str = "/p/archipel.toml";
+
+/// Id of the test project.
+fn p_id() -> ProjectId {
+    archipel_app::file_project_id(std::path::Path::new(P_FILE))
+}
+
 struct Env {
     rt: tokio::runtime::Runtime,
     git: Arc<FakeGit>,
@@ -95,9 +103,9 @@ fn env() -> Env {
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),
     };
-    app.create_project(ProjectLocation::Private(ProjectId("p".into())), &def)
+    app.create_project(ProjectLocation::SharedFile(P_FILE.into()), &def)
         .unwrap();
-    app.open_project(&ProjectId("p".into())).unwrap();
+    app.open_project(&p_id()).unwrap();
     Env {
         rt,
         git,

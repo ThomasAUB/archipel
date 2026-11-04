@@ -1,13 +1,11 @@
-//! [`FileProjectSource`]: shared `archipel.toml` files and private projects.
+//! [`FileProjectSource`]: `archipel.toml` project files.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use archipel_model::error::{ProjectError, StoreError};
+use archipel_model::error::ProjectError;
 use archipel_model::ports::project::ProjectSource;
-use archipel_model::ports::store::PrivateProjectStore;
 use archipel_model::project::{ProjectDef, ProjectLocation};
 
 use crate::format;
@@ -15,48 +13,32 @@ use crate::format;
 /// Suffix of the temporary file written next to the target before the rename.
 const TEMP_SUFFIX: &str = ".tmp";
 
-/// Loads and saves project definitions.
-///
-/// * [`ProjectLocation::SharedFile`] reads and writes the TOML file; writes are
-///   atomic (temporary file in the same folder, then rename).
-/// * [`ProjectLocation::Private`] delegates to the injected
-///   [`PrivateProjectStore`].
-pub struct FileProjectSource {
-    private: Arc<dyn PrivateProjectStore>,
-}
+/// Loads and saves project definitions: reads and writes the TOML file;
+/// writes are atomic (temporary file in the same folder, then rename).
+#[derive(Debug, Default)]
+pub struct FileProjectSource;
 
 impl FileProjectSource {
-    /// Creates a source storing private projects in `private`.
+    /// Creates the source.
     #[must_use]
-    pub fn new(private: Arc<dyn PrivateProjectStore>) -> Self {
-        Self { private }
+    pub fn new() -> Self {
+        Self
     }
 }
 
 impl ProjectSource for FileProjectSource {
     fn load(&self, location: &ProjectLocation) -> Result<ProjectDef, ProjectError> {
-        match location {
-            ProjectLocation::SharedFile(path) => {
-                let file = absolute(path)?;
-                let text = fs::read_to_string(&file).map_err(|e| io_error(&file, &e))?;
-                format::parse(&file, &text)
-            }
-            ProjectLocation::Private(id) => self
-                .private
-                .load_private(id)?
-                .ok_or_else(|| StoreError::NotFound(format!("private project {id}")).into()),
-        }
+        let ProjectLocation::SharedFile(path) = location;
+        let file = absolute(path)?;
+        let text = fs::read_to_string(&file).map_err(|e| io_error(&file, &e))?;
+        format::parse(&file, &text)
     }
 
     fn save(&self, location: &ProjectLocation, project: &ProjectDef) -> Result<(), ProjectError> {
-        match location {
-            ProjectLocation::SharedFile(path) => {
-                let file = absolute(path)?;
-                let text = format::render(&file, project)?;
-                write_atomic(&file, text.as_bytes()).map_err(|e| io_error(&file, &e))
-            }
-            ProjectLocation::Private(id) => Ok(self.private.save_private(id, project)?),
-        }
+        let ProjectLocation::SharedFile(path) = location;
+        let file = absolute(path)?;
+        let text = format::render(&file, project)?;
+        write_atomic(&file, text.as_bytes()).map_err(|e| io_error(&file, &e))
     }
 }
 

@@ -3,20 +3,17 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use archipel_model::error::{ProjectError, StoreError};
-use archipel_model::ids::{ProjectId, RepoPath};
+use archipel_model::error::ProjectError;
+use archipel_model::ids::RepoPath;
 use archipel_model::ports::project::ProjectSource;
-use archipel_model::ports::store::PrivateProjectStore;
 use archipel_model::project::{
     MessageTemplateDef, ProjectDef, ProjectLocation, ProjectSettings, RepoEntry,
 };
-use archipel_model::testing::InMemoryStore;
 use archipel_project::{FileProjectSource, PROJECT_FILE_NAME};
 
 fn source() -> FileProjectSource {
-    FileProjectSource::new(Arc::new(InMemoryStore::new()))
+    FileProjectSource::new()
 }
 
 fn entry(path: PathBuf, alias: Option<&str>) -> RepoEntry {
@@ -302,26 +299,4 @@ fn save_overwrites_atomically_without_leftovers() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(names, [PROJECT_FILE_NAME]);
-}
-
-#[test]
-fn private_projects_go_through_the_store() {
-    let store = Arc::new(InMemoryStore::new());
-    let src = FileProjectSource::new(store.clone());
-    let id = ProjectId("p1".to_owned());
-    let location = ProjectLocation::Private(id.clone());
-    let project = sample(Path::new("/anywhere"));
-
-    src.save(&location, &project).unwrap();
-    assert_eq!(src.load(&location).unwrap(), project);
-    assert_eq!(store.load_private(&id).unwrap(), Some(project));
-}
-
-#[test]
-fn unknown_private_project_is_not_found() {
-    let location = ProjectLocation::Private(ProjectId("nope".to_owned()));
-    assert!(matches!(
-        source().load(&location),
-        Err(ProjectError::Store(StoreError::NotFound(_)))
-    ));
 }

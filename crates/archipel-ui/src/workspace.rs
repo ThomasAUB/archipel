@@ -267,13 +267,8 @@ impl Workspace {
                 ];
                 let current = self.core.project().map(|(id, _)| id);
                 for p in self.core.projects().unwrap_or_default() {
-                    let mut detail = match &p.location {
-                        ProjectLocation::SharedFile(f) => f.display().to_string(),
-                        ProjectLocation::Private(id) => {
-                            id.0.strip_prefix("dir:")
-                                .map_or_else(|| "private".into(), |d| format!("{d} (private)"))
-                        }
-                    };
+                    let ProjectLocation::SharedFile(file) = &p.location;
+                    let mut detail = file.display().to_string();
                     if current.as_ref() == Some(&p.id) {
                         detail = format!("this window · {detail}");
                     } else if crate::windows::is_open(window, cx, &p.id) {

@@ -34,7 +34,7 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - `archipel <dir>` (or `archipel .`, or "Open with Archipel" from the file manager) opens the app on that directory.
 - If the directory holds an `archipel.toml`, that project is opened.
 - Otherwise the repos around are detected automatically and added to the list: the directory is scanned downward (same depth-limited scan as "scan a parent folder"); if it is itself inside a repo, the scan starts from the outermost enclosing repo root.
-- The result is a private project tied to that directory (in the user data dir); launching again from the same directory reopens it and adds any newly found repos — it never re-adds hidden ones.
+- The result is written as an `archipel.toml` at the scanned folder (the directory, or the outermost enclosing repo root); launching again from the same directory opens that file.
 - No confirmation dialog: the list appears immediately and fills in as the scan progresses (cancellable).
 
 **Hidden repos — P1**
@@ -42,14 +42,14 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 - Any repo of a project can be hidden when it isn't wanted (context menu or keyboard), individually or in batch.
 - Hidden repos disappear from the dashboard, graph switcher, batch actions and multi-repo commit; they are neither watched nor refreshed (saves CPU and RAM).
 - A "show hidden repos" toggle lists them, dimmed, with an "unhide" action.
-- Hiding is a personal choice: stored in the private project state, never in the shared `archipel.toml`. Removing a repo from the project stays a separate, explicit action.
+- Hiding is a personal choice: stored in the personal state in the user data dir, never in the shared `archipel.toml`. Removing a repo from the project stays a separate, explicit action.
 
 **Repo categories — P1**
 
 - Any repo can be given a category (a free-form name: "apps", "libs", "plugins", …), individually or in batch, from the repo context menu or the action palette; picking an existing category or typing a new one, or clearing it.
 - The sidebar groups repos by category under collapsible headers (name + repo count), categories sorted by name, repos keeping project order inside each group; repos without a category come last under "Uncategorized". With no category at all, the sidebar stays a flat list.
 - A category header's context menu renames the category (on every repo using it; an existing name merges into that category) or removes it (its repos become uncategorized, they stay in the project). A category exists only while a repo uses it.
-- Categories describe the project, so they are stored on each repo entry of the project definition (`category = "libs"` in `archipel.toml`) and shared with the team. Which groups are collapsed is personal (private project state).
+- Categories describe the project, so they are stored on each repo entry of the project definition (`category = "libs"` in `archipel.toml`) and shared with the team. Which groups are collapsed is personal (user data dir).
 
 ### 2. Project switching — P0
 - Fast keyboard switcher (`Ctrl+P` style), plus a recent-projects list.
@@ -160,7 +160,7 @@ Show how the repos of a project depend on each other, as a small tree:
 
 - **GitHub / GitLab integration:** out of v1. Only "open in browser" links (repo, branch, commit, create PR). Full integration is §8 (P2).
 - **Submodules:** not added automatically; detected (badge) with an "add submodules to project" action (P1). Nested display as a toggleable tree is §9 (P2).
-- **Project file:** both — a shareable `archipel.toml` at a folder root, or a private project in the user data dir. UI state never goes in the shared file.
+- **Project file:** a project definition always lives in an `archipel.toml` at a folder root, never in the user data dir. The user data dir only keeps the registry of known projects, personal state (UI state, hidden repos) and app data (caches, undo journal, stats); none of it goes in the shared file.
 - **Multi-repo commit:** the same branch is not required; warning when branches differ, plus a per-project "require same branch" option.
 - **Distribution:** open source (MIT), signed installers, no telemetry.
 - **Adding a repo by cloning** (URL): P1.

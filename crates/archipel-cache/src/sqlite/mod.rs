@@ -44,8 +44,9 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 /// process using the same database file) before failing with "database is busy".
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The SQLite store: summaries, UI state, project registry, private project
-/// definitions, the operation journal and statistics, in one database.
+/// The SQLite store: summaries, UI state, project registry, the operation
+/// journal and statistics, in one database. Project definitions are not in
+/// it: they live in `archipel.toml` files.
 #[derive(Debug)]
 pub struct SqliteStore {
     conn: Mutex<Connection>,

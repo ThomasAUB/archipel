@@ -60,7 +60,7 @@ These are decided; each can be revisited without architectural changes.
 |---|---|
 | GitHub/GitLab integration (PR, CI status) | Out of v1. Only "open in browser" links derived from the remote URL (repo, branch, commit, "create PR" compare URL). Keep a `ForgeProvider` trait slot for P2. |
 | Submodules | Not added automatically. Detected and shown as a badge on the parent repo; one-click "add submodules to project" (P1). Full manifest/workspace import stays P2. |
-| Project file location | Both: a shareable `archipel.toml` at a folder root **or** a private project stored in the user data dir. A user-level registry points to either; per-user UI state never goes in the shared file. |
+| Project file location | Always a shareable `archipel.toml` at a folder root; project definitions are never stored in the user data dir. A user-level registry points to the files; per-user UI state never goes in the shared file. |
 | Multi-repo commit: same branch everywhere? | Not imposed. Each repo's branch is shown in the commit dialog with a warning when they differ; per-project setting "require same branch" for teams that want it. |
 | Which stats matter | Three in P1: commits/week per author, branch age + merged-not-deleted branches (with batch delete), file hotspots by churn. Everything else waits for real usage. |
 | Personal vs distributed | Open source (MIT), built to be distributable: signed installers, no telemetry. |
@@ -251,7 +251,7 @@ Goal: lock the UI stack and validate the Git backend with numbers.
    ```
 2. Load/save with validation (missing repo → shown as "missing", not an error that blocks the project).
 3. Folder scan: walk a parent folder (depth-limited, skip `node_modules`, `target`, hidden dirs) and detect `.git` dirs **and** `.git` files (worktrees/submodules).
-4. User registry in SQLite: known projects (shareable file or private), recent list, per-project UI state.
+4. User registry in SQLite: known projects (their `archipel.toml` files), recent list, per-project UI state.
 5. UI: create project (manual pick or scan with checkbox list), edit, remove.
 6. Submodule detection: badge on the parent repo + "add submodules to project" action (P1, may slip to Phase 6).
 

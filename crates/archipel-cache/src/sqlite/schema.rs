@@ -68,11 +68,23 @@ CREATE TABLE stats_churn (
 ) WITHOUT ROWID;
 ";
 
+/// v4: project definitions live only in `archipel.toml` files. Private
+/// projects are forgotten with their personal state; launching from their
+/// directory again creates a project file there.
+const V4_NO_PRIVATE_PROJECTS: &str = "
+DELETE FROM summaries WHERE project IN
+    (SELECT id FROM registry WHERE json_extract(data, '$.location.Private') IS NOT NULL);
+DELETE FROM ui_state WHERE project IN
+    (SELECT id FROM registry WHERE json_extract(data, '$.location.Private') IS NOT NULL);
+DELETE FROM registry WHERE json_extract(data, '$.location.Private') IS NOT NULL;
+DROP TABLE private_projects;
+";
+
 /// Every migration step, in order.
-const MIGRATIONS: &[&str] = &[V1_PROJECTS, V2_JOURNAL, V3_STATS];
+const MIGRATIONS: &[&str] = &[V1_PROJECTS, V2_JOURNAL, V3_STATS, V4_NO_PRIVATE_PROJECTS];
 
 /// Version reached after every step of [`MIGRATIONS`] (checked by a test).
-pub(super) const LATEST_VERSION: u32 = 3;
+pub(super) const LATEST_VERSION: u32 = 4;
 
 /// Current `user_version` of the database.
 pub(super) fn user_version(conn: &Connection) -> Result<u32, StoreError> {

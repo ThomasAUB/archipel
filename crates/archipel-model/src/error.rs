@@ -101,9 +101,6 @@ pub enum ProjectError {
         /// Highest version this build reads.
         supported: u32,
     },
-    /// Error from the store holding private projects.
-    #[error(transparent)]
-    Store(#[from] StoreError),
 }
 
 /// Errors from file watching.

@@ -65,13 +65,13 @@ pub struct ProjectDef {
     pub settings: ProjectSettings,
 }
 
-/// Where a project definition is stored.
+/// Where a project definition is stored. A definition always lives in a
+/// project file, never in the user data dir: only personal state (UI state,
+/// hidden repos) is kept there.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProjectLocation {
     /// A shareable `archipel.toml` file.
     SharedFile(PathBuf),
-    /// A private project kept in the user data dir.
-    Private(ProjectId),
 }
 
 /// A repository found by a folder scan.

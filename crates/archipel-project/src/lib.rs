@@ -5,8 +5,8 @@
 //!
 //! * [`FileProjectSource`] implements [`ProjectSource`]: shared
 //!   `archipel.toml` files (schema v1, see [`format`](crate::format)
-//!   for the layout) written atomically, and private projects delegated to an
-//!   injected [`PrivateProjectStore`].
+//!   for the layout) written atomically. Every project definition lives in
+//!   such a file; the user data dir only keeps personal state.
 //! * [`FsRepoDiscovery`] implements [`RepoDiscovery`]: a depth-limited walk
 //!   detecting `.git` directories and `.git` files, sequential or parallel
 //!   ([`ScanStrategy`]).
@@ -22,7 +22,6 @@
 //!
 //! [`ProjectSource`]: archipel_model::ports::project::ProjectSource
 //! [`RepoDiscovery`]: archipel_model::ports::project::RepoDiscovery
-//! [`PrivateProjectStore`]: archipel_model::ports::store::PrivateProjectStore
 
 pub mod format;
 mod paths;

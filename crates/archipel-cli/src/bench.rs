@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use archipel_app::file_project_id;
 use archipel_compose::{AppDirs, Composition, compose};
 use archipel_fixtures::history::{HistoryShape, generate_history};
 use archipel_fixtures::project::generate_project;
 use archipel_model::project::{ProjectDef, ProjectLocation, ProjectSettings, RepoEntry};
-use archipel_model::{CancelToken, NoProgress, ProjectId, RepoPath};
+use archipel_model::{CancelToken, NoProgress, RepoPath};
 
 use crate::commands::wait_fresh;
 
@@ -150,6 +151,11 @@ fn fixtures(dir: Option<PathBuf>, quick: bool) -> Result<Fixtures> {
     })
 }
 
+/// The `archipel.toml` of a benchmark project.
+fn project_file(home: &Path, name: &str) -> PathBuf {
+    home.join(name).join("archipel.toml")
+}
+
 fn project(name: &str, repos: &[RepoPath]) -> ProjectDef {
     ProjectDef {
         name: name.into(),
@@ -181,13 +187,12 @@ const SMALL: &str = "bench-5";
 fn first_session(home: &Path, fx: &Fixtures, out: &mut Vec<Measure>) -> Result<()> {
     let session = compose(AppDirs::under(home))?;
     let app = &session.app;
-    let big = ProjectId(BIG.into());
-    app.create_project(
-        ProjectLocation::Private(big.clone()),
+    let big = app.create_project(
+        ProjectLocation::SharedFile(project_file(home, BIG)),
         &project("20 repos", &fx.project_repos),
     )?;
     app.create_project(
-        ProjectLocation::Private(ProjectId(SMALL.into())),
+        ProjectLocation::SharedFile(project_file(home, SMALL)),
         &project("5 repos", &fx.project_repos[..5]),
     )?;
     app.open_project(&big)?;
@@ -211,7 +216,10 @@ fn second_session(home: &Path, quick: bool, out: &mut Vec<Measure>) -> Result<Co
     let rss_before = rss_mib();
     let started = Instant::now();
     let session = compose(AppDirs::under(home))?;
-    let (big, small) = (ProjectId(BIG.into()), ProjectId(SMALL.into()));
+    let (big, small) = (
+        file_project_id(&project_file(home, BIG)),
+        file_project_id(&project_file(home, SMALL)),
+    );
     session.app.open_project(&big)?;
     // Fixture generation happens before: measure from the composition.
     out.push(measure(

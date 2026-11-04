@@ -220,7 +220,7 @@ pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
     let cli = Arc::new(GitCli::new(cli_config));
     let services = Services {
         git: git_ports(&settings, &cli),
-        projects: Arc::new(FileProjectSource::new(store.clone())),
+        projects: Arc::new(FileProjectSource::new()),
         discovery: Arc::new(FsRepoDiscovery::new()),
         registry: store.clone(),
         summaries: store.clone(),

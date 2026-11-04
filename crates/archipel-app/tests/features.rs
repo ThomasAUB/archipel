@@ -3,11 +3,12 @@
 //! repo dependency tree.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use archipel_app::{App, Command, Extensions, Services};
-use archipel_model::ports::Scope;
+use archipel_app::{App, Command, Extensions, Services, file_project_id};
+use archipel_model::ports::{ProjectSource, Scope};
 use archipel_model::project::{
     DiscoveredKind, DiscoveredRepo, ProjectDef, ProjectLocation, RepoEntry,
 };
@@ -28,9 +29,40 @@ struct Env {
     dir: tempfile::TempDir,
 }
 
-/// Three repos `r0..r2` in a temp dir, a private project `p1` listing them,
-/// and a discovery that finds them (plus `extra`) when scanning.
+/// Id of the project `env` creates.
+fn p1() -> ProjectId {
+    file_project_id(Path::new(P1_FILE))
+}
+
+/// Where `env` stores its project (in memory: the fake source).
+const P1_FILE: &str = "/p1/archipel.toml";
+
+/// Three repos `r0..r2` in a temp dir, a project `p1` listing them, and a
+/// discovery that finds them (plus `extra`) when scanning.
 fn env(extra: &[&str]) -> Env {
+    let e = env_with(extra, Arc::new(FakeProjectSource::default()));
+    let def = ProjectDef {
+        name: "My product".into(),
+        repos: e
+            .repos
+            .iter()
+            .map(|p| RepoEntry {
+                path: p.clone(),
+                alias: None,
+                category: None,
+            })
+            .collect(),
+        settings: archipel_model::project::ProjectSettings::default(),
+    };
+    e.app
+        .create_project(ProjectLocation::SharedFile(P1_FILE.into()), &def)
+        .unwrap();
+    e
+}
+
+/// The repos and discovery of [`env`], with no project, storing project
+/// definitions in `projects`.
+fn env_with(extra: &[&str], projects: Arc<dyn ProjectSource>) -> Env {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -67,7 +99,7 @@ fn env(extra: &[&str]) -> Env {
     };
     let services = Services {
         git: GitPorts::from_backend(git.clone()),
-        projects: Arc::new(FakeProjectSource::default()),
+        projects,
         discovery: Arc::new(discovery),
         registry: store.clone(),
         summaries: store.clone(),
@@ -88,20 +120,6 @@ fn env(extra: &[&str]) -> Env {
         rt.handle().clone(),
     );
     let repos: Vec<RepoPath> = all.into_iter().take(3).collect();
-    let def = ProjectDef {
-        name: "My product".into(),
-        repos: repos
-            .iter()
-            .map(|p| RepoEntry {
-                path: p.clone(),
-                alias: None,
-                category: None,
-            })
-            .collect(),
-        settings: archipel_model::project::ProjectSettings::default(),
-    };
-    app.create_project(ProjectLocation::Private(ProjectId("p1".into())), &def)
-        .unwrap();
     Env {
         _rt: rt,
         git,
@@ -121,7 +139,7 @@ fn wait_until(what: &str, cond: impl Fn() -> bool) {
 }
 
 fn open_fresh(e: &Env) {
-    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    e.app.open_project(&p1()).unwrap();
     wait_until("refresh", || e.app.rows().iter().all(|r| !r.stale));
 }
 
@@ -304,44 +322,46 @@ fn categories_are_renamed_merged_and_removed() {
 }
 
 #[test]
-fn open_directory_scans_then_never_re_adds_hidden_repos() {
-    let e = env(&["r3"]);
+fn open_directory_writes_a_project_file_then_reopens_it() {
+    let e = env_with(
+        &["r3"],
+        Arc::new(archipel_project::FileProjectSource::new()),
+    );
+    let target = e.app.directory_target(e.dir.path()).unwrap();
+    assert!(target.project_file.is_none());
+    let file = target.scan_root.join("archipel.toml");
+    assert_eq!(target.id, file_project_id(&file));
+
     let id = e.app.open_directory(e.dir.path()).unwrap();
-    assert!(id.0.starts_with("dir:"));
+    assert_eq!(id, target.id);
     assert_eq!(
         e.app.project().unwrap().1.name,
         e.dir.path().file_name().unwrap().to_string_lossy()
     );
     wait_until("scan", || e.app.all_rows().len() == 4 && !e.app.scanning());
+    // The definition, scan result included, is in the project file.
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("\"r3\""), "{text}");
 
     let r3 = e.dir.path().join("r3");
     let hidden = RepoPath::new(&r3).id();
     e.app.dispatch(Command::HideRepos(vec![hidden])).unwrap();
     e.app.close_project();
 
-    // Same directory again: same project, the hidden repo stays hidden.
+    // Same directory again: the file opens, no rescan, the repo stays hidden.
     let again = e.app.open_directory(e.dir.path()).unwrap();
     assert_eq!(again, id);
-    wait_until("rescan", || !e.app.scanning());
+    assert!(!e.app.scanning());
     assert_eq!(e.app.all_rows().len(), 4);
     assert_eq!(e.app.rows().len(), 3);
 
-    // Launching from inside a repo opens the enclosing repo's project.
+    // Launching from inside a repo targets the enclosing repo's project file.
     std::fs::create_dir_all(r3.join(".git")).unwrap();
     std::fs::create_dir_all(r3.join("src")).unwrap();
     let target = e.app.directory_target(&r3.join("src")).unwrap();
     assert_eq!(target.scan_root, r3);
     assert!(target.project_file.is_none());
-
-    // A folder holding a project file opens that file.
-    std::fs::write(
-        e.dir.path().join("archipel.toml"),
-        "version = 1\nname = \"x\"\n",
-    )
-    .unwrap();
-    let target = e.app.directory_target(e.dir.path()).unwrap();
-    assert!(target.project_file.is_some());
-    assert!(target.id.0.starts_with("file:"));
+    assert_eq!(target.id, file_project_id(&r3.join("archipel.toml")));
 }
 
 #[test]
@@ -350,7 +370,7 @@ fn sibling_sessions_are_independent() {
     open_fresh(&e);
     let other = e.app.sibling();
     let dir_id = other.open_directory(e.repos[0].as_path()).unwrap();
-    assert_eq!(e.app.project().unwrap().0, ProjectId("p1".into()));
+    assert_eq!(e.app.project().unwrap().0, p1());
     assert_eq!(other.project().unwrap().0, dir_id);
     e.app
         .dispatch(Command::Select(Some(e.repos[1].id())))
@@ -497,7 +517,7 @@ fn refresh_reloads_the_project_definition() {
 
     // Another window (or a hand edit of the file) changes the project.
     let other = e.app.sibling();
-    other.open_project(&ProjectId("p1".into())).unwrap();
+    other.open_project(&p1()).unwrap();
     other
         .dispatch(Command::SetAccent(Some("#22c55e".into())))
         .unwrap();

@@ -17,6 +17,14 @@ use archipel_model::testing::{
 use archipel_model::{HeadState, ProjectId, RepoPath, RepoSummary};
 use archipel_ops::GitPorts;
 
+/// Where the test project is stored (in memory: the fake source).
+const P1_FILE: &str = "/p1/archipel.toml";
+
+/// Id of the test project.
+fn p1_id() -> ProjectId {
+    archipel_app::file_project_id(std::path::Path::new(P1_FILE))
+}
+
 struct Env {
     rt: tokio::runtime::Runtime,
     git: Arc<FakeGit>,
@@ -84,11 +92,11 @@ fn env() -> Env {
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),
     };
-    app.create_project(ProjectLocation::Private(ProjectId("p1".into())), &def)
+    app.create_project(ProjectLocation::SharedFile(P1_FILE.into()), &def)
         .unwrap();
     assert!(
         projects
-            .load(&ProjectLocation::Private(ProjectId("p1".into())))
+            .load(&ProjectLocation::SharedFile(P1_FILE.into()))
             .is_ok()
     );
     Env {
@@ -118,7 +126,7 @@ fn all_fresh(app: &App) -> bool {
 #[test]
 fn opening_paints_from_cache_then_refreshes() {
     let e = env();
-    let id = ProjectId("p1".into());
+    let id = p1_id();
     // A cached summary from a previous session.
     let mut cached = RepoSummary::empty("main");
     cached.head = HeadState::Branch("cached-branch".into());
@@ -156,7 +164,7 @@ fn opening_paints_from_cache_then_refreshes() {
 #[test]
 fn watcher_invalidation_refreshes_one_repo() {
     let e = env();
-    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
     e.git
         .with_repo(&e.repos[1], |r| r.summary.changes.modified = 4);
@@ -174,7 +182,7 @@ fn filters_sorting_tabs_and_missing_repos() {
     e.git
         .with_repo(&e.repos[2], |r| r.summary.changes.untracked = 1);
     std::fs::remove_dir_all(&e.repos[0]).unwrap();
-    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
     assert_eq!(
         e.app.rows()[0].status,
@@ -221,7 +229,7 @@ fn filters_sorting_tabs_and_missing_repos() {
         .dispatch(Command::ToggleFilter("ahead".into()))
         .unwrap();
     e.app.close_project();
-    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    e.app.open_project(&p1_id()).unwrap();
     assert_eq!(e.app.ui_state().unwrap().filters, ["ahead"]);
     drop(e.dir);
 }
@@ -229,7 +237,7 @@ fn filters_sorting_tabs_and_missing_repos() {
 #[test]
 fn batch_fetch_reports_and_refreshes() {
     let e = env();
-    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
     let mut events = e.app.subscribe();
     e.app.dispatch(Command::Fetch(vec![])).unwrap();
@@ -247,7 +255,7 @@ fn batch_fetch_reports_and_refreshes() {
 #[test]
 fn undo_through_the_command_bus() {
     let e = env();
-    e.app.open_project(&ProjectId("p1".into())).unwrap();
+    e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
     let repo = &e.repos[0];
     e.app
@@ -281,7 +289,7 @@ fn undo_through_the_command_bus() {
 #[test]
 fn closing_unloads_watchers_and_keeps_summaries() {
     let e = env();
-    let id = ProjectId("p1".into());
+    let id = p1_id();
     e.app.open_project(&id).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
     e.app.close_project();

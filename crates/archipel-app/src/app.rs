@@ -110,8 +110,9 @@ pub struct DirectoryTarget {
     pub id: ProjectId,
     /// The `archipel.toml` found in the directory, if any.
     pub project_file: Option<PathBuf>,
-    /// The folder scanned for repositories (no project file): the directory,
-    /// or the outermost repository containing it.
+    /// The folder scanned for repositories, where the project file is
+    /// written when there is none: the directory, or the outermost
+    /// repository containing it.
     pub scan_root: PathBuf,
 }
 
@@ -179,12 +180,6 @@ fn parse_accent(accent: Option<String>) -> Result<Option<String>, AppError> {
 #[must_use]
 pub fn file_project_id(file: &Path) -> ProjectId {
     ProjectId(format!("file:{}", file.display()))
-}
-
-/// Id of the private project tied to a scanned directory.
-#[must_use]
-pub fn directory_project_id(root: &Path) -> ProjectId {
-    ProjectId(format!("dir:{}", root.display()))
 }
 
 /// Ports injected by the composition root.
@@ -500,10 +495,8 @@ impl App {
         def: &ProjectDef,
     ) -> Result<ProjectId, AppError> {
         self.services.projects.save(&location, def)?;
-        let id = match &location {
-            ProjectLocation::Private(id) => id.clone(),
-            ProjectLocation::SharedFile(path) => file_project_id(path),
-        };
+        let ProjectLocation::SharedFile(path) = &location;
+        let id = file_project_id(path);
         self.services.registry.upsert_project(&RegistryEntry {
             id: id.clone(),
             name: def.name.clone(),
@@ -619,18 +612,19 @@ impl App {
             });
         }
         let root = archipel_project::outermost_repo_root(&dir).unwrap_or(dir);
+        let file = root.join(archipel_project::PROJECT_FILE_NAME);
         Ok(DirectoryTarget {
-            id: directory_project_id(&root),
-            project_file: None,
+            id: file_project_id(&file),
+            project_file: file.is_file().then_some(file),
             scan_root: root,
         })
     }
 
     /// Opens the app on a directory (spec §1 "Launch from a directory"):
-    /// its `archipel.toml` when there is one, otherwise a private project
-    /// tied to the directory, shown at once and filled in by a background,
-    /// cancellable scan. Relaunching adds newly found repos and never
-    /// re-adds hidden ones (they stay in the project, hidden).
+    /// its `archipel.toml` (or the one at the outermost enclosing repo root)
+    /// when there is one. Otherwise writes `archipel.toml` at the scan root,
+    /// shows the project at once and fills it in by a background,
+    /// cancellable scan; relaunching then opens that file.
     pub fn open_directory(&self, dir: &Path) -> Result<ProjectId, AppError> {
         let target = self.directory_target(dir)?;
         if let Some(file) = &target.project_file {
@@ -638,27 +632,23 @@ impl App {
             self.open_project(&id)?;
             return Ok(id);
         }
-        let known = self
-            .services
-            .registry
-            .list_projects()?
-            .iter()
-            .any(|e| e.id == target.id);
-        if !known {
-            let name = target.scan_root.file_name().map_or_else(
-                || target.scan_root.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            let def = ProjectDef {
-                name,
-                repos: Vec::new(),
-                settings: ProjectSettings::default(),
-            };
-            self.create_project(ProjectLocation::Private(target.id.clone()), &def)?;
-        }
-        self.open_project(&target.id)?;
-        self.start_scan(&target.id, target.scan_root);
-        Ok(target.id)
+        let name = target.scan_root.file_name().map_or_else(
+            || target.scan_root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let def = ProjectDef {
+            name,
+            repos: Vec::new(),
+            settings: ProjectSettings {
+                accent: Some(archipel_theme::accent_for_key(&target.id.0).to_hex()),
+                ..ProjectSettings::default()
+            },
+        };
+        let file = target.scan_root.join(archipel_project::PROJECT_FILE_NAME);
+        let id = self.create_project(ProjectLocation::SharedFile(file), &def)?;
+        self.open_project(&id)?;
+        self.start_scan(&id, target.scan_root);
+        Ok(id)
     }
 
     fn start_scan(&self, project: &ProjectId, root: PathBuf) {

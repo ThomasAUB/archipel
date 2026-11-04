@@ -8,43 +8,21 @@ use archipel_app::dashboard::RepoStatus;
 use archipel_app::{App, AppEvent, Command};
 use archipel_compose::{AppDirs, compose};
 use archipel_graph::EdgeKind;
-use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry, ScanOptions};
+use archipel_model::project::ScanOptions;
 use archipel_model::{CancelToken, NoProgress, ProjectId, RepoPath, Timestamp};
 use archipel_stats::{PauseToken, RepoTarget, StatsConfig, StatsRegistry};
 
 /// How long headless commands wait for background work.
 const WAIT: Duration = Duration::from_secs(600);
 
-/// Registers `target` (a project file, or a folder scanned into a private
-/// project) and opens it. Returns the project id.
+/// Registers `target` (a project file, or a folder scanned into a new
+/// `archipel.toml`) and opens it. Returns the project id.
 fn open_target(app: &App, target: &Path) -> Result<ProjectId> {
     let target = std::path::absolute(target)?;
-    let id = if target.is_file() {
-        app.import_project_file(&target)?
-    } else {
-        let repos = app.scan(&target)?;
-        if repos.is_empty() {
-            bail!("no repository found below {}", target.display());
-        }
-        let def = ProjectDef {
-            name: target
-                .file_name()
-                .map_or_else(|| "project".into(), |n| n.to_string_lossy().into_owned()),
-            repos: repos
-                .into_iter()
-                .map(|r| RepoEntry {
-                    path: r.path,
-                    alias: None,
-                    category: None,
-                })
-                .collect(),
-            settings: archipel_model::project::ProjectSettings::default(),
-        };
-        app.create_project(
-            ProjectLocation::Private(ProjectId(format!("dir:{}", target.display()))),
-            &def,
-        )?
-    };
+    if !target.is_file() {
+        return Ok(app.new_project_from_folder(&target)?);
+    }
+    let id = app.import_project_file(&target)?;
     app.open_project(&id)?;
     Ok(id)
 }

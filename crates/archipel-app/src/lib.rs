@@ -41,5 +41,5 @@ pub use actions::{Action, ActionContext, ActionRegistry, Command};
 pub use app::{
     App, AppError, AppEvent, CloneOutcome, CloneProtocol, DirectoryTarget, Extensions,
     ProjectIdentity, PullRequestOutcome, PullRequestPlan, PullRequestTarget, Services,
-    directory_project_id, file_project_id, initials,
+    file_project_id, initials,
 };

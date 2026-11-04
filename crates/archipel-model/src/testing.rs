@@ -19,10 +19,9 @@ use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefS
 use crate::ports::{
     BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, Coverage, DiffReader,
     DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
-    MergeToolLauncher, PrivateProjectStore, ProjectRegistry, ProjectSource, RefReader, RefWriter,
-    RemoteInfo, RemoteOps, RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore,
-    StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, UiStateStore,
-    WatchHandle,
+    MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps,
+    RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
+    SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, UiStateStore, WatchHandle,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -720,7 +719,6 @@ pub struct InMemoryStore {
     summaries: Mutex<HashMap<ProjectId, Vec<(RepoId, RepoSummary)>>>,
     ui: Mutex<HashMap<ProjectId, UiState>>,
     registry: Mutex<BTreeMap<ProjectId, RegistryEntry>>,
-    private: Mutex<HashMap<ProjectId, ProjectDef>>,
     journal: Mutex<Vec<JournalEntry>>,
     stats: Mutex<HashMap<RepoId, RepoStats>>,
 }
@@ -781,16 +779,6 @@ impl ProjectRegistry for InMemoryStore {
             .get_mut(id)
             .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
         entry.last_opened = Some(when);
-        Ok(())
-    }
-}
-
-impl PrivateProjectStore for InMemoryStore {
-    fn load_private(&self, id: &ProjectId) -> Result<Option<ProjectDef>, StoreError> {
-        Ok(lock(&self.private).get(id).cloned())
-    }
-    fn save_private(&self, id: &ProjectId, project: &ProjectDef) -> Result<(), StoreError> {
-        lock(&self.private).insert(id.clone(), project.clone());
         Ok(())
     }
 }
@@ -903,16 +891,13 @@ pub struct FakeProjectSource {
 
 impl ProjectSource for FakeProjectSource {
     fn load(&self, location: &ProjectLocation) -> Result<ProjectDef, ProjectError> {
-        lock(&self.projects)
-            .get(location)
-            .cloned()
-            .ok_or_else(|| ProjectError::Io {
-                path: match location {
-                    ProjectLocation::SharedFile(p) => p.clone(),
-                    ProjectLocation::Private(id) => id.0.clone().into(),
-                },
+        lock(&self.projects).get(location).cloned().ok_or_else(|| {
+            let ProjectLocation::SharedFile(path) = location;
+            ProjectError::Io {
+                path: path.clone(),
                 message: "not found".into(),
-            })
+            }
+        })
     }
     fn save(&self, location: &ProjectLocation, project: &ProjectDef) -> Result<(), ProjectError> {
         lock(&self.projects).insert(location.clone(), project.clone());

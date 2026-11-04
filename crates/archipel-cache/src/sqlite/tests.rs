@@ -6,7 +6,7 @@ use archipel_model::journal::{
     EntryState, HeadRef, JournalEntry, JournalId, OperationKind, RefSnapshot,
 };
 use archipel_model::ports::store::{
-    JournalStore, PrivateProjectStore, ProjectRegistry, StatsStore, SummaryStore, UiStateStore,
+    JournalStore, ProjectRegistry, StatsStore, SummaryStore, UiStateStore,
 };
 use archipel_model::testing::oid;
 use archipel_model::{ProjectId, RepoId, StoreError, Timestamp};
@@ -19,7 +19,6 @@ const TABLES: &[&str] = &[
     "summaries",
     "ui_state",
     "registry",
-    "private_projects",
     "journal",
     "stats_cursor",
     "stats_activity",
@@ -75,6 +74,48 @@ fn migrates_an_empty_database_step_by_step() {
 }
 
 #[test]
+fn v4_forgets_private_projects_and_their_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        configure(&conn).unwrap();
+        schema::migrate_to(&mut conn, 3).unwrap();
+        for sql in [
+            r#"INSERT INTO registry VALUES ('dir:/w', '{"id":"dir:/w","name":"w","location":{"Private":"dir:/w"},"last_opened":null}')"#,
+            r#"INSERT INTO registry VALUES ('file:/s', '{"id":"file:/s","name":"s","location":{"SharedFile":"/s"},"last_opened":null}')"#,
+            "INSERT INTO private_projects VALUES ('dir:/w', '{}')",
+            "INSERT INTO ui_state VALUES ('dir:/w', '{}')",
+            "INSERT INTO ui_state VALUES ('file:/s', '{}')",
+            "INSERT INTO summaries VALUES ('dir:/w', 0, 1, '{}')",
+            "INSERT INTO summaries VALUES ('file:/s', 0, 1, '{}')",
+        ] {
+            conn.execute(sql, []).unwrap();
+        }
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    let ids: Vec<_> = store
+        .list_projects()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id.0)
+        .collect();
+    assert_eq!(ids, ["file:/s"]);
+    let conn = raw(&store);
+    assert!(!tables(&conn).contains(&"private_projects".to_owned()));
+    for table in ["ui_state", "summaries"] {
+        let projects: Vec<String> = conn
+            .prepare(&format!("SELECT project FROM {table}"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(projects, ["file:/s"], "{table}");
+    }
+}
+
+#[test]
 fn reopening_a_migrated_database_is_a_no_op() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.sqlite");
@@ -126,7 +167,6 @@ fn corrupt_store() -> SqliteStore {
             "INSERT INTO summaries VALUES ('p', 0, 1, '{bad')",
             "INSERT INTO ui_state VALUES ('p', '42')",
             "INSERT INTO registry VALUES ('p', 'null')",
-            "INSERT INTO private_projects VALUES ('p', '{}')",
             "INSERT INTO journal (id, repo, batch, data) VALUES (1, 1, 7, 'nope')",
             "INSERT INTO stats_cursor VALUES (1, 'not-an-oid')",
             "INSERT INTO stats_activity VALUES (1, 0, 'a', -1)",
@@ -152,7 +192,6 @@ fn undecodable_records_are_reported_as_corrupt() {
     assert_corrupt(store.load_ui_state(&p));
     assert_corrupt(store.list_projects());
     assert_corrupt(store.mark_opened(&p, Timestamp(1)));
-    assert_corrupt(store.load_private(&p));
     assert_corrupt(store.recent(repo, 10));
     assert_corrupt(store.batch(archipel_model::journal::BatchId(7)));
     assert_corrupt(store.set_state(JournalId(1), EntryState::Undone));

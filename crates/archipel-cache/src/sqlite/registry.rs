@@ -1,7 +1,7 @@
-//! The project registry and private project definitions.
+//! The project registry.
 
-use archipel_model::ports::store::{PrivateProjectStore, ProjectRegistry};
-use archipel_model::project::{ProjectDef, RegistryEntry};
+use archipel_model::ports::store::ProjectRegistry;
+use archipel_model::project::RegistryEntry;
 use archipel_model::{ProjectId, StoreError, Timestamp};
 use rusqlite::params;
 
@@ -10,8 +10,6 @@ use super::{SqliteStore, db, write_tx};
 
 /// Name of a registry record in error messages.
 const REGISTRY_ENTRY: &str = "registry entry";
-/// Name of a private project record in error messages.
-const PRIVATE_PROJECT: &str = "private project";
 
 /// Selects the record of one registry entry.
 const SELECT_ENTRY: &str = "SELECT data FROM registry WHERE id = ?1";
@@ -59,26 +57,5 @@ impl ProjectRegistry for SqliteStore {
         entry.last_opened = Some(when);
         save_json(&tx, UPSERT_ENTRY, &id.0, &entry, REGISTRY_ENTRY)?;
         tx.commit().map_err(db)
-    }
-}
-
-impl PrivateProjectStore for SqliteStore {
-    fn load_private(&self, id: &ProjectId) -> Result<Option<ProjectDef>, StoreError> {
-        load_json(
-            &self.lock(),
-            "SELECT data FROM private_projects WHERE id = ?1",
-            &id.0,
-            PRIVATE_PROJECT,
-        )
-    }
-
-    fn save_private(&self, id: &ProjectId, project: &ProjectDef) -> Result<(), StoreError> {
-        save_json(
-            &self.lock(),
-            "INSERT OR REPLACE INTO private_projects (id, data) VALUES (?1, ?2)",
-            &id.0,
-            project,
-            PRIVATE_PROJECT,
-        )
     }
 }

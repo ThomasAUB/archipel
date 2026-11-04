@@ -5,7 +5,7 @@
 use crate::error::StoreError;
 use crate::ids::{Oid, ProjectId, RepoId};
 use crate::journal::{BatchId, EntryState, JournalEntry, JournalId};
-use crate::project::{ProjectDef, RegistryEntry};
+use crate::project::RegistryEntry;
 use crate::stats::{ActivityBucket, Hotspot, StatsDelta};
 use crate::summary::RepoSummary;
 use crate::time::Timestamp;
@@ -42,14 +42,6 @@ pub trait ProjectRegistry: Send + Sync {
     fn remove_project(&self, id: &ProjectId) -> Result<(), StoreError>;
     /// Records that a project was opened (recent list).
     fn mark_opened(&self, id: &ProjectId, when: Timestamp) -> Result<(), StoreError>;
-}
-
-/// Storage of private project definitions (not shared files).
-pub trait PrivateProjectStore: Send + Sync {
-    /// Loads a private definition.
-    fn load_private(&self, id: &ProjectId) -> Result<Option<ProjectDef>, StoreError>;
-    /// Saves a private definition.
-    fn save_private(&self, id: &ProjectId, project: &ProjectDef) -> Result<(), StoreError>;
 }
 
 /// The bounded operation journal used by undo/redo.

@@ -9,16 +9,14 @@ use archipel_model::journal::{
     BatchId, EntryState, HeadRef, JournalEntry, JournalId, OperationKind, RefSnapshot, StashRecord,
 };
 use archipel_model::ports::store::{
-    JournalStore, PrivateProjectStore, ProjectRegistry, StatsStore, SummaryStore, UiStateStore,
+    JournalStore, ProjectRegistry, StatsStore, SummaryStore, UiStateStore,
 };
-use archipel_model::project::{
-    MessageTemplateDef, ProjectDef, ProjectLocation, ProjectSettings, RegistryEntry, RepoEntry,
-};
+use archipel_model::project::{ProjectLocation, RegistryEntry};
 use archipel_model::stats::{ActivityBucket, Hotspot, StatsDelta};
 use archipel_model::summary::{ChangeCounts, HeadState, RepoOp, RepoSummary, Upstream};
 use archipel_model::testing::{InMemoryStore, oid};
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
-use archipel_model::{ProjectId, RepoId, RepoPath, StoreError, Timestamp};
+use archipel_model::{ProjectId, RepoId, StoreError, Timestamp};
 
 /// Runs `test` against a fresh temp-file store and a fresh in-memory store.
 fn each_store(test: impl Fn(&SqliteStore)) {
@@ -84,28 +82,6 @@ fn registry_entry(id: &str) -> RegistryEntry {
         name: format!("Project {id}"),
         location: ProjectLocation::SharedFile(PathBuf::from(format!("/work/{id}archipel.toml"))),
         last_opened: None,
-    }
-}
-
-fn project_def() -> ProjectDef {
-    ProjectDef {
-        name: "Private".into(),
-        repos: vec![RepoEntry {
-            path: RepoPath::new("/work/a"),
-            alias: Some("alpha".into()),
-            category: None,
-        }],
-        settings: ProjectSettings {
-            require_same_branch: true,
-            ticket_prefix: Some("JIRA-1".into()),
-            ticket_from_branch: None,
-            message_templates: vec![MessageTemplateDef {
-                name: "fix".into(),
-                body: "{ticket}: fix".into(),
-            }],
-            accent: None,
-            icon: Some("🧪".into()),
-        },
     }
 }
 
@@ -211,12 +187,14 @@ fn registry_upsert_list_remove() {
         assert!(r.list_projects().unwrap().is_empty());
         r.upsert_project(&registry_entry("b")).unwrap();
         r.upsert_project(&registry_entry("a")).unwrap();
-        let mut private = registry_entry("c");
-        private.location = ProjectLocation::Private(pid("c"));
-        r.upsert_project(&private).unwrap();
+        r.upsert_project(&registry_entry("c")).unwrap();
         assert_eq!(
             r.list_projects().unwrap(),
-            vec![registry_entry("a"), registry_entry("b"), private.clone()]
+            vec![
+                registry_entry("a"),
+                registry_entry("b"),
+                registry_entry("c")
+            ]
         );
 
         let mut renamed = registry_entry("a");
@@ -226,7 +204,10 @@ fn registry_upsert_list_remove() {
 
         r.remove_project(&pid("b")).unwrap();
         r.remove_project(&pid("missing")).unwrap();
-        assert_eq!(r.list_projects().unwrap(), vec![renamed, private]);
+        assert_eq!(
+            r.list_projects().unwrap(),
+            vec![renamed, registry_entry("c")]
+        );
     });
 }
 
@@ -246,24 +227,6 @@ fn mark_opened_updates_or_reports_not_found() {
         );
     });
 }
-
-// ---- private projects ----
-
-#[test]
-fn private_projects_round_trip() {
-    each_store(|store| {
-        let p: &dyn PrivateProjectStore = store;
-        assert_eq!(p.load_private(&pid("x")).unwrap(), None);
-        p.save_private(&pid("x"), &project_def()).unwrap();
-        assert_eq!(p.load_private(&pid("x")).unwrap(), Some(project_def()));
-        let mut changed = project_def();
-        changed.repos.clear();
-        p.save_private(&pid("x"), &changed).unwrap();
-        assert_eq!(p.load_private(&pid("x")).unwrap(), Some(changed));
-    });
-}
-
-// ---- journal ----
 
 #[test]
 fn journal_append_assigns_increasing_ids_and_recent_is_newest_first() {
@@ -531,7 +494,6 @@ fn fill(path: &Path) {
     store.save_ui_state(&pid("p"), &ui_state()).unwrap();
     store.upsert_project(&registry_entry("p")).unwrap();
     store.mark_opened(&pid("p"), Timestamp(5)).unwrap();
-    store.save_private(&pid("p"), &project_def()).unwrap();
     store
         .append(&journal_entry(1, Some(4), "kept"), 10)
         .unwrap();
@@ -562,7 +524,6 @@ fn file_database_persists_across_reopen() {
     let mut entry = registry_entry("p");
     entry.last_opened = Some(Timestamp(5));
     assert_eq!(store.list_projects().unwrap(), vec![entry]);
-    assert_eq!(store.load_private(&pid("p")).unwrap(), Some(project_def()));
     assert_eq!(labels(&store.batch(BatchId(4)).unwrap()), ["kept"]);
     assert_eq!(store.cursor(RepoId(1)).unwrap(), Some(oid(9)));
     assert_eq!(
