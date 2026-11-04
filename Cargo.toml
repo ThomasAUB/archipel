@@ -1,0 +1,66 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tools/fixtures"]
+
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ThomasAUB/archipel"
+rust-version = "1.85"
+
+[workspace.dependencies]
+archipel-model = { path = "crates/archipel-model" }
+archipel-project = { path = "crates/archipel-project" }
+archipel-git = { path = "crates/archipel-git" }
+archipel-ops = { path = "crates/archipel-ops" }
+archipel-watch = { path = "crates/archipel-watch" }
+archipel-cache = { path = "crates/archipel-cache" }
+archipel-graph = { path = "crates/archipel-graph" }
+archipel-stats = { path = "crates/archipel-stats" }
+archipel-theme = { path = "crates/archipel-theme" }
+archipel-app = { path = "crates/archipel-app" }
+archipel-fixtures = { path = "tools/fixtures" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+gix = { version = "0.90", default-features = false }
+memmap2 = "0.9"
+notify = "8"
+rayon = "1"
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process", "io-util"] }
+toml = "1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# Pedantic lints allowed workspace-wide, with the reason:
+# - module_name_repetitions: `RepoSummary` in `summary` reads better than `Summary`.
+module_name_repetitions = "allow"
+# - missing_errors_doc: every fallible fn returns a typed error documented on the enum.
+missing_errors_doc = "allow"
+
+[profile.release]
+debug = "line-tables-only"
+lto = "thin"
+codegen-units = 4
+
+[profile.bench]
+inherits = "release"

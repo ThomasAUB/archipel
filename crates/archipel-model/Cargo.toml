@@ -1,0 +1,22 @@
+[package]
+name = "archipel-model"
+description = "Pure data types and port traits shared by every Archipel crate (no I/O)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+# In-memory fakes of every port trait, for consumers' tests.
+testing = []
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
