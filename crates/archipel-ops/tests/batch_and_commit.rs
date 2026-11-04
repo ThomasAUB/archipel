@@ -173,18 +173,19 @@ fn batch_operations_on_a_project() {
     assert!(pull.per_repo[behind].1.is_done());
     assert_eq!(pull.failed(), vec![targets[diverged].id]);
 
-    // Create a branch everywhere, then check it out everywhere.
+    // Create a branch everywhere: it is checked out at once, so checking it
+    // out again is skipped.
     let created =
         o.rt.block_on(o.batches.create_branch_all(&targets, "release/1.0", None));
     assert_eq!(created.counts(), (8, 0, 0));
     let checkout =
         o.rt.block_on(o.batches.checkout_all(&targets, "release/1.0"));
-    assert_eq!(checkout.counts().0 + checkout.counts().1, 8);
+    assert_eq!(checkout.counts(), (0, 0, 8));
     let missing =
         o.rt.block_on(o.batches.checkout_all(&targets, "does-not-exist"));
     assert_eq!(missing.counts(), (0, 0, 8));
 
-    // A batch checkout is undone as one unit.
+    // The create-and-checkout batch is undone as one unit.
     let entries = o.store.recent(targets[0].id, 1).unwrap();
     let batch = entries[0].batch.unwrap();
     let locate = |id| targets.iter().find(|t| t.id == id).map(|t| t.path.clone());

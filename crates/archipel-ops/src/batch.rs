@@ -225,7 +225,8 @@ impl BatchOps {
         .await
     }
 
-    /// Creates a branch on every repo (at `start`, or `HEAD`).
+    /// Creates a branch on every repo (at `start`, or `HEAD`) and checks it
+    /// out.
     pub async fn create_branch_all(
         &self,
         targets: &[BatchTarget],
@@ -239,7 +240,8 @@ impl BatchOps {
             OpClass::Write,
             &format!("Create branch {name}"),
             move |a, t, _| {
-                a.create_branch(&t.path, &name, start.as_deref(), batch)
+                a.create_branch(&t.path, &name, start.as_deref(), batch)?;
+                a.checkout(&t.path, &CheckoutTarget::Branch(name.clone()), batch)
                     .map(Outcome::Done)
             },
         )
