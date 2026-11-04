@@ -1,6 +1,6 @@
 # Spec — Archipel, a multi-repo Git client
 
-This spec defines **what** the product is and **why**. The implementation path (architecture, phases, measurements) lives in [PLAN.md](PLAN.md), which refers to the feature sections below as §1–§7.
+This spec defines **what** the product is and **why**. The implementation path (architecture, phases, measurements) lives in [PLAN.md](PLAN.md), which refers to the feature sections below as §1–§9.
 
 ## Vision
 
@@ -10,7 +10,7 @@ A Git client that is **fast, light on RAM and good-looking**, designed for worki
 
 ## Non-goals (v1)
 
-- No hosting, no built-in PR review (at most, links to GitHub/GitLab).
+- No hosting, no built-in PR review (v1: links to GitHub/GitLab only; deeper forge integration is §8, P2).
 - No code editor or advanced conflict resolution (open the external merge tool instead).
 - No web / in-browser WASM version: a browser has no filesystem access and cannot run `git`.
 
@@ -71,6 +71,28 @@ Computed locally, per repo and aggregated per project. Three views in v1:
 
 Anything else waits for real usage.
 
+### 8. Forge integration (GitHub, GitLab, …) — P2
+> **Not in the current version.** Today only "open in browser" links exist (see Resolved questions).
+
+Easy, low-friction integration with code hosting forges:
+- Providers: GitHub, GitLab (including self-hosted), then Gitea / Forgejo, Bitbucket, Azure DevOps — each as a pluggable provider behind one small trait, so a fork can add its own without patching the core.
+- Setup in a few clicks: provider auto-detected from the remote URL; sign-in by OAuth device flow or personal access token, stored in the OS keychain (never in `.gitproject.toml`).
+- Clone from an account / organization / group: browse and pick repos, clone several at once straight into a project.
+- Per-repo forge status in the dashboard: open PR/MR for the current branch, its CI status, review state.
+- Create a PR/MR from a branch (title, description, target branch prefilled); multi-repo: one PR per repo for the same branch, linked together.
+- Still no built-in code review (see Non-goals): reviewing happens on the forge.
+
+### 9. Repo dependency tree — P2
+> **Not in the current version.** Today submodules are only detected (badge) — see Resolved questions.
+
+Show how the repos of a project depend on each other, as a small tree:
+- Nested submodules at any depth (repo → submodule → submodule → …), with each node's state (initialized or not, pinned commit vs. checked-out commit, dirty).
+- Repos of the project that are themselves submodules of another project repo are shown under their parent rather than twice.
+- **Toggleable:** off by default, a single toggle shows it in the dashboard / sidebar, so the flat view stays uncluttered when nesting doesn't matter. The choice is per project UI state.
+- Compact rendering (indentation + connectors), collapsible nodes; works with the dashboard filters.
+- Actions from a node: init / update a submodule (recursive or not), open it as a repo, add it to the project.
+- Later: other dependency sources through the same extension point (e.g. `repo` manifests, package-manager path / git dependencies).
+
 ## Non-functional requirements
 
 - **Performance:** start < 1 s; dashboard of a 20-repo project < 500 ms; no Git operation ever blocks the UI.
@@ -94,8 +116,8 @@ Anything else waits for real usage.
 
 ## Resolved questions
 
-- **GitHub / GitLab integration:** out of v1. Only "open in browser" links (repo, branch, commit, create PR). Extension point planned for P2.
-- **Submodules:** not added automatically; detected (badge) with an "add submodules to project" action (P1).
+- **GitHub / GitLab integration:** out of v1. Only "open in browser" links (repo, branch, commit, create PR). Full integration is §8 (P2).
+- **Submodules:** not added automatically; detected (badge) with an "add submodules to project" action (P1). Nested display as a toggleable tree is §9 (P2).
 - **Project file:** both — a shareable `.gitproject.toml` at a folder root, or a private project in the user data dir. UI state never goes in the shared file.
 - **Multi-repo commit:** the same branch is not required; warning when branches differ, plus a per-project "require same branch" option.
 - **Distribution:** open source (MIT), signed installers, no telemetry.
