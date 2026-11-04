@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::Oid;
+use crate::refs::{RefKind, RefTip};
 
 /// Whether a commit creates a new commit or amends `HEAD`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,44 @@ pub enum CheckoutTarget {
     TrackRemote(String),
     /// Detach `HEAD` at a commit.
     Detached(Oid),
+}
+
+impl CheckoutTarget {
+    /// What checking out `tip` means: a local branch is switched to; a
+    /// remote branch through its local counterpart, created to track it
+    /// when `has_local` says there is none; a tag detaches at its commit.
+    /// `None` for `HEAD` (already there) and stashes.
+    #[must_use]
+    pub fn for_ref(tip: &RefTip, has_local: impl Fn(&str) -> bool) -> Option<Self> {
+        match tip.kind {
+            RefKind::LocalBranch => Some(Self::Branch(tip.name.clone())),
+            RefKind::RemoteBranch => {
+                let local = tip
+                    .name
+                    .split_once('/')
+                    .map_or(tip.name.as_str(), |(_, b)| b);
+                Some(if has_local(local) {
+                    Self::Branch(local.to_owned())
+                } else {
+                    Self::TrackRemote(tip.name.clone())
+                })
+            }
+            RefKind::Tag => Some(Self::Detached(tip.target)),
+            RefKind::Head | RefKind::Stash => None,
+        }
+    }
+
+    /// What checking out commit `oid` means, given the refs pointing at it:
+    /// its first local branch, else its first remote branch (see
+    /// [`Self::for_ref`]), else the commit itself, detached.
+    #[must_use]
+    pub fn for_commit(oid: Oid, tips: &[RefTip], has_local: impl Fn(&str) -> bool) -> Self {
+        [RefKind::LocalBranch, RefKind::RemoteBranch]
+            .iter()
+            .find_map(|kind| tips.iter().find(|t| t.kind == *kind))
+            .and_then(|t| Self::for_ref(t, has_local))
+            .unwrap_or(Self::Detached(oid))
+    }
 }
 
 /// How to delete a branch.
@@ -182,4 +221,80 @@ pub enum SequenceAction {
     Abort,
     /// `--skip` (rebase / cherry-pick).
     Skip,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tip(name: &str, kind: RefKind, target: Oid) -> RefTip {
+        RefTip {
+            name: name.into(),
+            kind,
+            target,
+        }
+    }
+
+    #[test]
+    fn ref_checkout_targets() {
+        let oid = Oid::from_bytes(&[7; 20]).unwrap();
+        let none = |_: &str| false;
+        let local = tip("main", RefKind::LocalBranch, oid);
+        assert_eq!(
+            CheckoutTarget::for_ref(&local, none),
+            Some(CheckoutTarget::Branch("main".into()))
+        );
+        let remote = tip("origin/feat/x", RefKind::RemoteBranch, oid);
+        assert_eq!(
+            CheckoutTarget::for_ref(&remote, none),
+            Some(CheckoutTarget::TrackRemote("origin/feat/x".into()))
+        );
+        assert_eq!(
+            CheckoutTarget::for_ref(&remote, |b| b == "feat/x"),
+            Some(CheckoutTarget::Branch("feat/x".into()))
+        );
+        let tag = tip("v1.0", RefKind::Tag, oid);
+        assert_eq!(
+            CheckoutTarget::for_ref(&tag, none),
+            Some(CheckoutTarget::Detached(oid))
+        );
+        assert_eq!(
+            CheckoutTarget::for_ref(&tip("HEAD", RefKind::Head, oid), none),
+            None
+        );
+        assert_eq!(
+            CheckoutTarget::for_ref(&tip("stash", RefKind::Stash, oid), none),
+            None
+        );
+    }
+
+    #[test]
+    fn commit_checkout_prefers_local_then_remote_branches() {
+        let oid = Oid::from_bytes(&[3; 20]).unwrap();
+        let none = |_: &str| false;
+        let head = tip("HEAD", RefKind::Head, oid);
+        let tag = tip("v2", RefKind::Tag, oid);
+        let remote = tip("origin/dev", RefKind::RemoteBranch, oid);
+        let local = tip("dev", RefKind::LocalBranch, oid);
+        assert_eq!(
+            CheckoutTarget::for_commit(
+                oid,
+                &[head.clone(), tag.clone(), remote.clone(), local],
+                none
+            ),
+            CheckoutTarget::Branch("dev".into())
+        );
+        assert_eq!(
+            CheckoutTarget::for_commit(oid, &[tag.clone(), remote], none),
+            CheckoutTarget::TrackRemote("origin/dev".into())
+        );
+        assert_eq!(
+            CheckoutTarget::for_commit(oid, &[head, tag], none),
+            CheckoutTarget::Detached(oid)
+        );
+        assert_eq!(
+            CheckoutTarget::for_commit(oid, &[], none),
+            CheckoutTarget::Detached(oid)
+        );
+    }
 }
