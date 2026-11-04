@@ -437,15 +437,20 @@ impl DiffReader for GitCli {
 
 impl StashReader for GitCli {
     fn stashes(&self, repo: &RepoPath) -> Result<Vec<StashEntry>, GitError> {
-        let text = self.read(repo, &["stash", "list", "--format=%H%x00%gs"])?;
+        let text = self.read(repo, &["stash", "list", "--format=%H%x00%P%x00%ct%x00%gs"])?;
         text.lines()
             .filter(|l| !l.is_empty())
             .enumerate()
             .map(|(i, line)| {
-                let (hash, message) = line.split_once('\0').unwrap_or((line, ""));
+                let mut fields = line.splitn(4, '\0');
+                let mut next = || fields.next().unwrap_or_default();
+                let (hash, parents, time, message) = (next(), next(), next(), next());
+                let base = parents.split(' ').next().unwrap_or_default();
                 Ok(StashEntry {
                     index: u32::try_from(i).unwrap_or(u32::MAX),
                     oid: oid(hash, "git stash list")?,
+                    base: oid(base, "git stash list")?,
+                    time: Timestamp(time.parse().unwrap_or(0)),
                     message: message.to_owned(),
                 })
             })

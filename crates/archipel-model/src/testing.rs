@@ -533,6 +533,8 @@ impl StashWriter for FakeGit {
                 StashEntry {
                     index: 0,
                     oid: new,
+                    base: r.summary.head_oid.unwrap_or_else(|| oid(0)),
+                    time: Timestamp::now(),
                     message: request.message.clone().unwrap_or_default(),
                 },
             );
@@ -567,6 +569,8 @@ impl StashWriter for FakeGit {
                 StashEntry {
                     index: 0,
                     oid,
+                    base: r.summary.head_oid.unwrap_or_else(|| self::oid(0)),
+                    time: Timestamp::now(),
                     message: message.to_owned(),
                 },
             );

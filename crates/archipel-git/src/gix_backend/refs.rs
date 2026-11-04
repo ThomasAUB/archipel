@@ -203,9 +203,16 @@ impl StashReader for GixReader {
         let mut out = Vec::new();
         for (i, line) in log.enumerate() {
             let line = line.map_err(backend)?;
+            let commit = repo.find_commit(line.new_oid).map_err(backend)?;
+            let base = commit
+                .parent_ids()
+                .next()
+                .ok_or_else(|| backend(format!("stash {} has no parent", line.new_oid)))?;
             out.push(StashEntry {
                 index: u32::try_from(i).unwrap_or(u32::MAX),
                 oid: to_oid(line.new_oid)?,
+                base: to_oid(base)?,
+                time: commit_time(&repo, line.new_oid),
                 message: line.message.to_str_lossy().into_owned(),
             });
         }

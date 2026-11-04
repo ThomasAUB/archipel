@@ -257,6 +257,7 @@ fn stash_lifecycle() {
     let stashes = cli.stashes(&path).unwrap();
     assert_eq!(stashes.len(), 1);
     assert!(stashes[0].message.contains("wip"));
+    assert_eq!(Some(stashes[0].base), cli.summary(&path).unwrap().head_oid);
     assert!(!cli.summary(&path).unwrap().changes.is_dirty());
     cli.stash_apply(&path, 0, StashApplyMode::Keep).unwrap();
     assert_eq!(cli.stashes(&path).unwrap().len(), 1);

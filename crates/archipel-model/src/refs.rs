@@ -41,6 +41,10 @@ pub struct StashEntry {
     pub index: u32,
     /// Stash commit id (stable across list changes, used by undo).
     pub oid: Oid,
+    /// Commit the stash was made on (its first parent).
+    pub base: Oid,
+    /// When the stash was made.
+    pub time: Timestamp,
     /// Stash message.
     pub message: String,
 }
