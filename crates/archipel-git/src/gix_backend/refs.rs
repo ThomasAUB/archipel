@@ -176,7 +176,12 @@ impl RefReader for GixReader {
         let mut values = Vec::with_capacity(refs.len());
         for name in refs {
             let target = match repo.try_find_reference(name.as_str()).map_err(backend)? {
-                Some(mut r) => Some(to_oid(r.peel_to_id().map_err(backend)?)?),
+                // Record the direct target (an annotated tag's object, not
+                // its commit), as the CLI does, so undo restores it exactly.
+                Some(mut r) => match r.target().try_id().map(ToOwned::to_owned) {
+                    Some(id) => Some(to_oid(id)?),
+                    None => Some(to_oid(r.peel_to_id().map_err(backend)?)?),
+                },
                 None => None,
             };
             values.push((name.clone(), target));

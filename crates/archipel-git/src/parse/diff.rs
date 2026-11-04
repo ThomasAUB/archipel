@@ -16,7 +16,9 @@ pub fn parse_unified_diff(text: &str, max_file_bytes: usize) -> Vec<FileDiff> {
     let mut current: Option<(FileDiff, usize)> = None;
     let mut old_line = 0u32;
     let mut new_line = 0u32;
-    for line in text.lines() {
+    // Split on `\n` only: a `\r` before it belongs to the content (CRLF
+    // files), and patches built from the diff must reproduce it exactly.
+    for line in text.split_terminator('\n') {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             if let Some((file, _)) = current.take() {
                 files.push(file);
@@ -284,6 +286,13 @@ index 6666666..0000000
         let files = parse_unified_diff(DIFF, 10);
         assert!(files[0].truncated);
         assert!(files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn keeps_carriage_returns() {
+        let diff = "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1 +1 @@\n-a\r\n+b\r\n";
+        let files = parse_unified_diff(diff, usize::MAX);
+        assert_eq!(files[0].hunks[0].lines[1].content, "b\r");
     }
 
     #[test]
