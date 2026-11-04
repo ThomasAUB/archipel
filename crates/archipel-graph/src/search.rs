@@ -1,5 +1,6 @@
 //! Background search over the history: hash prefix, message summary, author.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use archipel_model::ports::HistoryReader;
@@ -120,19 +121,33 @@ impl Searcher {
 
     /// Row of `oid` in the snapshot, by scanning the ids chunk by chunk.
     pub fn row_of(&self, oid: Oid, cancel: &CancelToken) -> Result<Option<u32>, GraphError> {
+        Ok(self.rows_of(&[oid], cancel)?.get(&oid).copied())
+    }
+
+    /// Rows of several ids in one scan, which stops once all are found; ids
+    /// missing from the snapshot are absent from the map.
+    pub fn rows_of(
+        &self,
+        wanted: &[Oid],
+        cancel: &CancelToken,
+    ) -> Result<HashMap<Oid, u32>, GraphError> {
+        let wanted: HashSet<Oid> = wanted.iter().copied().collect();
+        let mut found = HashMap::with_capacity(wanted.len());
         let rows = self.file.rows();
         let chunk = self.chunk_rows.saturating_mul(OID_SCAN_FACTOR);
         let mut start = 0u32;
-        while start < rows {
+        while start < rows && found.len() < wanted.len() {
             cancel.check()?;
             let end = start.saturating_add(chunk).min(rows);
             let oids = self.file.read_oids(start..end)?;
-            if let Some(i) = oids.iter().position(|o| *o == oid) {
-                return Ok(Some(start + u32::try_from(i).unwrap_or(u32::MAX)));
+            for (row, oid) in (start..).zip(oids) {
+                if wanted.contains(&oid) {
+                    found.entry(oid).or_insert(row);
+                }
             }
             start = end;
         }
-        Ok(None)
+        Ok(found)
     }
 }
 

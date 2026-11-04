@@ -491,6 +491,13 @@ fn search_by_hash_author_and_message() {
     assert!(handle.join().unwrap().unwrap_err().is_cancelled());
     assert_eq!(view.row_of(oid(1999), &cancel).unwrap(), Some(1999));
     assert_eq!(view.row_of(oid(99_999), &cancel).unwrap(), None);
+    let rows = view
+        .searcher()
+        .unwrap()
+        .rows_of(&[oid(7), oid(1999), oid(99_999), oid(7)], &cancel)
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!((rows[&oid(7)], rows[&oid(1999)]), (7, 1999));
 }
 
 #[test]
