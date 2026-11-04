@@ -1,0 +1,102 @@
+# Spec — Archipel, a multi-repo Git client
+
+This spec defines **what** the product is and **why**. The implementation path (architecture, phases, measurements) lives in [PLAN.md](PLAN.md), which refers to the feature sections below as §1–§7.
+
+## Vision
+
+A Git client that is **fast, light on RAM and good-looking**, designed for working on **several repos at once**, grouped into *projects*. GitKraken, Fork and SourceTree are centered on a single repo; Archipel is centered on the project: see the state of all its repos at a glance and act on them in batch.
+
+**Target user:** a developer juggling N related repos (app + libs + plugins, microservices, a product split across repos, …).
+
+## Non-goals (v1)
+
+- No hosting, no built-in PR review (at most, links to GitHub/GitLab).
+- No code editor or advanced conflict resolution (open the external merge tool instead).
+- No web / in-browser WASM version: a browser has no filesystem access and cannot run `git`.
+
+## Features
+
+Priority: **P0** = MVP, **P1** = v1, **P2** = later.
+
+### 1. Projects (groups of repos) — P0
+- A project = a name + a list of local repos.
+- Add repos by manual selection **or** by scanning a parent folder (automatic `.git` detection).
+- The definition is stored in a readable file (`.gitproject.toml`), so it can be versioned and shared with the team.
+- P2: import from submodules, `repo` manifest, VS Code workspace.
+
+### 2. Project switching — P0
+- Fast keyboard switcher (`Ctrl+P` style), plus a recent-projects list.
+- Each project keeps its own UI state (selected repo, filters, layout).
+- Switch in < 200 ms (state cached, refreshed in the background).
+
+### 3. Project dashboard — P0
+A minimal view, one row per repo:
+
+| Column | Content                                            |
+| ------ | -------------------------------------------------- |
+| Repo   | name + path                                        |
+| Branch | current branch (or detached HEAD)                  |
+| Sync   | ahead / behind upstream                            |
+| Changes| modified / staged / untracked file counts, stashes |
+| Version| latest tag + `git describe`                        |
+| Fetch  | time of last fetch                                 |
+
+- Live updates through a file watcher (no expensive polling).
+- Filters: "dirty repos only", "behind remote", …
+- Batch actions: **fetch all**, pull all, check out the same branch on every repo, create a branch/tag on several repos.
+
+### 4. Multi-repo commit — P0
+- Pick the repos to commit (pre-checked: those with changes).
+- One message applied everywhere; preview of the staged files per repo.
+- Partial-failure handling: if a hook fails on one repo, show a clear report (committed / failed) and allow a retry — no fake "all or nothing".
+- Options: push after commit, ticket prefix (e.g. `JIRA-123`), message templates.
+
+### 5. Repo view + graph — P0
+- Commit graph, diff, staging per file / hunk / line.
+- Virtualized graph: smooth even with 100k+ commits.
+- Everyday repo actions: commit / amend, branches (checkout, create, rename, delete, set upstream), tags, stashes, fetch / pull / push, reset, revert, continue / abort a merge or rebase in progress.
+
+### 6. Branch drag and drop — P1
+Always confirmed through a menu, never a silent action:
+- branch A → branch B: *merge A into B* / *rebase A onto B* / *fast-forward*
+- local branch → remote: *push*
+- commit → branch: *cherry-pick*
+- **Undo** for every local operation; a push gets a confirmed compensating action instead (revert or force-with-lease). Undo is refused, with an explanation, when it would lose work. Details: [PLAN.md](PLAN.md) §2.4.
+
+### 7. Statistics — P1
+Computed locally, per repo and aggregated per project. Three views in v1:
+- activity over time (commits / week) per author;
+- branch age, and merged branches that were never deleted;
+- file hotspots by churn (lines added / removed).
+
+Anything else waits for real usage.
+
+## Non-functional requirements
+
+- **Performance:** start < 1 s; dashboard of a 20-repo project < 500 ms; no Git operation ever blocks the UI.
+- **Memory (RAM):** a small footprint, unlike Electron clients (GitKraken often reaches 500 MB – 1 GB).
+  - Targets: < 150 MB idle with a 20-repo project open; no steady growth over a long session (no leaks).
+  - Lazy loading: graph and history loaded per visible window (paged / streamed log); the full history is never held in memory.
+  - Inactive projects are unloaded (only a light dashboard summary stays cached).
+  - Bounded caches (max size, LRU eviction) for diffs, blobs and stats; stats are computed as a stream and persisted to disk rather than kept in RAM.
+- **Aesthetics:** light/dark themes, careful typography, restrained animations, adjustable information density.
+- **Themes customizable by a regular user:** no code or file editing required — built-in theme editor with live preview, a full theme derived from a few base colors (background, accent), adjustable fonts / size / density / corner radius, import / export of a readable theme file for sharing.
+- **Compatibility:** respects the user's Git config (credentials, SSH, GPG/SSH signing, hooks, LFS).
+- **Platforms:** Windows and Linux first, macOS later.
+- **Code quality and architecture:** a first-class goal. Code split into single-responsibility modules with interface segregation (small role-based traits); the project must be easy to **customize by anyone who forks it** (extension points, swappable implementations, no core patching needed). Rules: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Stack
+
+- **UI:** GPUI (+ `gpui-component`), to be confirmed in Phase 0 by measuring it against a Tauri spike; egui as the fallback. A native UI is preferred because a WebView alone (e.g. WebView2) costs roughly 80–150 MB, which conflicts with the RAM target. Rationale: [PLAN.md](PLAN.md) §2.2.
+- **Hybrid Git backend:**
+  - **reads** (status, log, graph) through `gitoxide` (`gix`) → fast, parallel across N repos;
+  - **writes** (commit, push, rebase) through the `git` CLI → guaranteed compatibility with hooks, credentials and signing.
+
+## Resolved questions
+
+- **GitHub / GitLab integration:** out of v1. Only "open in browser" links (repo, branch, commit, create PR). Extension point planned for P2.
+- **Submodules:** not added automatically; detected (badge) with an "add submodules to project" action (P1).
+- **Project file:** both — a shareable `.gitproject.toml` at a folder root, or a private project in the user data dir. UI state never goes in the shared file.
+- **Multi-repo commit:** the same branch is not required; warning when branches differ, plus a per-project "require same branch" option.
+- **Distribution:** open source (MIT), signed installers, no telemetry.
+- **Adding a repo by cloning** (URL): P1.
