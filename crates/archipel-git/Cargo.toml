@@ -15,7 +15,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 archipel-fixtures.workspace = true
-criterion = "0.8"
 rayon.workspace = true
 tempfile.workspace = true
 

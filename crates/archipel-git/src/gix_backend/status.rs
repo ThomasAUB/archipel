@@ -79,10 +79,10 @@ fn collect(repo: &gix::Repository, untracked: UntrackedFiles) -> Result<Collecte
                     match status {
                         EntryStatus::Conflict { .. } => state.conflicted = true,
                         EntryStatus::Change(Change::Removed) => {
-                            state.unstaged = Some(ChangeKind::Deleted)
+                            state.unstaged = Some(ChangeKind::Deleted);
                         }
                         EntryStatus::Change(Change::Type { .. }) => {
-                            state.unstaged = Some(ChangeKind::TypeChanged)
+                            state.unstaged = Some(ChangeKind::TypeChanged);
                         }
                         EntryStatus::Change(_) => state.unstaged = Some(ChangeKind::Modified),
                         EntryStatus::IntentToAdd => state.unstaged = Some(ChangeKind::Added),
