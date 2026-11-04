@@ -40,9 +40,10 @@ pub fn dark() -> Theme {
         DARK_ID,
         "Dark",
         BaseColors {
-            // Deep slate (faint blue cast), soft cool white, periwinkle.
-            background: Color::rgb(0x17, 0x19, 0x1e),
-            text: Color::rgb(0xe3, 0xe6, 0xec),
+            // Slate (faint blue cast), dimmed cool grey text (~11:1, not a
+            // glaring 14:1), periwinkle.
+            background: Color::rgb(0x1c, 0x1f, 0x25),
+            text: Color::rgb(0xcd, 0xd2, 0xda),
             accent: Color::rgb(0x7a, 0xa1, 0xe9),
         },
     )
