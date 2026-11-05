@@ -925,7 +925,9 @@ impl App {
                     cached
                         .iter()
                         .find(|(r, _)| *r == rid)
-                        .map_or(RepoStatus::Loading, |(_, s)| RepoStatus::Ready(s.clone()))
+                        .map_or(RepoStatus::Loading, |(_, s)| {
+                            RepoStatus::Ready(Box::new(s.clone()))
+                        })
                 } else {
                     RepoStatus::Missing
                 };
@@ -1513,7 +1515,7 @@ impl App {
                 row.stale = false;
                 row.status = match result {
                     _ if !path.as_path().exists() => RepoStatus::Missing,
-                    Ok(summary) => RepoStatus::Ready(summary),
+                    Ok(summary) => RepoStatus::Ready(Box::new(summary)),
                     Err(archipel_model::GitError::NotARepository { .. }) => RepoStatus::Missing,
                     Err(e) => RepoStatus::Error(e.to_string()),
                 };

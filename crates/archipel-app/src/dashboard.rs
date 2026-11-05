@@ -20,8 +20,8 @@ use crate::forge::{CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFil
 pub enum RepoStatus {
     /// Summary not computed yet (and nothing cached).
     Loading,
-    /// Up-to-date or cached summary.
-    Ready(RepoSummary),
+    /// Up-to-date or cached summary (boxed: it dwarfs the other variants).
+    Ready(Box<RepoSummary>),
     /// The path does not exist or is not a repository.
     Missing,
     /// Reading the repository failed.
@@ -662,7 +662,7 @@ mod tests {
             id: path.id(),
             name: name.into(),
             path,
-            status: RepoStatus::Ready(s),
+            status: RepoStatus::Ready(Box::new(s)),
             stale: false,
             hidden: false,
             forge: ForgeStatus::Unknown,
@@ -742,7 +742,7 @@ mod tests {
             },
         ];
         let r = row("app", |s| {
-            s.changed_files = ChangedFiles::capped(files.clone())
+            s.changed_files = ChangedFiles::capped(files.clone());
         });
         assert_eq!(
             changes.tooltip(&r).unwrap(),
