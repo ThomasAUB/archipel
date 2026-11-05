@@ -41,6 +41,51 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+  coverage:
+    name: Test coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Linux UI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libasound2-dev libssl-dev \
+            pkg-config
+      - name: Tests with coverage
+        run: |
+          cargo llvm-cov --workspace --exclude xtask --exclude archipel-fixtures \
+            --lcov --output-path lcov.info
+          cargo llvm-cov report --json --summary-only --output-path coverage.json
+          cargo llvm-cov report --summary-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            lcov.info
+            coverage.json
+      # Shields.io endpoint JSON on the `badges` branch, read by the README badge.
+      - name: Publish coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          pct=$(jq '.data[0].totals.lines.percent' coverage.json)
+          color=$(awk -v p="$pct" 'BEGIN { print (p >= 80 ? "brightgreen" : p >= 60 ? "yellow" : "red") }')
+          mkdir badges && cd badges
+          LC_ALL=C printf '{"schemaVersion":1,"label":"coverage","message":"%.1f%%","color":"%s"}\n' "$pct" "$color" > coverage.json
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.json
+          git commit -qm "Coverage badge for ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" badges
+
   deny:
     name: Licenses and advisories
     runs-on: ubuntu-latest

@@ -1,5 +1,8 @@
 # Archipel
 
+[![CI](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ThomasAUB/archipel/badges/coverage.json)](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml)
+
 A fast, light-on-RAM Git client built around **projects**: groups of repos you
 work on together. See the state of every repo at a glance, and act on them in
 batch — fetch all, pull all, check out the same branch everywhere, commit the
@@ -97,6 +100,13 @@ Service (GNOME Keyring, KWallet).
 
 ```bash
 cargo test --workspace
+```
+
+Line coverage (needs `cargo install cargo-llvm-cov` and
+`rustup component add llvm-tools-preview`):
+
+```bash
+cargo llvm-cov --workspace --exclude xtask --exclude archipel-fixtures --html --open
 ```
 
 ```bash
