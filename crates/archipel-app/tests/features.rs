@@ -282,6 +282,45 @@ fn categories_group_the_sidebar_and_are_saved_in_the_project() {
 }
 
 #[test]
+fn dashboard_filters_on_categories() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let ids: Vec<_> = e.repos.iter().map(RepoPath::id).collect();
+    let cmd = |c: Command| e.app.dispatch(c).unwrap();
+    let names = |app: &App| -> Vec<String> {
+        app.visible_rows().into_iter().map(|r| r.name).collect()
+    };
+    assert!(e.app.category_filter_keys().is_empty(), "no category: no chip");
+
+    cmd(Command::SetCategory(vec![ids[0]], Some("libs".into())));
+    cmd(Command::SetCategory(vec![ids[1]], Some("apps".into())));
+    assert_eq!(e.app.category_filter_keys(), ["apps", "libs", ""]);
+
+    cmd(Command::ToggleCategoryFilter("libs".into()));
+    assert_eq!(names(&e.app), ["r0"]);
+    // Several categories: any of them.
+    cmd(Command::ToggleCategoryFilter(String::new()));
+    assert_eq!(names(&e.app), ["r0", "r2"]);
+    // Combined with the other filters (AND).
+    cmd(Command::ToggleFilter("problems".into()));
+    assert!(names(&e.app).is_empty());
+    cmd(Command::ToggleFilter("problems".into()));
+
+    // The filter follows a rename; a removed category becomes "Uncategorized".
+    cmd(Command::RenameCategory("libs".into(), Some("core".into())));
+    assert_eq!(e.app.ui_state().unwrap().category_filters, ["", "core"]);
+    assert_eq!(names(&e.app), ["r0", "r2"]);
+    cmd(Command::RenameCategory("core".into(), None));
+    assert_eq!(e.app.ui_state().unwrap().category_filters, [""]);
+    assert_eq!(names(&e.app), ["r0", "r2"]);
+
+    // A category that no longer exists does not filter.
+    cmd(Command::ToggleCategoryFilter(String::new()));
+    cmd(Command::ToggleCategoryFilter("gone".into()));
+    assert_eq!(names(&e.app), ["r0", "r1", "r2"]);
+}
+
+#[test]
 fn categories_are_renamed_merged_and_removed() {
     let e = env(&[]);
     open_fresh(&e);

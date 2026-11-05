@@ -95,6 +95,35 @@ pub fn distinct_categories<'a>(
     out.into_iter().map(|(_, c)| c).collect()
 }
 
+/// The category filter keys of a project: its categories sorted by name,
+/// then `""` ("Uncategorized") when some repo has none. Empty when the
+/// project has no category at all (nothing to filter on).
+#[must_use]
+pub fn category_filter_keys<'a>(
+    categories: impl IntoIterator<Item = Option<&'a str>> + Clone,
+) -> Vec<String> {
+    let mut keys = distinct_categories(categories.clone());
+    if !keys.is_empty()
+        && categories
+            .into_iter()
+            .any(|c| normalize_category(c).is_none())
+    {
+        keys.push(String::new());
+    }
+    keys
+}
+
+/// Whether a repo of category `category` passes the category filter:
+/// `active` keys that are not in `keys` (stale) are ignored, and with no
+/// key left every repo passes; otherwise the repo's category must be one
+/// of them.
+#[must_use]
+pub fn passes_category_filter(active: &[String], keys: &[String], category: Option<&str>) -> bool {
+    let key = normalize_category(category).unwrap_or_default();
+    let mut effective = active.iter().filter(|a| keys.contains(a)).peekable();
+    effective.peek().is_none() || effective.any(|a| *a == key)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -166,6 +195,24 @@ mod tests {
         let collapsed: Vec<bool> = groups.iter().map(|g| g.collapsed).collect();
         assert_eq!(collapsed, [false, true, true]);
         assert_eq!(groups[2].key(), "");
+    }
+
+    #[test]
+    fn category_filter_keys_and_matching() {
+        assert!(category_filter_keys([None, Some(" ")]).is_empty());
+        assert_eq!(category_filter_keys([Some("libs"), Some("apps")]), ["apps", "libs"]);
+        let keys = category_filter_keys([Some("libs"), None, Some("apps")]);
+        assert_eq!(keys, ["apps", "libs", ""]);
+
+        let active = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        // No filter, or only stale keys: everything passes.
+        assert!(passes_category_filter(&[], &keys, Some("libs")));
+        assert!(passes_category_filter(&active(&["gone"]), &keys, None));
+        // Any of the selected categories.
+        let a = active(&["libs", "", "gone"]);
+        assert!(passes_category_filter(&a, &keys, Some("libs")));
+        assert!(passes_category_filter(&a, &keys, None));
+        assert!(!passes_category_filter(&a, &keys, Some("apps")));
     }
 
     #[test]

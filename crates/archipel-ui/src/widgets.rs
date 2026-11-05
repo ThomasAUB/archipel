@@ -4,10 +4,11 @@ use archipel_model::ui_state::UiState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, Bounds, Div, ElementId, Empty, Hsla, Pixels, SharedString, Stateful, div, px,
+    AnyView, App, AppContext, Bounds, Context, Div, ElementId, Empty, Hsla, Pixels, SharedString,
+    Stateful, Window, div, px,
 };
 
-use crate::theme::{color, radius};
+use crate::theme::{color, radius, text_size, ui_font};
 
 /// A clickable text button.
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
@@ -75,6 +76,37 @@ pub fn chip(
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(label.into())
+}
+
+/// A hover tooltip of a few lines of text.
+pub struct TextTooltip(Vec<SharedString>);
+
+impl TextTooltip {
+    /// The view a `.tooltip(...)` builder returns.
+    pub fn view(lines: &[String], cx: &mut App) -> AnyView {
+        let lines = lines.iter().cloned().map(SharedString::from).collect();
+        cx.new(|_| Self(lines)).into()
+    }
+}
+
+impl Render for TextTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .flex()
+            .flex_col()
+            .font_family(ui_font(cx))
+            .text_size(text_size(cx))
+            .text_color(color(cx, T::FgDefault))
+            .whitespace_nowrap()
+            .bg(color(cx, T::BgElevated))
+            .border_1()
+            .border_color(color(cx, T::Border))
+            .rounded(radius(cx))
+            .shadow_md()
+            .children(self.0.iter().map(|line| div().child(line.clone())))
+    }
 }
 
 /// A small round status dot.

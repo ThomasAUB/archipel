@@ -13,7 +13,8 @@ use archipel_model::ports::{
 };
 use archipel_model::refs::{BranchInfo, RefKind, RefTip, StashEntry, TagInfo};
 use archipel_model::{
-    CancelToken, GitError, HeadState, Oid, RepoPath, RepoSummary, Timestamp, Upstream,
+    CancelToken, ChangedFiles, ContainingBranch, GitError, HeadState, Oid, RepoPath, RepoSummary,
+    Timestamp, Upstream,
 };
 
 use super::GitCli;
@@ -61,6 +62,69 @@ impl GitCli {
         parse_status(&out.stdout)
     }
 
+    /// The local and remote-tracking branches whose history contains `head`.
+    fn containing_branches(
+        &self,
+        repo: &RepoPath,
+        head: Oid,
+    ) -> Result<Vec<ContainingBranch>, GitError> {
+        let head = head.to_hex();
+        let refs = self.read(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "--contains",
+                &head,
+                "refs/heads",
+                "refs/remotes",
+            ],
+        )?;
+        let candidates: Vec<(&str, String, bool)> = refs
+            .lines()
+            .filter_map(|full| {
+                if let Some(n) = full.strip_prefix("refs/heads/") {
+                    Some((full, n.to_owned(), false))
+                } else {
+                    let n = full.strip_prefix("refs/remotes/")?;
+                    (!n.ends_with("/HEAD")).then(|| (full, n.to_owned(), true))
+                }
+            })
+            .collect();
+        // One `rev-list --count` per branch, a few at a time.
+        let mut out = Vec::with_capacity(candidates.len());
+        for chunk in candidates.chunks(8) {
+            let counts = thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(full, _, _)| {
+                        let range = format!("{head}..{full}");
+                        s.spawn(move || self.read(repo, &["rev-list", "--count", &range]))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join()
+                            .map_err(|_| GitError::Backend("rev-list thread panicked".into()))?
+                    })
+                    .collect::<Result<Vec<_>, GitError>>()
+            })?;
+            for ((_, name, is_remote), count) in chunk.iter().zip(counts) {
+                let ahead = count.trim().parse().map_err(|_| GitError::Parse {
+                    what: "git rev-list --count",
+                    detail: count.clone(),
+                })?;
+                out.push(ContainingBranch {
+                    name: name.clone(),
+                    is_remote: *is_remote,
+                    ahead,
+                });
+            }
+        }
+        Ok(ContainingBranch::nearest(out))
+    }
+
     /// `git describe --tags`; `None` when there is no tag (or no commit).
     pub(crate) fn describe(&self, repo: &RepoPath) -> Result<Option<String>, GitError> {
         let out = self.runner.run(
@@ -101,6 +165,10 @@ impl StatusReader for GitCli {
                 });
             }
         };
+        let containing_branches = match head {
+            HeadState::Detached(oid) => self.containing_branches(repo, oid)?,
+            _ => Vec::new(),
+        };
         let upstream = status.upstream.as_ref().map(|name| {
             let (ahead, behind) = status.ahead_behind.unwrap_or((0, 0));
             Upstream {
@@ -121,6 +189,8 @@ impl StatusReader for GitCli {
             in_progress: dirs.in_progress(),
             has_submodules: has_submodules(repo.as_path()),
             computed_at: Timestamp::now(),
+            changed_files: ChangedFiles::capped(status.changes),
+            containing_branches,
         })
     }
 

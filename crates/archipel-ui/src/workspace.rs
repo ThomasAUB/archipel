@@ -26,7 +26,7 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::repo_view::RepoView;
 use crate::theme::{UiTheme, clean_dot, color, radius, row_height, text_size, tone, ui_font};
 use crate::widgets::{
-    Pane, PaneDrag, button, chip, dot, primary_button, resize_pane, section, splitter,
+    Pane, PaneDrag, TextTooltip, button, chip, dot, primary_button, resize_pane, section, splitter,
 };
 
 gpui_kit::actions!(
@@ -119,6 +119,11 @@ pub struct Workspace {
     category_menu: Option<(String, Point<Pixels>)>,
     /// Category the open rename palette applies to.
     renaming_category: Option<String>,
+    /// Open category filter dropdown: mouse position.
+    category_filter_menu: Option<Point<Pixels>>,
+    /// Where a click outside last closed that dropdown, so the same click
+    /// landing on its button does not reopen it.
+    category_filter_closed_at: Option<Point<Pixels>>,
     /// Folder scan progress: repos found, still running.
     scan: Option<(usize, bool)>,
     /// Window title last set.
@@ -154,6 +159,8 @@ impl Workspace {
             category_targets: Vec::new(),
             category_menu: None,
             renaming_category: None,
+            category_filter_menu: None,
+            category_filter_closed_at: None,
             scan: None,
             title: String::new(),
         }
@@ -227,6 +234,7 @@ impl Workspace {
                 self.repo_views.clear();
                 self.row_menu = None;
                 self.category_menu = None;
+                self.category_filter_menu = None;
                 self.scan = None;
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
@@ -1017,6 +1025,7 @@ impl Workspace {
             ),
             _ => None,
         };
+        let category_dropdown = self.render_category_filter(ui, cx);
         let filters = ext.filters.filters().iter().map(|f| {
             let id = f.id().to_owned();
             let active = active.contains(&id);
@@ -1074,6 +1083,7 @@ impl Workspace {
                     .flex_wrap()
                     .gap_3()
                     .child(div().flex().flex_wrap().gap_1().children(filters))
+                    .children(category_dropdown)
                     .child(view_chips)
                     .children(scan),
             )
@@ -1427,6 +1437,127 @@ impl Workspace {
                 .child("Create pull request…")
                 .into_any_element(),
         }
+    }
+
+    /// The category filter: one dropdown button whatever the number of
+    /// categories, its menu a checklist (several can be selected).
+    fn render_category_filter(
+        &mut self,
+        ui: &UiState,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let keys = self.core.category_filter_keys();
+        if keys.is_empty() {
+            return None;
+        }
+        let label_of = |key: &str| {
+            if key.is_empty() {
+                "Uncategorized".to_owned()
+            } else {
+                key.to_owned()
+            }
+        };
+        let active: Vec<&String> = keys
+            .iter()
+            .filter(|k| ui.category_filters.contains(k))
+            .collect();
+        let summary = match active.as_slice() {
+            [] => "Category: all".to_owned(),
+            [one] => format!("Category: {}", label_of(one)),
+            [first, rest @ ..] => format!("Category: {} +{}", label_of(first), rest.len()),
+        };
+        let button = chip(
+            "category-filter",
+            format!("{summary} ▾"),
+            !active.is_empty(),
+            cx,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                let closed_now = this.category_filter_closed_at.take() == Some(e.position);
+                this.category_filter_menu = match this.category_filter_menu {
+                    Some(_) => None,
+                    None if closed_now => None,
+                    None => Some(e.position),
+                };
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        );
+        let menu = self.category_filter_menu.map(|position| {
+            let hover = color(cx, T::BgHover);
+            let accent = color(cx, T::Accent);
+            let items = keys.iter().map(|key| {
+                let checked = ui.category_filters.contains(key);
+                let k = key.clone();
+                div()
+                    .id(SharedString::from(format!("category-filter-{key}")))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dispatch(Command::ToggleCategoryFilter(k.clone()), cx);
+                    }))
+                    .child(div().w(px(14.0)).text_color(accent).child(if checked {
+                        "✓"
+                    } else {
+                        ""
+                    }))
+                    .child(label_of(key))
+            });
+            let clear = (!ui.category_filters.is_empty()).then(|| {
+                let selected = ui.category_filters.clone();
+                div()
+                    .id("category-filter-clear")
+                    .mt_1()
+                    .pt_1()
+                    .px_3()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(color(cx, T::BorderSubtle))
+                    .text_color(color(cx, T::FgMuted))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        for key in &selected {
+                            this.dispatch(Command::ToggleCategoryFilter(key.clone()), cx);
+                        }
+                    }))
+                    .child("Show all categories")
+            });
+            let menu = div()
+                .id("category-filter-menu")
+                .occlude()
+                .min_w(px(180.0))
+                .max_h(px(360.0))
+                .overflow_y_scroll()
+                .py_1()
+                .flex()
+                .flex_col()
+                .font_family(ui_font(cx))
+                .text_size(text_size(cx))
+                .text_color(color(cx, T::FgDefault))
+                .whitespace_nowrap()
+                .bg(color(cx, T::BgElevated))
+                .border_1()
+                .border_color(color(cx, T::Border))
+                .rounded(radius(cx))
+                .shadow_md()
+                .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                    this.category_filter_menu = None;
+                    this.category_filter_closed_at = Some(e.position);
+                    cx.notify();
+                }))
+                .children(items)
+                .children(clear);
+            deferred(anchored().position(position).snap_to_window().child(menu)).with_priority(1)
+        });
+        Some(div().child(button).children(menu).into_any_element())
     }
 
     /// Right-click menu of a sidebar category header: rename, remove.
@@ -1895,6 +2026,7 @@ fn row_cells(
         .skip(from)
         .map(|(i, col)| {
             let cell = col.cell(row, now);
+            let tooltip = col.tooltip(row);
             let detail = if i == 0 && row.hidden {
                 Some(
                     cell.detail
@@ -1904,6 +2036,7 @@ fn row_cells(
                 cell.detail
             };
             div()
+                .id(i)
                 .flex_grow(WIDTHS.get(i).copied().unwrap_or(1.0))
                 .flex_basis(px(0.0))
                 .overflow_hidden()
@@ -1923,6 +2056,9 @@ fn row_cells(
                             .text_color(color(cx, T::FgSubtle))
                             .child(t)
                     }))
+                })
+                .when_some(tooltip, |d, lines| {
+                    d.tooltip(move |_, cx| TextTooltip::view(&lines, cx))
                 })
                 .into_any_element()
         })

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::changes::FileChange;
 use crate::ids::Oid;
 use crate::time::Timestamp;
 
@@ -61,6 +62,74 @@ impl ChangeCounts {
     }
 }
 
+/// The changed files of the working copy, capped to [`ChangedFiles::MAX`]
+/// entries so the summary stays small (the dashboard lists them on hover).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedFiles {
+    /// The first changed paths, in status order.
+    pub files: Vec<FileChange>,
+    /// Number of changed paths, including those not kept in `files`.
+    pub total: u32,
+}
+
+impl ChangedFiles {
+    /// Most paths kept in a summary.
+    pub const MAX: usize = 50;
+
+    /// Keeps the first [`Self::MAX`] of `changes`.
+    #[must_use]
+    pub fn capped(mut changes: Vec<FileChange>) -> Self {
+        let total = u32::try_from(changes.len()).unwrap_or(u32::MAX);
+        changes.truncate(Self::MAX);
+        Self {
+            files: changes,
+            total,
+        }
+    }
+
+    /// Number of changed paths not kept in `files`.
+    #[must_use]
+    pub fn omitted(&self) -> u32 {
+        self.total
+            .saturating_sub(u32::try_from(self.files.len()).unwrap_or(u32::MAX))
+    }
+}
+
+/// A branch whose history contains a detached `HEAD`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainingBranch {
+    /// Short name, e.g. `main` or `origin/release-2.1`.
+    pub name: String,
+    /// Whether it is a remote-tracking branch.
+    pub is_remote: bool,
+    /// Commits on the branch past `HEAD` (0 when `HEAD` is its tip).
+    pub ahead: u32,
+}
+
+impl ContainingBranch {
+    /// Most branches kept in a summary.
+    pub const MAX: usize = 10;
+
+    /// The branches nearest to `HEAD` first (fewest commits past it), local
+    /// before remote-tracking on a tie, then by name; keeps [`Self::MAX`].
+    #[must_use]
+    pub fn nearest(mut branches: Vec<Self>) -> Vec<Self> {
+        branches
+            .sort_by(|a, b| (a.ahead, a.is_remote, &a.name).cmp(&(b.ahead, b.is_remote, &b.name)));
+        branches.truncate(Self::MAX);
+        branches
+    }
+
+    /// `main` at its tip, `main~3` three commits below it (git's notation).
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self.ahead {
+            0 => self.name.clone(),
+            n => format!("{}~{n}", self.name),
+        }
+    }
+}
+
 /// A multi-step operation in progress in the repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepoOp {
@@ -89,6 +158,14 @@ pub struct RepoSummary {
     pub upstream: Option<Upstream>,
     /// Working copy change counts.
     pub changes: ChangeCounts,
+    /// The changed paths behind `changes` (absent from older cached summaries).
+    #[serde(default)]
+    pub changed_files: ChangedFiles,
+    /// When `HEAD` is detached (e.g. a tag checked out): the branches whose
+    /// history contains it, nearest first ([`ContainingBranch::nearest`]).
+    /// Empty when on a branch.
+    #[serde(default)]
+    pub containing_branches: Vec<ContainingBranch>,
     /// Number of stash entries.
     pub stash_count: u32,
     /// `git describe --tags` output (latest tag + distance).
@@ -112,6 +189,8 @@ impl RepoSummary {
             head_oid: None,
             upstream: None,
             changes: ChangeCounts::default(),
+            changed_files: ChangedFiles::default(),
+            containing_branches: Vec::new(),
             stash_count: 0,
             describe: None,
             last_fetch: None,

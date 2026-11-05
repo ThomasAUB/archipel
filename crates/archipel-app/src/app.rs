@@ -35,7 +35,10 @@ use crate::actions::{ActionContext, ActionRegistry, Command};
 use crate::dashboard::{ColumnRegistry, DashboardRow, FilterRegistry, RepoStatus, visible_rows};
 use crate::deptree::{DependencySource, SubmoduleSource, TreeInput, TreeRow, build_tree};
 use crate::forge::{ForgePorts, ForgeRegistry, ForgeStatus};
-use crate::groups::{RepoGroup, distinct_categories, group_by_category, normalize_category};
+use crate::groups::{
+    RepoGroup, category_filter_keys, distinct_categories, group_by_category, normalize_category,
+    passes_category_filter,
+};
 
 mod forge_flow;
 
@@ -1067,9 +1070,18 @@ impl App {
             let ui = &mut s.ui;
             let was_collapsed = ui.collapsed_categories.iter().any(|k| k == old);
             ui.collapsed_categories.retain(|k| k != old);
-            if let Some(new) = new.filter(|_| was_collapsed) {
+            if let Some(new) = new.clone().filter(|_| was_collapsed) {
                 if !ui.collapsed_categories.contains(&new) {
                     ui.collapsed_categories.push(new);
+                }
+            }
+            // The category filter follows too; a removed category's repos
+            // are now uncategorized.
+            if ui.category_filters.iter().any(|k| k == old) {
+                ui.category_filters.retain(|k| k != old);
+                let new = new.unwrap_or_default();
+                if !ui.category_filters.contains(&new) {
+                    ui.category_filters.push(new);
                 }
             }
             (s.location.clone(), s.def.clone(), ids)
@@ -1096,6 +1108,27 @@ impl App {
     pub fn categories(&self) -> Vec<String> {
         lock(&self.session).as_ref().map_or_else(Vec::new, |s| {
             distinct_categories(s.def.repos.iter().map(|r| r.category.as_deref()))
+        })
+    }
+
+    /// Toggles a dashboard category filter (empty: "Uncategorized").
+    fn toggle_category_filter(&self, key: String) {
+        self.update_ui_state(|ui| {
+            if let Some(i) = ui.category_filters.iter().position(|k| *k == key) {
+                ui.category_filters.remove(i);
+            } else {
+                ui.category_filters.push(key);
+            }
+        });
+    }
+
+    /// Keys of the dashboard category filter chips: the categories sorted by
+    /// name, then `""` ("Uncategorized") when some repo has none; empty when
+    /// the project has no category.
+    #[must_use]
+    pub fn category_filter_keys(&self) -> Vec<String> {
+        lock(&self.session).as_ref().map_or_else(Vec::new, |s| {
+            category_filter_keys(s.def.repos.iter().map(|r| r.category.as_deref()))
         })
     }
 
@@ -1166,10 +1199,21 @@ impl App {
                 .as_deref()
                 .and_then(|id| ext.columns.get(id))
                 .map(|c| (c.as_ref(), s.ui.sort_direction));
+        let categories: HashMap<RepoId, Option<&str>> = s
+            .def
+            .repos
+            .iter()
+            .map(|r| (r.path.id(), r.category.as_deref()))
+            .collect();
+        let keys = category_filter_keys(categories.values().copied());
         let shown: Vec<DashboardRow> = s
             .rows
             .iter()
             .filter(|r| s.ui.show_hidden || !r.hidden)
+            .filter(|r| {
+                let category = categories.get(&r.id).copied().flatten();
+                passes_category_filter(&s.ui.category_filters, &keys, category)
+            })
             .cloned()
             .collect();
         visible_rows(&shown, &ext.filters, &s.ui.filters, sort)
@@ -1663,6 +1707,7 @@ impl App {
             }
             Command::SetCategory(ids, category) => self.set_category(&ids, category.as_deref())?,
             Command::ToggleCategory(key) => self.toggle_category(key),
+            Command::ToggleCategoryFilter(key) => self.toggle_category_filter(key),
             Command::RenameCategory(old, new) => self.rename_category(&old, new.as_deref())?,
             Command::CancelScan => {
                 let scan = lock(&self.session).as_ref().and_then(|s| s.scan.clone());

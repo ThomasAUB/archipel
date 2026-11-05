@@ -96,6 +96,7 @@ A minimal view, one row per repo:
 
 - Live updates through a file watcher (no expensive polling).
 - Filters: "dirty repos only", "behind remote", …
+- Category filter (once the project has categories): a single dropdown button in the toolbar, so many categories do not crowd it. Its label sums up the selection ("Category: all", "Category: libs", "Category: libs +2"); its menu is a checklist of the categories, plus "Uncategorized" when some repo has none, and "Show all categories" to clear the selection. The menu stays open while ticking, so several can be selected; selecting several shows the repos of any of them; it combines with the other filters (AND). The selection is personal UI state and follows a category rename (a removed category's selection becomes "Uncategorized").
 - Batch actions: **fetch all**, pull all, check out the same branch on every repo, create a branch/tag on several repos.
 
 ### 4. Multi-repo commit — P0

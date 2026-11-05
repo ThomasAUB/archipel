@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use archipel_model::changes::{ChangeKind, FileChange, FileState};
 use archipel_model::ports::StatusReader;
 use archipel_model::{
-    ChangeCounts, GitError, HeadState, RepoPath, RepoSummary, Timestamp, Upstream,
+    ChangeCounts, ChangedFiles, ContainingBranch, GitError, HeadState, RepoPath, RepoSummary,
+    Timestamp, Upstream,
 };
 use gix::bstr::ByteSlice;
 use gix::status::UntrackedFiles;
@@ -213,6 +214,52 @@ pub(super) fn stash_count(repo: &gix::Repository) -> Result<u32, GitError> {
     Ok(u32::try_from(log.count()).unwrap_or(u32::MAX))
 }
 
+/// The local and remote-tracking branches whose history contains `head`.
+fn containing_branches(
+    repo: &gix::Repository,
+    head: gix::ObjectId,
+) -> Result<Vec<ContainingBranch>, GitError> {
+    let platform = repo.references().map_err(backend)?;
+    let mut out = Vec::new();
+    for (iter, is_remote) in [
+        (platform.local_branches().map_err(backend)?, false),
+        (platform.remote_branches().map_err(backend)?, true),
+    ] {
+        for r in iter {
+            let mut r = r.map_err(backend)?;
+            if is_remote && r.name().as_bstr().ends_with(b"/HEAD") {
+                continue;
+            }
+            let Ok(tip) = r.peel_to_id().map(gix::Id::detach) else {
+                continue;
+            };
+            let contains = tip == head
+                || matches!(repo.merge_base(head, tip), Ok(Some(b)) if b.detach() == head);
+            if !contains {
+                continue;
+            }
+            let mut ahead = 0u32;
+            if tip != head {
+                for info in repo
+                    .rev_walk([tip])
+                    .with_hidden([head])
+                    .all()
+                    .map_err(backend)?
+                {
+                    info.map_err(backend)?;
+                    ahead += 1;
+                }
+            }
+            out.push(ContainingBranch {
+                name: r.name().shorten().to_str_lossy().into_owned(),
+                is_remote,
+                ahead,
+            });
+        }
+    }
+    Ok(ContainingBranch::nearest(out))
+}
+
 fn describe(repo: &gix::Repository) -> Option<String> {
     let commit = repo.head_commit().ok()?;
     let format = commit
@@ -240,8 +287,14 @@ impl StatusReader for GixReader {
             (Some(name), Some(_)) => upstream(&repo, name)?,
             _ => None,
         };
-        let changes: ChangeCounts =
-            count_changes(&to_changes(collect(&repo, UntrackedFiles::Collapsed)?));
+        let containing_branches = match head {
+            HeadState::Detached(_) => {
+                containing_branches(&repo, repo.head_id().map_err(backend)?.detach())?
+            }
+            _ => Vec::new(),
+        };
+        let files = to_changes(collect(&repo, UntrackedFiles::Collapsed)?);
+        let changes: ChangeCounts = count_changes(&files);
         Ok(RepoSummary {
             head,
             head_oid,
@@ -253,6 +306,8 @@ impl StatusReader for GixReader {
             in_progress: dirs.in_progress(),
             has_submodules: has_submodules(path.as_path()),
             computed_at: Timestamp::now(),
+            changed_files: ChangedFiles::capped(files),
+            containing_branches,
         })
     }
 

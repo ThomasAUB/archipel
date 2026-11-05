@@ -7,8 +7,11 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use archipel_model::changes::{ChangeKind, FileChange, FileState};
 use archipel_model::ui_state::SortDirection;
-use archipel_model::{HeadState, RepoId, RepoOp, RepoPath, RepoSummary, Timestamp};
+use archipel_model::{
+    ContainingBranch, HeadState, Oid, RepoId, RepoOp, RepoPath, RepoSummary, Timestamp,
+};
 
 use crate::forge::{CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter};
 
@@ -121,6 +124,10 @@ pub trait DashboardColumn: Send + Sync {
     fn cell(&self, row: &DashboardRow, now: Timestamp) -> Cell;
     /// The sort key of a row.
     fn sort_key(&self, row: &DashboardRow) -> SortKey;
+    /// Lines shown when hovering the cell of a row (none by default).
+    fn tooltip(&self, _row: &DashboardRow) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// Human relative time ("3 min ago").
@@ -188,9 +195,7 @@ impl DashboardColumn for BranchColumn {
         let mut cell = match &s.head {
             HeadState::Branch(b) => Cell::new(b.clone(), Tone::Normal),
             HeadState::Unborn(b) => Cell::new(format!("{b} (no commit)"), Tone::Muted),
-            HeadState::Detached(oid) => {
-                Cell::new(format!("detached {}", oid.short(8)), Tone::Conflict)
-            }
+            HeadState::Detached(oid) => detached_cell(s, *oid),
         };
         if let Some(op) = s.in_progress {
             cell.detail = Some(format!("{} in progress", op_label(op)));
@@ -200,8 +205,44 @@ impl DashboardColumn for BranchColumn {
     }
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
         row.summary()
-            .and_then(|s| s.head.branch())
+            .and_then(|s| {
+                s.head
+                    .branch()
+                    .or_else(|| s.containing_branches.first().map(|b| b.name.as_str()))
+            })
             .map_or(SortKey::None, |b| SortKey::Text(b.to_lowercase()))
+    }
+}
+
+/// A detached `HEAD` (typically a tag checked out) reads as the nearest
+/// branch containing it, in git's `main~3` notation, marked detached. With no
+/// branch containing it, new commits there would be lost: flag it.
+fn detached_cell(s: &RepoSummary, oid: Oid) -> Cell {
+    let at = s
+        .describe
+        .as_deref()
+        .filter(|d| is_exact_tag(d))
+        .map_or_else(|| oid.short(8), |tag| format!("tag {tag}"));
+    match s.containing_branches.split_first() {
+        Some((nearest, others)) => {
+            let also = if others.is_empty() {
+                String::new()
+            } else {
+                let others: Vec<String> = others.iter().map(ContainingBranch::label).collect();
+                format!(" (also {})", others.join(", "))
+            };
+            let detail = format!("detached HEAD at {at}, on {}{also}", nearest.label());
+            Cell {
+                text: format!("{} (detached)", nearest.label()),
+                detail: Some(detail),
+                tone: Tone::Muted,
+            }
+        }
+        None => Cell {
+            text: format!("detached {}", oid.short(8)),
+            detail: Some(format!("detached HEAD at {at}, on no branch")),
+            tone: Tone::Conflict,
+        },
     }
 }
 
@@ -307,6 +348,18 @@ impl DashboardColumn for ChangesColumn {
         ));
         Cell { text, detail, tone }
     }
+    fn tooltip(&self, row: &DashboardRow) -> Option<Vec<String>> {
+        let changed = &row.summary()?.changed_files;
+        if changed.files.is_empty() {
+            return None;
+        }
+        let mut lines: Vec<String> = changed.files.iter().map(change_line).collect();
+        match changed.omitted() {
+            0 => {}
+            n => lines.push(format!("… and {n} more")),
+        }
+        Some(lines)
+    }
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
         row.summary().map_or(SortKey::None, |s| {
             let c = s.changes;
@@ -315,6 +368,36 @@ impl DashboardColumn for ChangesColumn {
             ))
         })
     }
+}
+
+/// One changed file of the Changes tooltip, marked with the cell's symbols
+/// (`!` conflicted, `●` staged, `✎` modified, `+` untracked).
+fn change_line(change: &FileChange) -> String {
+    let marks = match change.state {
+        FileState::Conflicted => "!".to_owned(),
+        FileState::Untracked => "+".to_owned(),
+        FileState::Tracked { staged, unstaged } => {
+            let mut m = String::new();
+            if staged != ChangeKind::Unmodified {
+                m.push('●');
+            }
+            if unstaged != ChangeKind::Unmodified {
+                m.push('✎');
+            }
+            m
+        }
+    };
+    let deleted = matches!(
+        change.state,
+        FileState::Tracked { staged: ChangeKind::Deleted, .. }
+            | FileState::Tracked { unstaged: ChangeKind::Deleted, .. }
+    );
+    let path = match &change.original_path {
+        Some(from) => format!("{from} → {}", change.path),
+        None if deleted => format!("{} (deleted)", change.path),
+        None => change.path.clone(),
+    };
+    format!("{marks} {path}")
 }
 
 struct VersionColumn;
@@ -561,7 +644,7 @@ pub fn visible_rows<'a>(
 
 #[cfg(test)]
 mod tests {
-    use archipel_model::{ChangeCounts, Upstream};
+    use archipel_model::{ChangeCounts, ChangedFiles, Upstream};
 
     use super::*;
 
@@ -619,6 +702,92 @@ mod tests {
             cell("repo").detail.as_deref(),
             Some(r.path.as_path().display().to_string().as_str())
         );
+    }
+
+    #[test]
+    fn changes_tooltip_lists_files() {
+        let cols = ColumnRegistry::with_builtins();
+        let changes = cols.get("changes").unwrap();
+        assert_eq!(changes.tooltip(&row("clean", |_| {})), None);
+        let tracked = |path: &str, staged, unstaged| FileChange {
+            path: path.into(),
+            original_path: None,
+            state: FileState::Tracked { staged, unstaged },
+        };
+        let mut files = vec![
+            tracked("a.rs", ChangeKind::Modified, ChangeKind::Modified),
+            tracked("b.rs", ChangeKind::Unmodified, ChangeKind::Deleted),
+            FileChange {
+                path: "new.rs".into(),
+                original_path: Some("old.rs".into()),
+                state: FileState::Tracked {
+                    staged: ChangeKind::Renamed,
+                    unstaged: ChangeKind::Unmodified,
+                },
+            },
+            FileChange {
+                path: "notes/".into(),
+                original_path: None,
+                state: FileState::Untracked,
+            },
+            FileChange {
+                path: "c.rs".into(),
+                original_path: None,
+                state: FileState::Conflicted,
+            },
+        ];
+        let r = row("app", |s| s.changed_files = ChangedFiles::capped(files.clone()));
+        assert_eq!(
+            changes.tooltip(&r).unwrap(),
+            [
+                "●✎ a.rs",
+                "✎ b.rs (deleted)",
+                "● old.rs → new.rs",
+                "+ notes/",
+                "! c.rs"
+            ]
+        );
+        files.extend((0..ChangedFiles::MAX).map(|i| {
+            tracked(&format!("f{i}"), ChangeKind::Unmodified, ChangeKind::Modified)
+        }));
+        let r = row("big", |s| s.changed_files = ChangedFiles::capped(files));
+        let lines = changes.tooltip(&r).unwrap();
+        assert_eq!(lines.len(), ChangedFiles::MAX + 1);
+        assert_eq!(lines.last().unwrap(), "… and 5 more");
+    }
+
+    #[test]
+    fn detached_head_shows_nearest_branch() {
+        let cols = ColumnRegistry::with_builtins();
+        let branch = cols.get("branch").unwrap();
+        let oid = Oid::from_hex(&"ab".repeat(20)).unwrap();
+        let on = |name: &str, is_remote, ahead| ContainingBranch {
+            name: name.into(),
+            is_remote,
+            ahead,
+        };
+        let r = row("lib", |s| {
+            s.head = HeadState::Detached(oid);
+            s.describe = Some("v2.0".into());
+            s.containing_branches = ContainingBranch::nearest(vec![
+                on("origin/main", true, 3),
+                on("develop", false, 9),
+                on("main", false, 3),
+            ]);
+        });
+        let cell = branch.cell(&r, Timestamp(0));
+        assert_eq!(cell.text, "main~3 (detached)");
+        assert_eq!(cell.tone, Tone::Muted);
+        assert_eq!(
+            cell.detail.as_deref(),
+            Some("detached HEAD at tag v2.0, on main~3 (also origin/main~3, develop~9)")
+        );
+        assert_eq!(branch.sort_key(&r), SortKey::Text("main".into()));
+
+        let orphan = row("lib", |s| s.head = HeadState::Detached(oid));
+        let cell = branch.cell(&orphan, Timestamp(0));
+        assert_eq!(cell.text, "detached abababab");
+        assert_eq!(cell.tone, Tone::Conflict);
     }
 
     #[test]

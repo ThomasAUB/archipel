@@ -37,5 +37,7 @@ pub mod testing;
 pub use cancel::{CancelToken, NoProgress, Progress, ProgressSink};
 pub use error::{ForgeError, GitError, ProjectError, StoreError, WatchError};
 pub use ids::{Oid, ProjectId, RepoId, RepoPath};
-pub use summary::{ChangeCounts, HeadState, RepoOp, RepoSummary, Upstream};
+pub use summary::{
+    ChangeCounts, ChangedFiles, ContainingBranch, HeadState, RepoOp, RepoSummary, Upstream,
+};
 pub use time::Timestamp;

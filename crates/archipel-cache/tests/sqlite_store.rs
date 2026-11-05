@@ -13,7 +13,7 @@ use archipel_model::ports::store::{
 };
 use archipel_model::project::{ProjectLocation, RegistryEntry};
 use archipel_model::stats::{ActivityBucket, Hotspot, StatsDelta};
-use archipel_model::summary::{ChangeCounts, HeadState, RepoOp, RepoSummary, Upstream};
+use archipel_model::summary::{ChangeCounts, ChangedFiles, HeadState, RepoOp, RepoSummary, Upstream};
 use archipel_model::testing::{InMemoryStore, oid};
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, StoreError, Timestamp};
@@ -45,6 +45,8 @@ fn summary(n: u32) -> RepoSummary {
             untracked: 2,
             conflicted: 0,
         },
+        changed_files: ChangedFiles::default(),
+        containing_branches: Vec::new(),
         stash_count: 3,
         describe: Some(format!("v1.{n}-2-gabc")),
         last_fetch: Some(Timestamp(1_700_000_000)),

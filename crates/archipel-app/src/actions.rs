@@ -59,6 +59,9 @@ pub enum Command {
     SetCategory(Vec<RepoId>, Option<String>),
     /// Collapse or expand a sidebar category group (empty: "Uncategorized").
     ToggleCategory(String),
+    /// Toggle a dashboard category filter (empty: "Uncategorized"); rows
+    /// pass when they are in any of the selected categories.
+    ToggleCategoryFilter(String),
     /// Rename a category on every repo using it; `None` or blank removes
     /// it (its repos become uncategorized).
     RenameCategory(String, Option<String>),

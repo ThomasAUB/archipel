@@ -12,7 +12,7 @@ use archipel_fixtures::project::{GeneratedRepo, RepoState, generate_project};
 use archipel_git::{GitCli, GixReader};
 use archipel_model::history::WalkOrder;
 use archipel_model::ports::{HistoryReader, RefReader, StashReader, StatusReader};
-use archipel_model::{CancelToken, RepoOp, RepoPath, RepoSummary};
+use archipel_model::{CancelToken, ContainingBranch, RepoOp, RepoPath, RepoSummary};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -50,6 +50,7 @@ fn summaries_agree() {
         assert_eq!(a.stash_count, b.stash_count, "{ctx}");
         assert_eq!(describe_key(&a), describe_key(&b), "{ctx}");
         assert_eq!(a.in_progress, b.in_progress, "{ctx}");
+        assert_eq!(a.containing_branches, b.containing_branches, "{ctx}");
     }
 }
 
@@ -66,7 +67,16 @@ fn summaries_reflect_states() {
             RepoState::Ahead => assert_eq!((s.ahead(), s.behind()), (1, 0)),
             RepoState::Behind => assert_eq!((s.ahead(), s.behind()), (0, 1)),
             RepoState::Diverged => assert_eq!((s.ahead(), s.behind()), (1, 1)),
-            RepoState::Detached => assert!(s.head.branch().is_none()),
+            RepoState::Detached => {
+                assert!(s.head.branch().is_none());
+                // Checked out at `main~1`: `main` and `origin/main` contain it.
+                let labels: Vec<String> = s
+                    .containing_branches
+                    .iter()
+                    .map(ContainingBranch::label)
+                    .collect();
+                assert_eq!(labels, ["main~1", "origin/main~1"]);
+            }
             RepoState::Stashed => assert_eq!(s.stash_count, 1),
             RepoState::MergeConflict => {
                 assert_eq!(s.in_progress, Some(RepoOp::Merge));

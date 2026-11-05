@@ -69,6 +69,9 @@ pub struct UiState {
     /// Collapsed category groups of the sidebar (spec §1); the empty name
     /// is the "Uncategorized" group.
     pub collapsed_categories: Vec<String>,
+    /// Categories the dashboard is filtered on (any of them); the empty
+    /// name is "Uncategorized". Empty: no category filter.
+    pub category_filters: Vec<String>,
     /// Legacy personal accent color (`#rrggbb`), still honored over the
     /// project's; cleared when the color is changed (spec §2).
     pub accent: Option<String>,
@@ -118,6 +121,7 @@ impl Default for UiState {
             show_dependency_tree: false,
             collapsed_nodes: Vec::new(),
             collapsed_categories: Vec::new(),
+            category_filters: Vec::new(),
             accent: None,
             icon: None,
         }

@@ -1895,9 +1895,9 @@ impl RepoView {
         let file_row = |c: &FileChange, side: DiffSide, cx: &mut Context<Self>| {
             let path = c.path.clone();
             let (label, token) = match c.state {
-                FileState::Untracked => ("U", T::StatusAhead),
+                FileState::Untracked => ("+", T::StatusAhead),
                 FileState::Conflicted => ("!", T::StatusConflict),
-                FileState::Tracked { .. } => ("M", T::StatusDirty),
+                FileState::Tracked { .. } => ("✎", T::StatusDirty),
             };
             let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
             let action = if side == DiffSide::Staged {
