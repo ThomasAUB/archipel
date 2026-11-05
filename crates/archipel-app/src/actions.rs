@@ -41,6 +41,12 @@ pub enum Command {
     OpenRepoTab(RepoId),
     /// Close a tab (the dashboard tab cannot be closed).
     CloseTab(usize),
+    /// Close every tab but the dashboard and the given one, which becomes active.
+    CloseOtherTabs(usize),
+    /// Close the tabs after the given one.
+    CloseTabsToRight(usize),
+    /// Close every tab but the dashboard.
+    CloseAllTabs,
     /// Activate the next (`true`) or previous tab.
     CycleTab(bool),
     /// Show or hide the operations drawer.

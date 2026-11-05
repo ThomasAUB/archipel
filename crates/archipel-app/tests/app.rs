@@ -14,6 +14,7 @@ use archipel_model::settings::Settings;
 use archipel_model::testing::{
     FakeChangeSource, FakeDiscovery, FakeGit, FakeProjectSource, InMemoryStore, oid,
 };
+use archipel_model::ui_state::TabState;
 use archipel_model::{HeadState, ProjectId, RepoPath, RepoSummary};
 use archipel_ops::GitPorts;
 
@@ -231,6 +232,51 @@ fn filters_sorting_tabs_and_missing_repos() {
     e.app.close_project();
     e.app.open_project(&p1_id()).unwrap();
     assert_eq!(e.app.ui_state().unwrap().filters, ["ahead"]);
+    drop(e.dir);
+}
+
+#[test]
+fn closing_several_tabs() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    let open_all = || {
+        for r in &e.repos {
+            e.app.dispatch(Command::OpenRepoTab(r.id())).unwrap();
+        }
+    };
+    let repo_tabs = || {
+        let ui = e.app.ui_state().unwrap();
+        let ids: Vec<_> = ui
+            .tabs
+            .iter()
+            .filter_map(|t| match t {
+                TabState::Repo(id) => Some(*id),
+                TabState::Dashboard => None,
+            })
+            .collect();
+        (ids, ui.active_tab)
+    };
+    let id = |i: usize| e.repos[i].id();
+
+    // Tabs: dashboard, r0, r1, r2 (active).
+    open_all();
+    e.app.dispatch(Command::CloseOtherTabs(2)).unwrap();
+    assert_eq!(repo_tabs(), (vec![id(1)], 1));
+
+    open_all();
+    e.app.dispatch(Command::CloseTabsToRight(1)).unwrap();
+    // The active tab (r2) closed: the clicked tab becomes active.
+    assert_eq!(repo_tabs(), (vec![id(1)], 1));
+
+    open_all();
+    e.app.dispatch(Command::CycleTab(true)).unwrap(); // the dashboard
+    e.app.dispatch(Command::CloseTabsToRight(2)).unwrap();
+    assert_eq!(repo_tabs(), (vec![id(1), id(0)], 0));
+
+    e.app.dispatch(Command::CloseOtherTabs(9)).unwrap(); // out of range: no-op
+    assert_eq!(repo_tabs().0.len(), 2);
+    e.app.dispatch(Command::CloseAllTabs).unwrap();
+    assert_eq!(repo_tabs(), (vec![], 0));
     drop(e.dir);
 }
 
