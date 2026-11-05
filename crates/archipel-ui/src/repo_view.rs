@@ -9,29 +9,25 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use archipel_app::App as Core;
 use archipel_app::forge::pick_remote;
 use archipel_graph::{Edge, EdgeKind, GraphError, GraphRow, HistoryView};
-use archipel_model::changes::{ChangeKind, FileChange, FileState};
-use archipel_model::diff::{DiffLine, FileDiff, LineOrigin};
+use archipel_model::changes::{ChangeKind, FileChange};
+use archipel_model::diff::FileDiff;
 use archipel_model::history::CommitMeta;
 use archipel_model::ports::DiffSide;
 use archipel_model::refs::{RefKind, RefTip, StashEntry};
 use archipel_model::requests::{
-    CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
-    PullMode, PushRequest, ResetMode, StashApplyMode, StashRequest, TagRequest,
+    CheckoutTarget, DeleteMode, FetchRequest, MergeMode, PullMode, PushRequest, ResetMode,
+    StashApplyMode, StashRequest, TagRequest,
 };
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::{
     CancelToken, HeadState, NoProgress, Oid, RepoPath, RepoSummary, Timestamp, Upstream,
 };
-use archipel_ops::patch::hunk_patch;
 use archipel_theme::ColorToken as T;
-use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, DragMoveEvent, Entity,
@@ -40,10 +36,12 @@ use gpui_kit::{
     deferred, div, point, px, uniform_list,
 };
 
+use crate::diff_view::{self, DiffDoc};
+use crate::staging::{self, Staging};
 use crate::theme::{color, lane, mono_font, radius, row_height};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, chip, context_menu, icon_button, menu_item,
-    menu_separator, primary_button, resize_pane, scroll_list, section, splitter,
+    Pane, PaneDrag, TextTooltip, button, chip, context_menu, menu_item, menu_separator,
+    primary_button, resize_pane, scroll_list, section, splitter,
 };
 
 /// Width of one graph lane.
@@ -65,61 +63,6 @@ enum OpenDiff {
     /// A working-copy file on one side, its hunks staged or unstaged from
     /// the diff; `None` while it loads.
     Worktree(String, DiffSide, Option<Arc<DiffDoc>>),
-}
-
-/// One fixed-height row of a flattened diff.
-#[derive(Clone, Copy)]
-enum DiffRow {
-    /// File header: file index.
-    File(usize),
-    /// A note in place of the hunks (binary, too large).
-    Note(&'static str),
-    /// Hunk header: file, hunk.
-    Hunk(usize, usize),
-    /// Diff line: file, hunk, line.
-    Line(usize, usize, usize),
-}
-
-/// A diff flattened into rows once, so the view renders only the visible
-/// ones (a diff may hold tens of thousands of lines).
-struct DiffDoc {
-    files: Vec<FileDiff>,
-    rows: Vec<DiffRow>,
-    /// Digits of the largest line number, so the gutter has one width.
-    lineno_width: usize,
-}
-
-impl DiffDoc {
-    fn new(files: Vec<FileDiff>) -> Self {
-        let mut rows = Vec::new();
-        let mut max_lineno = 0;
-        for (f, file) in files.iter().enumerate() {
-            rows.push(DiffRow::File(f));
-            if file.binary {
-                rows.push(DiffRow::Note("Binary file"));
-                continue;
-            }
-            if file.truncated {
-                rows.push(DiffRow::Note("Diff too large to display"));
-                continue;
-            }
-            for (h, hunk) in file.hunks.iter().enumerate() {
-                rows.push(DiffRow::Hunk(f, h));
-                rows.extend((0..hunk.lines.len()).map(|l| DiffRow::Line(f, h, l)));
-                max_lineno = hunk
-                    .lines
-                    .iter()
-                    .flat_map(|l| [l.old_lineno, l.new_lineno])
-                    .flatten()
-                    .fold(max_lineno, u32::max);
-            }
-        }
-        Self {
-            files,
-            rows,
-            lineno_width: max_lineno.to_string().len(),
-        }
-    }
 }
 
 /// One fixed-height row of the refs panel.
@@ -424,9 +367,6 @@ fn menu_entries(
     out
 }
 
-/// How long a file's Discard button waits for the confirming second click.
-const DISCARD_ARM_TIME: Duration = Duration::from_secs(3);
-
 /// An action waiting for confirmation in a dialog.
 struct Confirm {
     question: String,
@@ -502,8 +442,7 @@ pub struct RepoView {
     menu: Option<(MenuTarget, Point<Pixels>)>,
     /// Shown while a destructive menu action waits for confirmation.
     confirm: Option<Confirm>,
-    /// The unstaged file whose Discard button was clicked once: a second
-    /// click within [`DISCARD_ARM_TIME`] discards it.
+    /// The Discard button clicked once (see [`crate::staging`]).
     armed_discard: Option<String>,
     prompt_focus: FocusHandle,
     status: Option<String>,
@@ -831,22 +770,8 @@ impl RepoView {
                 // the file has changes on that side, moved to the other side
                 // once they all went there (file or hunks staged), else closed.
                 if let Some(OpenDiff::Worktree(file, side, _)) = &v.open_diff {
-                    let (file, side) = (file.clone(), *side);
-                    let other = match side {
-                        DiffSide::Staged => DiffSide::Unstaged,
-                        DiffSide::Unstaged => DiffSide::Staged,
-                    };
-                    let changed = |side| {
-                        v.changes.iter().any(|c| {
-                            c.path == file
-                                && match side {
-                                    DiffSide::Staged => c.is_staged(),
-                                    DiffSide::Unstaged => c.is_unstaged(),
-                                }
-                        })
-                    };
-                    let side = [side, other].into_iter().find(|&s| changed(s));
-                    match side {
+                    let file = file.clone();
+                    match diff_view::follow(&v.changes, &file, *side) {
                         Some(side) if v.wip_selected => v.open_worktree_file(file, side, cx),
                         _ => v.open_diff = None,
                     }
@@ -872,17 +797,6 @@ impl RepoView {
         self.details = None;
         self.open_diff = None;
         cx.notify();
-    }
-
-    /// Working-copy files in the staging pane's order: unstaged, then staged.
-    fn worktree_files(&self) -> Vec<(String, DiffSide)> {
-        let side = |side, c: &FileChange| (c.path.clone(), side);
-        let unstaged = self.changes.iter().filter(|c| c.is_unstaged());
-        let staged = self.changes.iter().filter(|c| c.is_staged());
-        unstaged
-            .map(|c| side(DiffSide::Unstaged, c))
-            .chain(staged.map(|c| side(DiffSide::Staged, c)))
-            .collect()
     }
 
     fn load_refs(&mut self, cx: &mut Context<Self>) {
@@ -1155,7 +1069,7 @@ impl RepoView {
     /// Opens the first working-copy file (double click / Enter on the
     /// uncommitted-changes row).
     fn open_first_change(&mut self, cx: &mut Context<Self>) {
-        if let Some((file, side)) = self.worktree_files().into_iter().next() {
+        if let Some((file, side)) = diff_view::worktree_files(&self.changes).into_iter().next() {
             self.open_worktree_file(file, side, cx);
         }
     }
@@ -1173,15 +1087,10 @@ impl RepoView {
                 self.open_commit_file(usize::try_from(next).ok(), cx);
             }
             Some(OpenDiff::Worktree(file, side, _)) => {
-                let mut files = self.worktree_files();
-                let Some(at) = files.iter().position(|(f, s)| f == file && s == side) else {
-                    return;
-                };
-                let last = i64::try_from(files.len()).unwrap_or(i64::MAX) - 1;
-                let at = i64::try_from(at).unwrap_or(0);
-                let next = usize::try_from((at + delta).clamp(0, last)).unwrap_or(0);
-                let (file, side) = files.swap_remove(next);
-                self.open_worktree_file(file, side, cx);
+                let files = diff_view::worktree_files(&self.changes);
+                if let Some((file, side)) = diff_view::step(&files, file, *side, delta) {
+                    self.open_worktree_file(file, side, cx);
+                }
             }
             None => {}
         }
@@ -1655,48 +1564,6 @@ impl RepoView {
                 cx.notify();
             }
         }
-    }
-
-    /// A click on a file's Discard button: the first one arms it, a second
-    /// one on the same file before [`DISCARD_ARM_TIME`] discards.
-    fn click_discard(&mut self, file: String, cx: &mut Context<Self>) {
-        if self.armed_discard.as_ref() == Some(&file) {
-            self.armed_discard = None;
-            self.run("Discard", cx, move |a, p| a.discard(p, &[file]));
-            return;
-        }
-        self.armed_discard = Some(file.clone());
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(DISCARD_ARM_TIME).await;
-            let _ = this.update(cx, |v, cx| {
-                if v.armed_discard.as_ref() == Some(&file) {
-                    v.armed_discard = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let message = self.message.read(cx).value().to_string();
-        if message.trim().is_empty() {
-            self.status = Some("Write a commit message first".into());
-            cx.notify();
-            return;
-        }
-        let mode = if self.amend {
-            CommitMode::Amend
-        } else {
-            CommitMode::New
-        };
-        self.message.update(cx, |m, cx| m.set_value("", window, cx));
-        self.amend = false;
-        self.run("Commit", cx, move |a, p| {
-            a.commit(p, &CommitRequest { message, mode }, None)
-                .map(drop)
-        });
     }
 
     // ----- rendering ----------------------------------------------------
@@ -2468,7 +2335,7 @@ impl RepoView {
 
     fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.wip_selected {
-            return self.render_staging(cx);
+            return crate::staging::render(self, cx);
         }
         let Some((oid, doc)) = &self.details else {
             return div()
@@ -2634,230 +2501,6 @@ impl RepoView {
     /// Details of the uncommitted-changes row: unstaged and staged files,
     /// then the commit box. A file click opens its diff in place of the graph;
     /// a click on the file shown brings the graph back.
-    fn render_staging(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let hover = color(cx, T::BgHover);
-        let selected = color(cx, T::BgSelected);
-        let open = match &self.open_diff {
-            Some(OpenDiff::Worktree(file, side, _)) => Some((file.clone(), *side)),
-            _ => None,
-        };
-        let mut staged = Vec::new();
-        let mut unstaged = Vec::new();
-        for c in &self.changes {
-            if c.is_staged() {
-                staged.push(c.clone());
-            }
-            if c.is_unstaged() {
-                unstaged.push(c.clone());
-            }
-        }
-        let armed = self.armed_discard.clone();
-        let danger = color(cx, T::StatusError);
-        let file_row = |c: &FileChange, side: DiffSide, cx: &mut Context<Self>| {
-            let path = c.path.clone();
-            let (label, token) = match c.state {
-                FileState::Untracked => ("+", T::StatusAhead),
-                FileState::Conflicted => ("!", T::StatusConflict),
-                FileState::Tracked { .. } => ("✎", T::StatusDirty),
-            };
-            let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
-            let is_open = open.as_ref().is_some_and(|(f, s)| *f == path && *s == side);
-            let (action, icon) = if side == DiffSide::Staged {
-                ("Unstage", IconName::Minus)
-            } else {
-                ("Stage", IconName::Plus)
-            };
-            div()
-                .id(SharedString::from(format!("f-{side:?}-{path}")))
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .h(row_height(cx))
-                .cursor_pointer()
-                .when(is_open, |d| d.bg(selected))
-                .hover(move |s| s.bg(hover))
-                .on_click(cx.listener(move |v, _, window, cx| {
-                    if is_open {
-                        v.close_diff(window, cx);
-                    } else {
-                        v.focus.focus(window, cx);
-                        v.open_worktree_file(p1.clone(), side, cx);
-                    }
-                }))
-                .child(
-                    div()
-                        .w(px(14.0))
-                        .flex_none()
-                        .text_color(color(cx, token))
-                        .child(label),
-                )
-                .child(div().flex_1().min_w_0().truncate().child(path))
-                .when(side == DiffSide::Unstaged, |d| {
-                    let id = SharedString::from(format!("discard-{p3}"));
-                    let discard = if armed.as_deref() == Some(p3.as_str()) {
-                        button(id, "Discard?", cx)
-                            .py_0()
-                            .text_color(danger)
-                            .border_color(danger)
-                    } else {
-                        icon_button(id, IconName::Undo2, "Discard (click twice)", cx)
-                    };
-                    // Kept apart from Stage so a slip does not hit it.
-                    d.child(discard.mr_3().on_click(cx.listener(move |v, _, _, cx| {
-                        cx.stop_propagation();
-                        v.click_discard(p3.clone(), cx);
-                    })))
-                })
-                .child(
-                    icon_button(
-                        SharedString::from(format!("stage-{side:?}-{p2}")),
-                        icon,
-                        action,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        cx.stop_propagation();
-                        let file = p2.clone();
-                        if side == DiffSide::Staged {
-                            v.run("Unstage", cx, move |a, p| a.unstage(p, &[file]));
-                        } else {
-                            v.run("Stage", cx, move |a, p| a.stage(p, &[file]));
-                        }
-                    })),
-                )
-        };
-        let staged_rows: Vec<_> = staged
-            .iter()
-            .map(|c| file_row(c, DiffSide::Staged, cx))
-            .collect();
-        let unstaged_rows: Vec<_> = unstaged
-            .iter()
-            .map(|c| file_row(c, DiffSide::Unstaged, cx))
-            .collect();
-        let unstaged_paths: Vec<String> = unstaged.iter().map(|c| c.path.clone()).collect();
-        let staged_paths: Vec<String> = staged.iter().map(|c| c.path.clone()).collect();
-        let discard_paths = unstaged_paths.clone();
-        let unstaged_header = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .pr_2()
-            .child(section(format!("UNSTAGED ({})", unstaged.len()), cx))
-            .when(!unstaged_paths.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .pt_2()
-                        .child(
-                            button("discard-all", "Discard all", cx).on_click(cx.listener(
-                                move |v, _, window, cx| {
-                                    let files = discard_paths.clone();
-                                    v.choose(MenuAction::Discard(files), window, cx);
-                                },
-                            )),
-                        )
-                        .child(button("stage-all", "Stage all", cx).on_click(cx.listener(
-                            move |v, _, _, cx| {
-                                let files = unstaged_paths.clone();
-                                v.run("Stage all", cx, move |a, p| a.stage(p, &files));
-                            },
-                        ))),
-                )
-            });
-        // The staged half reads as "ready to commit": a hard line above it,
-        // an accent-tinted header and an accent stripe along its files.
-        let staged_header = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .pr_2()
-            .pb_1()
-            .border_t_1()
-            .border_color(color(cx, T::Border))
-            .bg(color(cx, T::AccentSubtle))
-            .child(
-                section(format!("STAGED ({})", staged.len()), cx).text_color(color(cx, T::Accent)),
-            )
-            .when(!staged_paths.is_empty(), |d| {
-                d.child(
-                    div()
-                        .pt_2()
-                        .child(
-                            button("unstage-all", "Unstage all", cx).on_click(cx.listener(
-                                move |v, _, _, cx| {
-                                    let files = staged_paths.clone();
-                                    v.run("Unstage all", cx, move |a, p| a.unstage(p, &files));
-                                },
-                            )),
-                        ),
-                )
-            });
-        let amend = self.amend;
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(unstaged_header)
-            .child(
-                div()
-                    .id("unstaged")
-                    .flex_1()
-                    .overflow_y_scrollbar()
-                    .children(unstaged_rows),
-            )
-            .child(staged_header)
-            .child(
-                div()
-                    .id("staged")
-                    .flex_1()
-                    .overflow_y_scrollbar()
-                    .border_l_2()
-                    .border_color(color(cx, T::Accent))
-                    .children(staged_rows),
-            )
-            .child(
-                div()
-                    .p_2()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(color(cx, T::BorderSubtle))
-                    .child(Input::new(&self.message))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .id("amend")
-                                    .cursor_pointer()
-                                    .text_color(color(
-                                        cx,
-                                        if amend { T::Accent } else { T::FgMuted },
-                                    ))
-                                    .on_click(cx.listener(|v, _, _, cx| {
-                                        v.amend = !v.amend;
-                                        cx.notify();
-                                    }))
-                                    .child(if amend {
-                                        "☑ Amend last commit"
-                                    } else {
-                                        "☐ Amend last commit"
-                                    }),
-                            )
-                            .child(
-                                primary_button("commit", "Commit", cx)
-                                    .on_click(cx.listener(|v, _, w, cx| v.commit(w, cx))),
-                            ),
-                    ),
-            )
-            .into_any_element()
-    }
-
     /// The open diff, in place of the graph: a header naming it, then the
     /// diff (hunks stage / unstage on the working copy).
     fn render_open_diff(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -2870,50 +2513,15 @@ impl RepoView {
                 let at = self.details.as_ref().map(|(oid, _)| oid.short(8));
                 (title, at.unwrap_or_default(), None, Some(Arc::clone(doc)))
             }
-            Some(OpenDiff::Worktree(file, side, doc)) => {
-                let note = match side {
-                    DiffSide::Staged => "Staged",
-                    DiffSide::Unstaged => "Unstaged",
-                };
-                (file.clone(), note.to_owned(), Some(*side), doc.clone())
-            }
+            Some(OpenDiff::Worktree(file, side, doc)) => (
+                file.clone(),
+                diff_view::side_note(*side).to_owned(),
+                Some(*side),
+                doc.clone(),
+            ),
             None => return div().into_any_element(),
         };
-        let id = SharedString::from(format!("open-diff-{note}-{title}"));
-        let header = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(color(cx, T::BorderSubtle))
-            .child(div().flex_1().min_w_0().truncate().child(title))
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(color(cx, T::FgMuted))
-                    .child(format!("{note} · ↑↓ files · Esc closes")),
-            );
-        let body = match doc {
-            Some(doc) => diff_list(id, doc, side, None, cx),
-            None => div()
-                .p_3()
-                .text_color(color(cx, T::FgMuted))
-                .child("Loading diff…")
-                .into_any_element(),
-        };
-        div()
-            .flex_1()
-            .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(header)
-            .child(body)
-            .into_any_element()
+        diff_view::render_open(title, &note, side, doc, cx)
     }
 }
 
@@ -3391,169 +2999,54 @@ fn render_changed_file(
         .into_any_element()
 }
 
-/// A virtualized diff: only the visible rows are built each frame. With
-/// `side`, hunk headers get a stage / unstage button; with `scroll`, the
-/// list can be scrolled from outside.
-fn diff_list(
-    id: SharedString,
-    doc: Arc<DiffDoc>,
-    side: Option<DiffSide>,
-    scroll: Option<&UniformListScrollHandle>,
-    cx: &mut Context<RepoView>,
-) -> AnyElement {
-    let count = doc.rows.len();
-    let scroll_id = SharedString::from(format!("{id}-scroll"));
-    let list = uniform_list(
-        id,
-        count,
-        cx.processor(
-            move |_this: &mut RepoView, range: Range<usize>, _window, cx| {
-                range
-                    .filter_map(|i| doc.rows.get(i).copied())
-                    .map(|row| render_diff_row(&doc, row, side, cx))
-                    .collect()
-            },
-        ),
-    );
-    let list = scroll_list(scroll_id, list);
-    match scroll {
-        Some(handle) => list.handle(handle),
-        None => list,
+impl Staging for RepoView {
+    fn changes(&self) -> &[FileChange] {
+        &self.changes
     }
-    .into_any_element()
-}
 
-/// Renders one row of a flattened diff (all rows share one height).
-fn render_diff_row(
-    doc: &Arc<DiffDoc>,
-    row: DiffRow,
-    side: Option<DiffSide>,
-    cx: &mut Context<RepoView>,
-) -> AnyElement {
-    let base = div()
-        .w_full()
-        .h(row_height(cx))
-        .flex()
-        .items_center()
-        .px_2()
-        .whitespace_nowrap()
-        .overflow_hidden();
-    match row {
-        DiffRow::File(f) => {
-            let file = &doc.files[f];
-            let (added, removed) = file.line_stats();
-            base.justify_between()
-                .bg(color(cx, T::BgPanel))
-                .border_t_1()
-                .border_color(color(cx, T::BorderSubtle))
-                .child(div().truncate().child(file.display_path().to_owned()))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(color(cx, T::FgMuted))
-                        .child(format!("+{added} −{removed}")),
-                )
-                .into_any_element()
-        }
-        DiffRow::Note(note) => base
-            .text_color(color(cx, T::FgMuted))
-            .child(note)
-            .into_any_element(),
-        DiffRow::Hunk(f, h) => {
-            let file = &doc.files[f];
-            let hunk = &file.hunks[h];
-            let mut header = base
-                .justify_between()
-                .text_xs()
-                .text_color(color(cx, T::FgSubtle))
-                .child(format!(
-                    "@@ -{},{} +{},{} @@ {}",
-                    hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, hunk.header
-                ));
-            if let Some(side) = side {
-                let (label, direction) = if side == DiffSide::Staged {
-                    ("Unstage hunk", PatchDirection::Reverse)
-                } else {
-                    ("Stage hunk", PatchDirection::Forward)
-                };
-                let doc = doc.clone();
-                header = header.child(
-                    button(
-                        SharedString::from(format!("hunk-{}-{h}", file.display_path())),
-                        label,
-                        cx,
-                    )
-                    // The patch is built on click, not on every frame.
-                    .on_click(cx.listener(
-                        move |v, _, _, cx| match hunk_patch(&doc.files[f], h) {
-                            Ok(p) => {
-                                v.run(label, cx, move |a, repo| a.apply_patch(repo, &p, direction));
-                            }
-                            Err(e) => {
-                                v.status = Some(e.to_string());
-                                cx.notify();
-                            }
-                        },
-                    )),
-                );
-            }
-            header.into_any_element()
-        }
-        DiffRow::Line(f, h, l) => {
-            diff_line_row(&doc.files[f].hunks[h].lines[l], doc.lineno_width, cx)
+    fn message(&self) -> &Entity<InputState> {
+        &self.message
+    }
+
+    fn commit_state(&mut self) -> (&mut bool, &mut Option<String>) {
+        (&mut self.amend, &mut self.armed_discard)
+    }
+
+    fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: staging::Job) {
+        self.run(label, cx, job);
+    }
+
+    fn report(&mut self, text: String, cx: &mut Context<Self>) {
+        self.status = Some(text);
+        cx.notify();
+    }
+
+    fn open_file(&self) -> Option<(&str, DiffSide)> {
+        match &self.open_diff {
+            Some(OpenDiff::Worktree(file, side, _)) => Some((file, *side)),
+            _ => None,
         }
     }
-}
 
-/// One line of a hunk: line-number gutter, +/- marker, then the file's text.
-fn diff_line_row(line: &DiffLine, lineno_width: usize, cx: &App) -> AnyElement {
-    let base = div()
-        .w_full()
-        .h(row_height(cx))
-        .flex()
-        .items_center()
-        .whitespace_nowrap()
-        .overflow_hidden();
-    let (marker, marker_fg, bg) = match line.origin {
-        LineOrigin::Added => ("+", T::DiffAddFg, Some(color(cx, T::DiffAddBg))),
-        LineOrigin::Removed => ("-", T::DiffDelFg, Some(color(cx, T::DiffDelBg))),
-        LineOrigin::Context => (" ", T::FgSubtle, None),
-    };
-    // The font is monospace, so padding aligns the gutter.
-    let width = lineno_width;
-    let number = |n: Option<u32>| n.map_or_else(String::new, |n| n.to_string());
-    // Gutter (line numbers and marker) sits apart from the file's text,
-    // on the panel color behind a separator: the marker must not read as
-    // part of the line.
-    base.font_family(mono_font(cx))
-        .text_xs()
-        .when_some(bg, gpui_kit::Styled::bg)
-        .child(
-            div()
-                .flex_none()
-                .h_full()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .bg(color(cx, T::BgPanel))
-                .border_r_1()
-                .border_color(color(cx, T::BorderSubtle))
-                .text_color(color(cx, T::FgSubtle))
-                .child(format!(
-                    "{:>width$} {:>width$}",
-                    number(line.old_lineno),
-                    number(line.new_lineno)
-                ))
-                .child(div().text_color(color(cx, marker_fg)).child(marker)),
-        )
-        .child(
-            div()
-                .pl_2()
-                .child(line.content.trim_end_matches('\r').to_owned()),
-        )
-        .into_any_element()
+    fn click_file(
+        &mut self,
+        file: String,
+        side: DiffSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_file() == Some((&file, side)) {
+            self.close_diff(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+            self.open_worktree_file(file, side, cx);
+        }
+    }
+
+    /// Asks first, in the confirmation dialog.
+    fn discard_all(&mut self, files: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose(MenuAction::Discard(files), window, cx);
+    }
 }
 
 impl Render for RepoView {
@@ -3627,9 +3120,6 @@ impl Render for RepoView {
             .children(menu)
     }
 }
-
-#[cfg(test)]
-mod render_tests;
 
 #[cfg(test)]
 mod menu_tests {

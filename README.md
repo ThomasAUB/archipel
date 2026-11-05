@@ -74,6 +74,7 @@ reopens.
 | Shortcut | Action |
 |---|---|
 | `Ctrl+P` / `Ctrl+Shift+P` | switch project / all actions |
+| click a repo | quick edit pane: fetch / pull / push, stash / pop, undo / redo, create or switch branch, stage / unstage / discard files, commit (or amend, or commit & push), continue / abort a merge or rebase (`Esc` closes it, double click opens the full tab) |
 | `Ctrl+click` | add a repo to the selection (batch actions apply to it) |
 | `Ctrl+H` / `Ctrl+Shift+H` | hide (or unhide) the selected repos / list hidden repos |
 | `Ctrl+Shift+T` | dependency tree (nested submodules) |

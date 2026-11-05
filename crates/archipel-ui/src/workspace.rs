@@ -16,14 +16,15 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Action, AnyElement, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, MouseButton,
-    MouseDownEvent, ObjectFit, PathPromptOptions, Pixels, Point, SharedString, Subscription,
-    TextRun, Window, anchored, deferred, div, font, img, px, rems,
+    Action, AnyElement, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, KeyDownEvent,
+    MouseButton, MouseDownEvent, ObjectFit, PathPromptOptions, Pixels, Point, SharedString,
+    Subscription, TextRun, Window, anchored, deferred, div, font, img, px, rems,
 };
 
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
 use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
+use crate::quick_edit::{QuickEdit, QuickEditEvent};
 use crate::repo_view::RepoView;
 use crate::theme::{UiTheme, clean_dot, color, radius, row_height, text_size, tone, ui_font};
 use crate::widgets::{
@@ -110,6 +111,8 @@ pub struct Workspace {
     focus: FocusHandle,
     repo_views: HashMap<RepoId, Entity<RepoView>>,
     overlay: Option<(Overlay, Subscription)>,
+    /// Quick edit pane of the dashboard (a plain click on a row).
+    quick_edit: Option<(Entity<QuickEdit>, [Subscription; 2])>,
     log: VecDeque<(Timestamp, String, bool)>,
     notice: Option<String>,
     warnings: Vec<String>,
@@ -159,6 +162,7 @@ impl Workspace {
             focus,
             repo_views: HashMap::new(),
             overlay: None,
+            quick_edit: None,
             log: VecDeque::new(),
             notice: None,
             warnings,
@@ -241,6 +245,7 @@ impl Workspace {
             }
             AppEvent::ProjectOpened(_) => {
                 self.repo_views.clear();
+                self.quick_edit = None;
                 self.row_menu = None;
                 self.category_menu = None;
                 self.category_filter_menu = None;
@@ -251,11 +256,15 @@ impl Workspace {
             AppEvent::RowsChanged(ids) => {
                 let rows = self.core.rows();
                 for id in ids {
-                    let Some(view) = self.repo_views.get(&id) else {
-                        continue;
-                    };
                     let summary = rows.iter().find(|r| r.id == id).and_then(|r| r.summary());
-                    view.update(cx, |v, cx| v.on_summary(summary, cx));
+                    if let Some(view) = self.repo_views.get(&id) {
+                        view.update(cx, |v, cx| v.on_summary(summary, cx));
+                    }
+                    if let Some((pane, _)) = &self.quick_edit
+                        && pane.read(cx).repo() == id
+                    {
+                        pane.update(cx, |p, cx| p.on_summary(summary, cx));
+                    }
                 }
             }
             AppEvent::UiStateChanged
@@ -271,6 +280,66 @@ impl Workspace {
             self.notice = Some(e.to_string());
         }
         cx.notify();
+    }
+
+    /// Opens the quick edit pane on a repo (kept when it already shows it).
+    fn open_quick_edit(&mut self, id: RepoId, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .quick_edit
+            .as_ref()
+            .is_some_and(|(p, _)| p.read(cx).repo() == id)
+        {
+            return;
+        }
+        let Some(row) = self.core.rows().into_iter().find(|r| r.id == id) else {
+            return;
+        };
+        let core = self.core.clone();
+        let pane = cx.new(|cx| QuickEdit::new(core, &row, window, cx));
+        let sub = cx.subscribe_in(
+            &pane,
+            window,
+            |this: &mut Self, _, event: &QuickEditEvent, window, cx| {
+                match event {
+                    QuickEditEvent::Closed => {
+                        this.quick_edit = None;
+                        this.focus.focus(window, cx);
+                    }
+                    QuickEditEvent::OpenTab(id) => {
+                        this.quick_edit = None;
+                        this.dispatch(Command::OpenRepoTab(*id), cx);
+                    }
+                }
+                cx.notify();
+            },
+        );
+        // Its open diff is drawn here, in place of the rows.
+        let redraw = cx.observe(&pane, |_, _, cx| cx.notify());
+        self.quick_edit = Some((pane, [sub, redraw]));
+        cx.notify();
+    }
+
+    /// ↑ / ↓ / Esc on the dashboard go to the quick edit pane (its open
+    /// diff first), unless a menu or overlay is up or an input has focus.
+    fn quick_edit_key(&mut self, e: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+        let m = &e.keystroke.modifiers;
+        if m.control || m.alt || m.platform || m.shift {
+            return;
+        }
+        if self.overlay.is_some() || self.row_menu.is_some() {
+            return;
+        }
+        let on_dashboard = self
+            .core
+            .ui_state()
+            .is_some_and(|ui| !matches!(ui.tabs.get(ui.active_tab), Some(TabState::Repo(_))));
+        let Some((pane, _)) = &self.quick_edit else {
+            return;
+        };
+        let keys_free = self.focus.is_focused(window) || pane.read(cx).is_focused(window);
+        if on_dashboard && keys_free && pane.update(cx, |p, cx| p.on_key(&e.keystroke.key, cx)) {
+            cx.stop_propagation();
+        }
     }
 
     /// Opens a submodule in a tab off the UI thread, showing it as opening
@@ -1215,20 +1284,43 @@ impl Workspace {
                 })
                 .collect()
         };
+        // A repo removed or hidden since its pane opened closes the pane.
+        if let Some((pane, _)) = &self.quick_edit {
+            let repo = pane.read(cx).repo();
+            if !rows.iter().any(|r| r.id == repo) {
+                self.quick_edit = None;
+            }
+        }
+        let pane = self.quick_edit.as_ref().map(|(p, _)| p.clone());
+        // A file clicked in the pane shows its diff in place of the rows.
+        let diff = pane
+            .as_ref()
+            .and_then(|p| p.update(cx, QuickEdit::render_diff));
+        let main = match diff {
+            Some(diff) => diff,
+            None => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(toolbar)
+                .child(header)
+                .child(
+                    div()
+                        .id("dash-rows")
+                        .flex_1()
+                        .overflow_y_scrollbar()
+                        .children(body),
+                )
+                .into_any_element(),
+        };
         div()
             .flex_1()
             .flex()
-            .flex_col()
             .overflow_hidden()
-            .child(toolbar)
-            .child(header)
-            .child(
-                div()
-                    .id("dash-rows")
-                    .flex_1()
-                    .overflow_y_scrollbar()
-                    .children(body),
-            )
+            .child(main)
+            .children(pane)
             .into_any_element()
     }
 
@@ -1255,8 +1347,13 @@ impl Workspace {
             .when(row.stale && !row.hidden, |d| d.opacity(0.75))
             .when(row.hidden, |d| d.opacity(0.45))
             .hover(move |s| s.bg(hover))
-            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                this.dispatch(row_click(id, e), cx);
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                let command = row_click(id, e);
+                let plain = command == Command::Select(Some(id));
+                this.dispatch(command, cx);
+                if plain {
+                    this.open_quick_edit(id, window, cx);
+                }
             }))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1966,6 +2063,9 @@ impl Render for Workspace {
             .text_color(color(cx, T::FgDefault))
             .font_family(ui_font(cx))
             .text_size(text_size(cx))
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                this.quick_edit_key(e, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &OpenProjects, w, cx| {
                 this.open_palette(PaletteKind::Projects, w, cx);
             }))
@@ -2104,7 +2204,8 @@ fn text_width(text: &str, size: Pixels, window: &Window, cx: &gpui_kit::App) -> 
     f32::from(line.width)
 }
 
-/// Plain click selects, Ctrl+click adds to the selection, double click opens.
+/// Plain click selects (and opens the quick edit pane), Ctrl+click adds to
+/// the selection, double click opens.
 fn row_click(id: RepoId, e: &ClickEvent) -> Command {
     if e.click_count() > 1 {
         Command::OpenRepoTab(id)

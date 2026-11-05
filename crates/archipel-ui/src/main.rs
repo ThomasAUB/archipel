@@ -26,10 +26,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commit_panel;
+mod diff_view;
 mod forge_panel;
 mod instance;
 mod palette;
+mod quick_edit;
 mod repo_view;
+mod staging;
 mod startup;
 mod theme;
 mod widgets;
