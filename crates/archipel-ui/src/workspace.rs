@@ -13,6 +13,7 @@ use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, RepoPath, Timestamp};
 use archipel_ops::OpEventKind;
 use archipel_theme::ColorToken as T;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Action, AnyElement, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, MouseButton,
@@ -26,7 +27,8 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::repo_view::RepoView;
 use crate::theme::{UiTheme, clean_dot, color, radius, row_height, text_size, tone, ui_font};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, chip, dot, primary_button, resize_pane, section, splitter,
+    Pane, PaneDrag, TextTooltip, button, chip, context_menu, dot, menu_item, menu_separator,
+    primary_button, resize_pane, section, splitter,
 };
 
 gpui_kit::actions!(
@@ -117,6 +119,8 @@ pub struct Workspace {
     category_targets: Vec<RepoId>,
     /// Open category header menu: category and mouse position.
     category_menu: Option<(String, Point<Pixels>)>,
+    /// Open tab context menu: tab index and mouse position.
+    tab_menu: Option<(usize, Point<Pixels>)>,
     /// Category the open rename palette applies to.
     renaming_category: Option<String>,
     /// Open category filter dropdown: mouse position.
@@ -126,6 +130,9 @@ pub struct Workspace {
     category_filter_closed_at: Option<Point<Pixels>>,
     /// Folder scan progress: repos found, still running.
     scan: Option<(usize, bool)>,
+    /// Submodule being opened from the tree (adding it to the project
+    /// re-watches every repo, which can take a moment).
+    opening: Option<RepoPath>,
     /// Window title last set.
     title: String,
 }
@@ -158,10 +165,12 @@ impl Workspace {
             row_menu: None,
             category_targets: Vec::new(),
             category_menu: None,
+            tab_menu: None,
             renaming_category: None,
             category_filter_menu: None,
             category_filter_closed_at: None,
             scan: None,
+            opening: None,
             title: String::new(),
         }
     }
@@ -235,6 +244,7 @@ impl Workspace {
                 self.row_menu = None;
                 self.category_menu = None;
                 self.category_filter_menu = None;
+                self.tab_menu = None;
                 self.scan = None;
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
@@ -261,6 +271,29 @@ impl Workspace {
             self.notice = Some(e.to_string());
         }
         cx.notify();
+    }
+
+    /// Opens a submodule in a tab off the UI thread, showing it as opening
+    /// meanwhile.
+    fn open_submodule(&mut self, path: RepoPath, cx: &mut Context<Self>) {
+        if self.opening.is_some() {
+            return;
+        }
+        self.opening = Some(path.clone());
+        cx.notify();
+        let core = self.core.clone();
+        let task = cx.background_spawn(async move { core.dispatch(Command::OpenSubmodule(path)) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.opening = None;
+                if let Err(e) = result {
+                    this.notice = Some(e.to_string());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The batch selection (empty: every repo).
@@ -747,7 +780,14 @@ impl Workspace {
                 .when(selected.contains(&id), |d| d.bg(selected_bg))
                 .hover(move |s| s.bg(hover))
                 .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                    this.dispatch(row_click(id, e), cx);
+                    // Unlike the dashboard, a plain click opens the repo.
+                    let cmd = row_click(id, e);
+                    if matches!(cmd, Command::Select(_)) {
+                        this.dispatch(cmd, cx);
+                        this.dispatch(Command::OpenRepoTab(id), cx);
+                    } else {
+                        this.dispatch(cmd, cx);
+                    }
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
@@ -896,7 +936,7 @@ impl Workspace {
                 div()
                     .id("side-repos")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .px_1()
                     .children(repos),
             )
@@ -958,6 +998,13 @@ impl Workspace {
                     let () = this.core.update_ui_state(|u| u.active_tab = i);
                     cx.notify();
                 }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        this.tab_menu = Some((i, e.position));
+                        cx.notify();
+                    }),
+                )
                 .child(label);
             if i > 0 {
                 el = el.child(
@@ -1179,7 +1226,7 @@ impl Workspace {
                 div()
                     .id("dash-rows")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .children(body),
             )
             .into_any_element()
@@ -1233,6 +1280,7 @@ impl Workspace {
         let now = Timestamp::now();
         let by_id: HashMap<RepoId, &DashboardRow> = rows.iter().map(|r| (r.id, r)).collect();
         let rest: f32 = WIDTHS[1..].iter().sum();
+        let opening = self.opening.as_ref();
         tree.iter()
             .enumerate()
             .map(|(i, node)| {
@@ -1306,7 +1354,7 @@ impl Workspace {
                                 .gap_2()
                                 .overflow_hidden()
                                 .child(Self::node_state(node, cx))
-                                .children(Self::node_actions(i, node, cx)),
+                                .children(Self::node_actions(i, node, opening, cx)),
                         )
                         .into_any_element(),
                 }
@@ -1347,7 +1395,12 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn node_actions(i: usize, node: &TreeRow, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn node_actions(
+        i: usize,
+        node: &TreeRow,
+        opening: Option<&RepoPath>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let Some(state) = node.state.clone() else {
             return Vec::new();
         };
@@ -1372,13 +1425,18 @@ impl Workspace {
             out.push(update("Update", false, false, cx));
             out.push(update("Update all", false, true, cx));
             let path = node.path.clone();
-            out.push(
+            out.push(if opening == Some(&path) {
+                div()
+                    .text_color(color(cx, T::FgMuted))
+                    .child("Opening…")
+                    .into_any_element()
+            } else {
                 button(SharedString::from(format!("tree-open-{i}")), "Open", cx)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.dispatch(Command::OpenSubmodule(path.clone()), cx);
+                        this.open_submodule(path.clone(), cx);
                     }))
-                    .into_any_element(),
-            );
+                    .into_any_element()
+            });
             let path = node.path.clone();
             out.push(
                 button(
@@ -1535,7 +1593,7 @@ impl Workspace {
                 .occlude()
                 .min_w(px(180.0))
                 .max_h(px(360.0))
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .py_1()
                 .flex()
                 .flex_col()
@@ -1611,6 +1669,50 @@ impl Workspace {
                         this.dispatch(Command::RenameCategory(category.clone(), None), cx);
                     }))
                     .child("Remove category (repos stay in the project)"),
+            );
+        Some(
+            deferred(anchored().position(position).snap_to_window().child(menu))
+                .with_priority(1)
+                .into_any_element(),
+        )
+    }
+
+    /// Right-click menu of a tab: close it, the others, those to its right, all.
+    fn render_tab_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (index, position) = self.tab_menu?;
+        let count = self.core.ui_state()?.tabs.len();
+        let mut entries = Vec::new();
+        if index > 0 {
+            entries.push(("Close", Command::CloseTab(index)));
+            entries.push(("Close others", Command::CloseOtherTabs(index)));
+        }
+        if index + 1 < count {
+            entries.push(("Close tabs to the right", Command::CloseTabsToRight(index)));
+        }
+        let rows = entries.into_iter().enumerate().map(|(k, (label, cmd))| {
+            menu_item(("tab-menu", k), label, false, cx)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.tab_menu = None;
+                    this.dispatch(cmd.clone(), cx);
+                }))
+                .into_any_element()
+        });
+        let menu = context_menu(cx)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.tab_menu = None;
+                cx.notify();
+            }))
+            .children(rows)
+            .when(index > 0 || index + 1 < count, |m| {
+                m.child(menu_separator(cx))
+            })
+            .child(
+                menu_item("tab-menu-all", "Close all", false, cx).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.tab_menu = None;
+                        this.dispatch(Command::CloseAllTabs, cx);
+                    },
+                )),
             );
         Some(
             deferred(anchored().position(position).snap_to_window().child(menu))
@@ -1763,7 +1865,7 @@ impl Workspace {
             .id("drawer")
             .h(px(180.0))
             .flex_none()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p_2()
             .bg(color(cx, T::BgPanel))
             .border_t_1()
@@ -1836,6 +1938,7 @@ impl Render for Workspace {
         }
         let row_menu = self.render_row_menu(cx);
         let category_menu = self.render_category_menu(cx);
+        let tab_menu = self.render_tab_menu(cx);
         let content: AnyElement = match self.active_repo_view(window, cx) {
             Some(view) => div()
                 .flex_1()
@@ -1954,6 +2057,7 @@ impl Render for Workspace {
             .children(overlay)
             .children(row_menu)
             .children(category_menu)
+            .children(tab_menu)
     }
 }
 

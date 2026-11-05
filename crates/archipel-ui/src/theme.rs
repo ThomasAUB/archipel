@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use archipel_app::dashboard::Tone;
 use archipel_theme::{Appearance, Color, ColorToken, Theme, ThemeRegistry, builtin};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
 use gpui_kit::{App, Global, Hsla, Pixels, Rgba, px};
 
@@ -171,6 +172,8 @@ pub fn sync_toolkit_theme(cx: &mut App) {
         k.font_family = ui_family.into();
         k.mono_font_family = mono_family.into();
         k.radius = radius;
+        // Shown whenever a list overflows, not only on hover or scroll.
+        k.scrollbar_mode = ScrollbarMode::Always;
         let k = &mut k.colors;
         k.background = bg_app;
         k.foreground = fg;

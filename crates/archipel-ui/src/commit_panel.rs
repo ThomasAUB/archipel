@@ -10,6 +10,7 @@ use archipel_model::RepoPath;
 use archipel_ops::{CommitOptions, CommitPlan, Outcome};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, SharedString, Window, div, px};
 
@@ -301,7 +302,7 @@ impl Render for CommitPanel {
                 div()
                     .id("c-repos")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .children(repos),
             )
             .child(Input::new(&self.message))

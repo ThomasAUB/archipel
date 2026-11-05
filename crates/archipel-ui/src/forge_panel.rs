@@ -14,6 +14,7 @@ use archipel_model::RepoId;
 use archipel_model::forge::{ForgeAccount, ForgeKind, Namespace, RemoteRepo};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, PathPromptOptions, SharedString, Window, div, px};
 
@@ -690,7 +691,7 @@ impl ForgePanel {
                     .id("f-repos")
                     .flex_1()
                     .min_h(px(120.0))
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .children(repos),
             )
             .child(
@@ -830,7 +831,7 @@ impl Render for ForgePanel {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .child(body),
             )
             .children(

@@ -47,10 +47,8 @@ pub struct UiState {
     pub sidebar_width: f32,
     /// Width of a repo view's refs pane in logical pixels.
     pub refs_width: f32,
-    /// Width of a repo view's commit details pane in logical pixels.
+    /// Width of a repo view's details pane in logical pixels.
     pub details_width: f32,
-    /// Width of a repo view's changed-files pane in logical pixels.
-    pub changes_width: f32,
     /// Whether the sidebar is collapsed.
     pub sidebar_collapsed: bool,
     /// Height of the operations drawer in logical pixels.
@@ -69,6 +67,9 @@ pub struct UiState {
     /// Collapsed category groups of the sidebar (spec §1); the empty name
     /// is the "Uncategorized" group.
     pub collapsed_categories: Vec<String>,
+    /// Collapsed sections of a repo view's refs pane, by title (`LOCAL`,
+    /// `REMOTE`, `TAGS`, `SUBMODULES`), shared by all repo views.
+    pub collapsed_ref_sections: Vec<String>,
     /// Categories the dashboard is filtered on (any of them); the empty
     /// name is "Uncategorized". Empty: no category filter.
     pub category_filters: Vec<String>,
@@ -112,7 +113,6 @@ impl Default for UiState {
             sidebar_width: 240.0,
             refs_width: 220.0,
             details_width: 460.0,
-            changes_width: 380.0,
             sidebar_collapsed: false,
             drawer_height: 180.0,
             selection: Vec::new(),
@@ -121,6 +121,7 @@ impl Default for UiState {
             show_dependency_tree: false,
             collapsed_nodes: Vec::new(),
             collapsed_categories: Vec::new(),
+            collapsed_ref_sections: Vec::new(),
             category_filters: Vec::new(),
             accent: None,
             icon: None,

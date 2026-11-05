@@ -13,7 +13,9 @@ use archipel_model::ports::store::{
 };
 use archipel_model::project::{ProjectLocation, RegistryEntry};
 use archipel_model::stats::{ActivityBucket, Hotspot, StatsDelta};
-use archipel_model::summary::{ChangeCounts, ChangedFiles, HeadState, RepoOp, RepoSummary, Upstream};
+use archipel_model::summary::{
+    ChangeCounts, ChangedFiles, HeadState, RepoOp, RepoSummary, Upstream,
+};
 use archipel_model::testing::{InMemoryStore, oid};
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, StoreError, Timestamp};
@@ -67,7 +69,6 @@ fn ui_state() -> UiState {
         sidebar_width: 300.5,
         refs_width: 200.0,
         details_width: 500.0,
-        changes_width: 350.5,
         sidebar_collapsed: true,
         drawer_height: 120.0,
         selection: vec![RepoId(8)],
@@ -76,6 +77,8 @@ fn ui_state() -> UiState {
         show_dependency_tree: true,
         collapsed_nodes: vec!["k".into()],
         collapsed_categories: vec!["libs".into()],
+        collapsed_ref_sections: vec!["TAGS".into()],
+        category_filters: vec!["tools".into()],
         accent: Some("#112233".into()),
         icon: Some("🧪".into()),
     }

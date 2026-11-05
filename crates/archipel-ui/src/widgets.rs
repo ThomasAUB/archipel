@@ -2,10 +2,12 @@
 
 use archipel_model::ui_state::UiState;
 use archipel_theme::ColorToken as T;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyView, App, AppContext, Bounds, Context, Div, ElementId, Empty, Hsla, Pixels, SharedString,
-    Stateful, Window, div, px,
+    Stateful, UniformList, UniformListScrollHandle, Window, div, px, svg,
 };
 
 use crate::theme::{color, radius, text_size, ui_font};
@@ -27,6 +29,30 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, cx: &App
         .child(label.into())
 }
 
+/// A square icon button, its action named by a hover tooltip.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    tooltip: &'static str,
+    cx: &App,
+) -> Stateful<Div> {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id(id)
+        .flex_none()
+        .p(px(3.0))
+        .rounded(radius(cx))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .tooltip(move |_, cx| TextTooltip::view(&[tooltip.to_string()], cx))
+        .child(
+            svg()
+                .path(icon.path())
+                .size(px(14.0))
+                .text_color(color(cx, T::FgMuted)),
+        )
+}
+
 /// A primary (accent) button.
 pub fn primary_button(
     id: impl Into<ElementId>,
@@ -44,6 +70,48 @@ pub fn primary_button(
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(label.into())
+}
+
+/// The frame of a right-click menu; place it with `deferred(anchored())`.
+pub fn context_menu(cx: &App) -> Div {
+    div()
+        .occlude()
+        .min_w(px(200.0))
+        .py_1()
+        .flex()
+        .flex_col()
+        .font_family(ui_font(cx))
+        .text_size(text_size(cx))
+        .text_color(color(cx, T::FgDefault))
+        .whitespace_nowrap()
+        .bg(color(cx, T::BgElevated))
+        .border_1()
+        .border_color(color(cx, T::Border))
+        .rounded(radius(cx))
+        .shadow_md()
+}
+
+/// An entry of a [`context_menu`]; `danger` colors destructive actions.
+pub fn menu_item(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    danger: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id(id)
+        .px_3()
+        .py_1()
+        .cursor_pointer()
+        .when(danger, |d| d.text_color(color(cx, T::StatusError)))
+        .hover(move |s| s.bg(hover))
+        .child(label.into())
+}
+
+/// A rule between groups of [`menu_item`]s.
+pub fn menu_separator(cx: &App) -> Div {
+    div().my_1().h(px(1.0)).bg(color(cx, T::BorderSubtle))
 }
 
 /// A filter chip, highlighted when active.
@@ -109,6 +177,51 @@ impl Render for TextTooltip {
     }
 }
 
+/// A virtualized list filling its parent, with a vertical scrollbar while
+/// its rows overflow. It scrolls through the handle given with
+/// [`ScrollList::handle`], else through one kept under `id`.
+#[derive(IntoElement)]
+pub struct ScrollList {
+    id: ElementId,
+    list: UniformList,
+    handle: Option<UniformListScrollHandle>,
+}
+
+pub fn scroll_list(id: impl Into<ElementId>, list: UniformList) -> ScrollList {
+    ScrollList {
+        id: id.into(),
+        list,
+        handle: None,
+    }
+}
+
+impl ScrollList {
+    /// Scrolls through `handle`, for a list also scrolled from outside.
+    pub fn handle(mut self, handle: &UniformListScrollHandle) -> Self {
+        self.handle = Some(handle.clone());
+        self
+    }
+}
+
+impl RenderOnce for ScrollList {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let handle = self.handle.unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id, cx, |_, _| UniformListScrollHandle::new())
+                .read(cx)
+                .clone()
+        });
+        div()
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(self.list.track_scroll(&handle).flex_1())
+            .vertical_scrollbar(&handle)
+    }
+}
+
 /// A small round status dot.
 pub fn dot(fill: Hsla) -> Div {
     div().size(px(8.0)).rounded_full().bg(fill).flex_none()
@@ -132,10 +245,8 @@ pub enum Pane {
     Sidebar,
     /// A repo view's refs (left of the graph).
     Refs,
-    /// A repo view's commit details (right of the graph).
+    /// A repo view's details (right of the graph).
     Details,
-    /// A repo view's changed files (left of the file diff).
-    Changes,
 }
 
 /// Drag payload of a [`splitter`]: the row holding the pane listens for
@@ -174,7 +285,7 @@ pub fn splitter(pane: Pane, cx: &App) -> Stateful<Div> {
 /// holding it, keeping it and its neighbors at least [`MIN_PANE`] wide.
 pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixels>) {
     let (width, other) = match pane {
-        Pane::Sidebar | Pane::Changes => (x - bounds.left(), 0.0),
+        Pane::Sidebar => (x - bounds.left(), 0.0),
         Pane::Refs => (x - bounds.left(), ui.details_width),
         Pane::Details => (bounds.right() - x, ui.refs_width),
     };
@@ -184,7 +295,6 @@ pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixel
         Pane::Sidebar => &mut ui.sidebar_width,
         Pane::Refs => &mut ui.refs_width,
         Pane::Details => &mut ui.details_width,
-        Pane::Changes => &mut ui.changes_width,
     } = width;
 }
 
