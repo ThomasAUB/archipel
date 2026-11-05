@@ -294,6 +294,146 @@ impl StashWriter for GitCli {
             })
         }
     }
+
+    fn snapshot_paths(&self, repo: &RepoPath, paths: &[String]) -> Result<Option<Oid>, GitError> {
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let dirs = GitDirs::locate(repo.as_path())?;
+        let index = dirs
+            .git_dir
+            .join(format!("archipel-snapshot-{}.index", std::process::id()));
+        let dir = repo.as_path();
+        // A private index seeded with `HEAD`, so the real one is never touched.
+        let with_index =
+            |args: &[&str]| Cmd::new(dir, CmdKind::Write, args).env("GIT_INDEX_FILE", &index);
+        let head = self.resolve(repo, "HEAD")?;
+        let tree = |cmd: Cmd<'_>| -> Result<String, GitError> {
+            self.runner.run(cmd)?;
+            Ok(self.runner.run(with_index(&["write-tree"]))?.stdout_text())
+        };
+        let result = (|| {
+            let base = tree(match head {
+                Some(_) => with_index(&["read-tree", "HEAD"]),
+                None => with_index(&["read-tree", "--empty"]),
+            })?;
+            let snap = tree(
+                with_index(&["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"])
+                    .stdin(pathspec_stdin(paths)),
+            )?;
+            // Internal objects: a fixed identity, never signed.
+            let commit = |tree: &str, parent: Option<&str>, message: &str| {
+                let mut cmd = Cmd::new(
+                    dir,
+                    CmdKind::Write,
+                    &["commit-tree", "--no-gpg-sign", tree, "-m", message],
+                );
+                if let Some(p) = parent {
+                    cmd = cmd.args(["-p", p]);
+                }
+                for (key, value) in [
+                    ("GIT_AUTHOR_NAME", "Archipel"),
+                    ("GIT_AUTHOR_EMAIL", "archipel@localhost"),
+                    ("GIT_COMMITTER_NAME", "Archipel"),
+                    ("GIT_COMMITTER_EMAIL", "archipel@localhost"),
+                ] {
+                    cmd = cmd.env(key, value);
+                }
+                Ok::<_, GitError>(self.runner.run(cmd)?.stdout_text())
+            };
+            let parent = commit(&base, None, "archipel: before discard")?;
+            commit(&snap, Some(&parent), "archipel: discarded worktree changes")
+        })();
+        let _ = std::fs::remove_file(&index);
+        let text = result?;
+        Oid::from_hex(&text).map(Some).map_err(|_| GitError::Parse {
+            what: "git commit-tree",
+            detail: text,
+        })
+    }
+
+    fn restore_paths(&self, repo: &RepoPath, snapshot: Oid) -> Result<(), GitError> {
+        let paths = self.snapshot_changes(repo, snapshot)?;
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let status = self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--no-renames",
+                    "--",
+                ],
+            )
+            .args(paths.iter().map(String::as_str)),
+        )?;
+        // `XY path`: a worktree-side change (Y) means it was edited since.
+        let changed: Vec<String> = nul_separated(&status.stdout)
+            .into_iter()
+            .filter(|e| e.as_bytes().get(1).is_some_and(|y| *y != b' '))
+            .filter_map(|e| e.get(3..).map(str::to_owned))
+            .collect();
+        if !changed.is_empty() {
+            return Err(GitError::InvalidRequest(format!(
+                "{} changed since the discard: restoring would overwrite it",
+                changed.join(", ")
+            )));
+        }
+        self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Write,
+                &[
+                    "restore",
+                    "--worktree",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ],
+            )
+            .arg(format!("--source={}", snapshot.to_hex()))
+            .stdin(pathspec_stdin(&paths)),
+        )?;
+        Ok(())
+    }
+}
+
+impl GitCli {
+    /// The paths a [`StashWriter::snapshot_paths`] snapshot holds.
+    fn snapshot_changes(&self, repo: &RepoPath, snapshot: Oid) -> Result<Vec<String>, GitError> {
+        let hex = snapshot.to_hex();
+        let out = self.runner.run(Cmd::new(
+            repo.as_path(),
+            CmdKind::Read,
+            &[
+                "diff",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                &format!("{hex}^"),
+                &hex,
+            ],
+        ))?;
+        Ok(nul_separated(&out.stdout))
+    }
+}
+
+/// The non-empty records of NUL-separated command output.
+fn nul_separated(bytes: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(bytes)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Paths as a NUL-separated pathspec file (`--pathspec-from-file=-`).
+fn pathspec_stdin(paths: &[String]) -> Vec<u8> {
+    paths.iter().flat_map(|p| p.bytes().chain([0])).collect()
 }
 
 impl RemoteOps for GitCli {

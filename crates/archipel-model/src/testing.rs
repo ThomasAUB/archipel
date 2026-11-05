@@ -581,6 +581,13 @@ impl StashWriter for FakeGit {
         self.record("stash_snapshot", repo, "")?;
         Ok(Some(self.fresh_oid()))
     }
+    fn snapshot_paths(&self, repo: &RepoPath, paths: &[String]) -> Result<Option<Oid>, GitError> {
+        self.record("snapshot_paths", repo, paths.join(","))?;
+        Ok((!paths.is_empty()).then(|| self.fresh_oid()))
+    }
+    fn restore_paths(&self, repo: &RepoPath, snapshot: Oid) -> Result<(), GitError> {
+        self.record("restore_paths", repo, snapshot.to_hex())
+    }
 }
 
 fn remove_stash(r: &mut FakeRepo, index: u32) {

@@ -43,6 +43,8 @@ impl CmdOutput {
 pub(crate) struct Cmd<'a> {
     pub repo: Option<&'a Path>,
     pub args: Vec<OsString>,
+    /// Extra environment variables.
+    pub env: Vec<(OsString, OsString)>,
     pub kind: CmdKind,
     pub stdin: Option<Vec<u8>>,
     pub cancel: Option<&'a CancelToken>,
@@ -56,6 +58,7 @@ impl<'a> Cmd<'a> {
         Self {
             repo: Some(repo),
             args: args.iter().map(OsString::from).collect(),
+            env: Vec::new(),
             kind,
             stdin: None,
             cancel: None,
@@ -71,6 +74,11 @@ impl<'a> Cmd<'a> {
 
     pub fn args<I: IntoIterator<Item = S>, S: Into<OsString>>(mut self, args: I) -> Self {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -137,6 +145,7 @@ impl Runner {
                 .env("SSH_ASKPASS", askpass)
                 .env("SSH_ASKPASS_REQUIRE", "force");
         }
+        c.envs(cmd.env.iter().map(|(k, v)| (k, v)));
         c.args(&cmd.args);
         c.stdin(if cmd.stdin.is_some() {
             Stdio::piped()

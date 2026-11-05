@@ -179,7 +179,7 @@ impl RepoActions {
             OperationKind::Discard,
             format!("Discard {} file(s)", paths.len()),
         )
-        .snapshot_worktree();
+        .snapshot_paths(paths);
         self.journal
             .record(repo, rec, || self.git.index.discard(repo, paths))
     }

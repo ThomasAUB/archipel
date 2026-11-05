@@ -301,6 +301,39 @@ fn stash_and_discard_undo() {
 }
 
 #[test]
+fn discard_undo_restores_only_the_discarded_files() {
+    let e = env();
+    e.repo.write("b.txt", "bee\n").unwrap();
+    e.repo.write("gone.txt", "gone\n").unwrap();
+    e.repo.commit_all("more").unwrap();
+    let read = |f: &str| std::fs::read_to_string(e.repo.path().join(f)).ok();
+    // Another file stays modified: a whole-worktree snapshot cannot be
+    // re-applied over it.
+    e.repo.write("a.txt", "edited a\n").unwrap();
+    e.repo.write("b.txt", "edited b\n").unwrap();
+    e.repo.write("dir/new.txt", "untracked\n").unwrap();
+    std::fs::remove_file(e.repo.path().join("gone.txt")).unwrap();
+    let discarded: Vec<String> = vec!["a.txt".into(), "dir/".into(), "gone.txt".into()];
+    e.actions.discard(&e.path, &discarded).unwrap();
+    assert_eq!(read("a.txt").as_deref(), Some("one\n"));
+    assert_eq!(read("dir/new.txt"), None);
+    assert_eq!(read("gone.txt").as_deref(), Some("gone\n"));
+
+    e.undo_last().unwrap();
+    assert_eq!(read("a.txt").as_deref(), Some("edited a\n"));
+    assert_eq!(read("b.txt").as_deref(), Some("edited b\n"));
+    assert_eq!(read("dir/new.txt").as_deref(), Some("untracked\n"));
+    assert_eq!(read("gone.txt"), None);
+    assert!(e.cli.stashes(&e.path).unwrap().is_empty());
+
+    // A file edited again after the discard is never overwritten.
+    e.actions.discard(&e.path, &["a.txt".into()]).unwrap();
+    e.repo.write("a.txt", "newer\n").unwrap();
+    assert!(e.undo_last().is_err());
+    assert_eq!(read("a.txt").as_deref(), Some("newer\n"));
+}
+
+#[test]
 fn fast_forward_and_pull_undo_and_push_compensation() {
     let e = env();
     let remote_dir = tempfile::tempdir().unwrap();

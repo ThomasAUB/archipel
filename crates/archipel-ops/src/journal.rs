@@ -27,6 +27,9 @@ pub struct Recording {
     pub batch: Option<BatchId>,
     /// Snapshot the worktree first (destructive operations).
     pub snapshot_worktree: bool,
+    /// Snapshot only these worktree paths first (discard); takes precedence
+    /// over `snapshot_worktree`.
+    pub snapshot_paths: Vec<String>,
     /// Stash commit affected by a stash operation.
     pub stash: Option<StashRecord>,
 }
@@ -41,6 +44,7 @@ impl Recording {
             refs: Vec::new(),
             batch: None,
             snapshot_worktree: false,
+            snapshot_paths: Vec::new(),
             stash: None,
         }
     }
@@ -63,6 +67,13 @@ impl Recording {
     #[must_use]
     pub fn snapshot_worktree(mut self) -> Self {
         self.snapshot_worktree = true;
+        self
+    }
+
+    /// Requests a snapshot of the worktree content of `paths` before the operation.
+    #[must_use]
+    pub fn snapshot_paths(mut self, paths: &[String]) -> Self {
+        self.snapshot_paths = paths.to_vec();
         self
     }
 
@@ -131,7 +142,9 @@ impl Journal {
             Some(_) => Some(self.refs.snapshot(repo, &names)?),
             None => None,
         };
-        let worktree_snapshot = if rec.snapshot_worktree {
+        let worktree_snapshot = if !rec.snapshot_paths.is_empty() {
+            self.snapshots.snapshot_paths(repo, &rec.snapshot_paths)?
+        } else if rec.snapshot_worktree {
             self.snapshots.snapshot_worktree(repo)?
         } else {
             None

@@ -58,6 +58,8 @@ pub enum UndoStep {
     StashDrop(Oid),
     /// Re-apply a worktree snapshot taken before a destructive operation.
     ApplySnapshot(Oid),
+    /// Write back the files of a path snapshot taken before a discard.
+    RestorePaths(Oid),
 }
 
 /// A compensating action for a push.
@@ -196,7 +198,7 @@ impl UndoService {
             K::StashPush | K::StashDrop | K::StashPop => stash_plan(entry, direction),
             K::Discard => match (direction, entry.worktree_snapshot) {
                 (Direction::Undo, Some(oid)) => Ok(UndoPlan::Steps {
-                    steps: vec![UndoStep::ApplySnapshot(oid)],
+                    steps: vec![UndoStep::RestorePaths(oid)],
                     note: None,
                 }),
                 (Direction::Undo, None) => Ok(UndoPlan::Nothing("nothing was discarded".into())),
@@ -373,6 +375,7 @@ impl UndoService {
                     .stash_store(repo, *oid, "archipel: restored by undo")?;
                 g.stash_writer.stash_apply(repo, 0, StashApplyMode::Pop)?;
             }
+            UndoStep::RestorePaths(oid) => g.stash_writer.restore_paths(repo, *oid)?,
         }
         Ok(())
     }

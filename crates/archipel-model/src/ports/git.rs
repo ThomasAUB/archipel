@@ -229,6 +229,15 @@ pub trait StashWriter: Send + Sync {
     /// Snapshots the worktree into a dangling stash commit without touching
     /// the stash list (`git stash create`); `None` when there is nothing to save.
     fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError>;
+    /// Snapshots the worktree content of `paths` (untracked files included,
+    /// missing files recorded as deleted) into a dangling commit whose
+    /// parent holds `HEAD`'s version: the diff between the two names the
+    /// snapshotted paths. `None` when `paths` is empty.
+    fn snapshot_paths(&self, repo: &RepoPath, paths: &[String]) -> Result<Option<Oid>, GitError>;
+    /// Writes the paths of a [`Self::snapshot_paths`] snapshot back into the
+    /// worktree, leaving the index and every other file alone. Refused when
+    /// one of them has unstaged changes (it would overwrite newer work).
+    fn restore_paths(&self, repo: &RepoPath, snapshot: Oid) -> Result<(), GitError>;
 }
 
 /// Network operations.
