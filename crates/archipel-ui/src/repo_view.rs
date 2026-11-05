@@ -470,6 +470,24 @@ impl RepoView {
                     Ok(c) => v.changes = c,
                     Err(e) => v.status = Some(e),
                 }
+                // The shown file diff follows the working copy: reloaded
+                // while the file still has changes on that side, else cleared.
+                if let Some((file, side, _)) = &v.file_diff {
+                    let (file, side) = (file.clone(), *side);
+                    let still_changed = v.changes.iter().any(|c| {
+                        c.path == file
+                            && if side == DiffSide::Staged {
+                                c.is_staged()
+                            } else {
+                                c.is_unstaged()
+                            }
+                    });
+                    if still_changed {
+                        v.select_file(file, side, cx);
+                    } else {
+                        v.file_diff = None;
+                    }
+                }
                 if v.wip_selected {
                     if v.changes.is_empty() {
                         v.wip_selected = false;
