@@ -287,10 +287,12 @@ fn dashboard_filters_on_categories() {
     open_fresh(&e);
     let ids: Vec<_> = e.repos.iter().map(RepoPath::id).collect();
     let cmd = |c: Command| e.app.dispatch(c).unwrap();
-    let names = |app: &App| -> Vec<String> {
-        app.visible_rows().into_iter().map(|r| r.name).collect()
-    };
-    assert!(e.app.category_filter_keys().is_empty(), "no category: no chip");
+    let names =
+        |app: &App| -> Vec<String> { app.visible_rows().into_iter().map(|r| r.name).collect() };
+    assert!(
+        e.app.category_filter_keys().is_empty(),
+        "no category: no chip"
+    );
 
     cmd(Command::SetCategory(vec![ids[0]], Some("libs".into())));
     cmd(Command::SetCategory(vec![ids[1]], Some("apps".into())));

@@ -389,8 +389,13 @@ fn change_line(change: &FileChange) -> String {
     };
     let deleted = matches!(
         change.state,
-        FileState::Tracked { staged: ChangeKind::Deleted, .. }
-            | FileState::Tracked { unstaged: ChangeKind::Deleted, .. }
+        FileState::Tracked {
+            staged: ChangeKind::Deleted,
+            ..
+        } | FileState::Tracked {
+            unstaged: ChangeKind::Deleted,
+            ..
+        }
     );
     let path = match &change.original_path {
         Some(from) => format!("{from} → {}", change.path),
@@ -736,7 +741,9 @@ mod tests {
                 state: FileState::Conflicted,
             },
         ];
-        let r = row("app", |s| s.changed_files = ChangedFiles::capped(files.clone()));
+        let r = row("app", |s| {
+            s.changed_files = ChangedFiles::capped(files.clone())
+        });
         assert_eq!(
             changes.tooltip(&r).unwrap(),
             [
@@ -748,7 +755,11 @@ mod tests {
             ]
         );
         files.extend((0..ChangedFiles::MAX).map(|i| {
-            tracked(&format!("f{i}"), ChangeKind::Unmodified, ChangeKind::Modified)
+            tracked(
+                &format!("f{i}"),
+                ChangeKind::Unmodified,
+                ChangeKind::Modified,
+            )
         }));
         let r = row("big", |s| s.changed_files = ChangedFiles::capped(files));
         let lines = changes.tooltip(&r).unwrap();

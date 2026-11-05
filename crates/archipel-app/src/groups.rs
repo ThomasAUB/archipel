@@ -200,7 +200,10 @@ mod tests {
     #[test]
     fn category_filter_keys_and_matching() {
         assert!(category_filter_keys([None, Some(" ")]).is_empty());
-        assert_eq!(category_filter_keys([Some("libs"), Some("apps")]), ["apps", "libs"]);
+        assert_eq!(
+            category_filter_keys([Some("libs"), Some("apps")]),
+            ["apps", "libs"]
+        );
         let keys = category_filter_keys([Some("libs"), None, Some("apps")]);
         assert_eq!(keys, ["apps", "libs", ""]);
 
