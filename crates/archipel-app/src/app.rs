@@ -1575,17 +1575,27 @@ impl App {
         }
     }
 
+    fn save_ui_state(&self, id: &ProjectId, ui: &UiState) {
+        if let Err(e) = self.services.ui_state.save_ui_state(id, ui) {
+            tracing::warn!(error = %e, "could not save UI state");
+        }
+    }
+
     fn start_watching(&self) {
-        let targets: Vec<(RepoId, RepoPath)> = {
+        // Watch handles unwatch on drop (syscalls): they are dropped after
+        // the session lock is released.
+        let (project, targets, old): (ProjectId, Vec<(RepoId, RepoPath)>, Vec<WatchHandle>) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
-            s.watches.clear();
-            s.rows
+            let targets = s
+                .rows
                 .iter()
                 .filter(|r| !r.hidden && r.path.as_path().exists())
                 .map(|r| (r.id, r.path.clone()))
-                .collect()
+                .collect();
+            (s.id.clone(), targets, std::mem::take(&mut s.watches))
         };
+        drop(old);
         let me = self.me.clone();
         let sink: Arc<dyn archipel_model::ports::InvalidationSink> =
             Arc::new(move |inv: Invalidation| {
@@ -1613,9 +1623,13 @@ impl App {
                 }
             }
         }
-        if let Some(s) = lock(&self.session).as_mut() {
-            s.watches = handles;
-        }
+        // The project may have been switched while watching: the handles
+        // then belong to no session and are dropped (outside the lock).
+        let stale = match lock(&self.session).as_mut() {
+            Some(s) if s.id == project => std::mem::replace(&mut s.watches, handles),
+            _ => return,
+        };
+        drop(stale);
         if !degraded.is_empty() {
             self.emit(AppEvent::DegradedWatching(degraded));
         }
@@ -1689,11 +1703,14 @@ impl App {
             .as_ref()
             .map(|s| (s.id.clone(), s.ui.clone()));
         let result = self.run_command(command);
-        if let Some(s) = lock(&self.session).as_ref()
-            && before.is_some_and(|(id, ui)| id == s.id && ui != s.ui)
-            && let Err(e) = self.services.ui_state.save_ui_state(&s.id, &s.ui)
-        {
-            tracing::warn!(error = %e, "could not save UI state");
+        let changed = lock(&self.session).as_ref().and_then(|s| {
+            before
+                .is_some_and(|(id, ui)| id == s.id && ui != s.ui)
+                .then(|| (s.id.clone(), s.ui.clone()))
+        });
+        // Saved after releasing the session lock: views read it every frame.
+        if let Some((id, ui)) = changed {
+            self.save_ui_state(&id, &ui);
         }
         result
     }
@@ -1911,7 +1928,7 @@ impl App {
         if ids.is_empty() {
             return;
         }
-        {
+        let (id, ui) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
             for row in s.rows.iter_mut().filter(|r| ids.contains(&r.id)) {
@@ -1938,10 +1955,9 @@ impl App {
                 ui.hidden_repos.retain(|r| !ids.contains(r));
             }
             // Persist now: hiding is a deliberate choice, not layout noise.
-            if let Err(e) = self.services.ui_state.save_ui_state(&s.id, &s.ui) {
-                tracing::warn!(error = %e, "could not save UI state");
-            }
-        }
+            (s.id.clone(), s.ui.clone())
+        };
+        self.save_ui_state(&id, &ui);
         self.start_watching();
         if !hidden {
             for id in ids {

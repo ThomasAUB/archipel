@@ -163,6 +163,9 @@ pub struct Workspace {
     /// The status bar's project color picker, left of the theme picker.
     accent_picker: Entity<ColorPickerState>,
     _accent_picked: Subscription,
+    /// Refreshes repos the watcher cannot fully cover when the window is
+    /// activated.
+    _activation: Subscription,
     /// Folder scan progress: repos found, still running.
     scan: Option<(usize, bool)>,
     /// Submodule being opened from the tree (adding it to the project
@@ -205,6 +208,11 @@ impl Workspace {
                 }
             },
         );
+        let activation = cx.observe_window_activation(window, |this, window, _| {
+            if window.is_window_active() {
+                this.core.on_focus();
+            }
+        });
         Self {
             core,
             focus,
@@ -225,6 +233,7 @@ impl Workspace {
             theme_menu_closed_at: None,
             accent_picker,
             _accent_picked: on_accent,
+            _activation: activation,
             scan: None,
             opening: None,
             title: String::new(),
