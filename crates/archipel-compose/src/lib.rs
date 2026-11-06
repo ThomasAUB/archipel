@@ -94,6 +94,12 @@ impl AppDirs {
         self.config.join("keymap.toml")
     }
 
+    /// The remembered theme choice (written by the app).
+    #[must_use]
+    pub fn appearance_file(&self) -> PathBuf {
+        self.config.join("appearance.toml")
+    }
+
     /// The user themes folder.
     #[must_use]
     pub fn themes_dir(&self) -> PathBuf {

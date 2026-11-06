@@ -4,12 +4,16 @@
 //! colors (`cargo xtask check-colors`); views ask for semantic tokens.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use archipel_app::dashboard::Tone;
-use archipel_theme::{Appearance, Color, ColorToken, Theme, ThemeRegistry, builtin};
+use archipel_app::settings::{load_theme_selection, save_theme_selection};
+use archipel_theme::{
+    Appearance, Color, ColorToken, Theme, ThemeRegistry, ThemeSelection, builtin,
+};
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
-use gpui_kit::{App, Global, Hsla, Pixels, Rgba, px};
+use gpui_kit::{App, Global, Hsla, Pixels, Rgba, WindowAppearance, px};
 
 /// The active theme, as a GPUI global.
 ///
@@ -36,6 +40,8 @@ pub struct UiTheme {
     ui_family: String,
     /// Monospace font actually used.
     mono_family: String,
+    /// Where the theme choice is remembered (`None`: not remembered).
+    selection_file: Option<PathBuf>,
 }
 
 impl Global for UiTheme {}
@@ -65,7 +71,7 @@ impl UiTheme {
     /// A font family that is not installed makes the text system search for
     /// a fallback on every new text run, which cost ~200 ms on the first
     /// frame (ADR 0001): fonts are resolved once here instead.
-    pub fn load(dir: &std::path::Path, id: &str, cx: &App) -> Self {
+    pub fn load(dir: &Path, id: &str, cx: &App) -> Self {
         let mut registry = ThemeRegistry::new();
         if let Err(e) = registry.load_dir(dir) {
             tracing::warn!(error = %e, "cannot load user themes");
@@ -86,9 +92,42 @@ impl UiTheme {
             installed,
             ui_family: String::new(),
             mono_family: String::new(),
+            selection_file: None,
         };
         ui.resolve_fonts();
         ui
+    }
+
+    /// Loads the theme remembered in `selection_file` (the default theme
+    /// when there is none) and remembers later choices there. Returns a
+    /// warning when the file cannot be read.
+    pub fn load_remembered(
+        dir: &Path,
+        selection_file: PathBuf,
+        cx: &App,
+    ) -> (Self, Option<String>) {
+        let (selection, warning) = load_theme_selection(&selection_file);
+        let os = match cx.window_appearance() {
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Appearance::Light,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Appearance::Dark,
+        };
+        let id = selection
+            .as_ref()
+            .map_or(builtin::DEFAULT_ID, |s| s.theme_id(os));
+        let mut ui = Self::load(dir, id, cx);
+        ui.selection_file = Some(selection_file);
+        (ui, warning)
+    }
+
+    /// Remembers the current theme as the user's fixed choice.
+    pub fn remember(&self) -> Result<(), String> {
+        let Some(path) = &self.selection_file else {
+            return Ok(());
+        };
+        let selection = ThemeSelection::Fixed {
+            id: self.selected.id.clone(),
+        };
+        save_theme_selection(path, &selection)
     }
 
     /// Activates another theme (live: every view re-renders).

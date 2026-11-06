@@ -748,7 +748,11 @@ impl Workspace {
             .unwrap_or_default();
         cx.global_mut::<UiTheme>().set(&next);
         crate::theme::sync_toolkit_theme(cx);
-        self.notice = Some(format!("Theme: {}", cx.global::<UiTheme>().theme.name));
+        let ui = cx.global::<UiTheme>();
+        self.notice = Some(match ui.remember() {
+            Ok(()) => format!("Theme: {}", ui.theme.name),
+            Err(e) => format!("Theme: {} (not remembered: {e})", ui.theme.name),
+        });
         window.refresh();
         crate::windows::refresh_all(cx);
     }

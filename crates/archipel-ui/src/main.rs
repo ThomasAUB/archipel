@@ -190,6 +190,7 @@ fn main() {
     };
     startup::mark("instance");
     let themes_dir = dirs.themes_dir();
+    let appearance_file = dirs.appearance_file();
     let dir = args.dir;
     let core = std::thread::Builder::new()
         .name("archipel-compose".into())
@@ -202,8 +203,8 @@ fn main() {
         .run(move |cx: &mut App| {
             startup::mark("gpui running");
             gpui_kit::init(cx);
-            let ui_theme =
-                theme::UiTheme::load(&themes_dir, archipel_theme::builtin::DEFAULT_ID, cx);
+            let (ui_theme, theme_warning) =
+                theme::UiTheme::load_remembered(&themes_dir, appearance_file, cx);
             cx.set_global(ui_theme);
             theme::sync_toolkit_theme(cx);
             startup::mark("gpui-kit init + theme");
@@ -227,6 +228,7 @@ fn main() {
                 mut warnings,
                 ..
             } = composition;
+            warnings.extend(theme_warning);
             for w in &warnings {
                 tracing::warn!("{w}");
             }
