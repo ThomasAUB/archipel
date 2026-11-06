@@ -341,7 +341,6 @@ impl Scheduler {
         let wake = Arc::new(Notify::new());
         let woken = wake.clone();
         self.runtime.spawn(async move {
-            let (_held, _pending) = (held, pending);
             // Waiting for the repo lock and the pool permit ends early when
             // the handle is cancelled, so a cancelled op leaves the queue
             // right away instead of after the op ahead of it.
@@ -349,13 +348,16 @@ impl Scheduler {
                 r = acquire(repo_lock, pool) => Some(r),
                 () = woken.notified() => None,
             };
-            let result = match resources {
-                Some(_resources) if !ctx.cancel.is_cancelled() => run(ctx, job).await,
+            let result = match &resources {
+                Some(_) if !ctx.cancel.is_cancelled() => run(ctx, job).await,
                 _ => {
                     ctx.emit(OpEventKind::Finished(Err(OpError::Cancelled.to_string())));
                     Err(OpError::Cancelled)
                 }
             };
+            // Release the repo before reporting: whoever waits for the
+            // result may submit the next op on it right away.
+            drop((resources, held, pending));
             // The receiver may have been dropped: nobody waits for the result.
             let _ = tx.send(result);
         });
