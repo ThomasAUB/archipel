@@ -1635,7 +1635,25 @@ impl App {
     }
 
     /// Executes a command. Long work runs in the background.
+    ///
+    /// UI state a command changes (filters, sort, tabs, …) is saved right
+    /// away, so it survives the app being killed rather than closed.
     pub fn dispatch(&self, command: Command) -> Result<(), AppError> {
+        let before = lock(&self.session)
+            .as_ref()
+            .map(|s| (s.id.clone(), s.ui.clone()));
+        let result = self.run_command(command);
+        if let Some(s) = lock(&self.session).as_ref() {
+            if before.is_some_and(|(id, ui)| id == s.id && ui != s.ui) {
+                if let Err(e) = self.services.ui_state.save_ui_state(&s.id, &s.ui) {
+                    tracing::warn!(error = %e, "could not save UI state");
+                }
+            }
+        }
+        result
+    }
+
+    fn run_command(&self, command: Command) -> Result<(), AppError> {
         match command {
             Command::RefreshAll => {
                 self.reload_project()?;

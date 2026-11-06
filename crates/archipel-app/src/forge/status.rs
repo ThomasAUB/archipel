@@ -295,50 +295,11 @@ impl DashboardColumn for CiColumn {
     }
 
     fn cell(&self, row: &DashboardRow, _now: Timestamp) -> Cell {
-        let muted = |text: &str| Cell {
-            text: text.into(),
-            detail: None,
-            tone: Tone::Muted,
-        };
-        match (&row.ci, &row.forge) {
-            (BranchCi::Run(run), _) => Self::run_cell(run),
-            (BranchCi::Error(e), _) => Cell {
-                text: "error".into(),
-                detail: Some(e.clone()),
-                tone: Tone::Error,
-            },
-            (BranchCi::None, _) | (BranchCi::Unknown, ForgeStatus::NotOnForge) => muted("—"),
-            (BranchCi::Unknown, ForgeStatus::SignedOut { .. }) => muted("sign in"),
-            (BranchCi::Unknown, _) => muted(""),
-        }
+        ci_cell(&row.ci, &row.forge)
     }
 
     fn tooltip(&self, row: &DashboardRow) -> Option<Vec<String>> {
-        match (&row.ci, &row.forge) {
-            (BranchCi::Run(run), _) => {
-                let short: String = run.sha.chars().take(8).collect();
-                let mut lines = vec![format!("{} · {short}", ci_label(Some(run.state)))];
-                let mut jobs: Vec<&CiJob> = run.jobs.iter().collect();
-                jobs.sort_by_key(|j| Self::job_rank(j));
-                lines.extend(
-                    jobs.iter()
-                        .take(MAX_TOOLTIP_JOBS)
-                        .map(|j| Self::job_line(j)),
-                );
-                if jobs.len() > MAX_TOOLTIP_JOBS {
-                    lines.push(format!("… and {} more", jobs.len() - MAX_TOOLTIP_JOBS));
-                }
-                Some(lines)
-            }
-            (BranchCi::Error(e), _) => Some(vec![e.clone()]),
-            (BranchCi::None, _) => Some(vec![
-                "No CI run for this branch on the forge (not pushed, or no CI)".into(),
-            ]),
-            (BranchCi::Unknown, ForgeStatus::SignedOut { host }) => Some(vec![format!(
-                "Not signed in to {host}: “Forge accounts…” in the palette"
-            )]),
-            _ => None,
-        }
+        ci_tooltip(&row.ci, &row.forge)
     }
 
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
@@ -350,6 +311,58 @@ impl DashboardColumn for CiColumn {
                 CiState::Success => 2,
             })
         })
+    }
+}
+
+/// The CI of a branch as a cell: the "CI" column, also shown in the
+/// repo view.
+#[must_use]
+pub fn ci_cell(ci: &BranchCi, forge: &ForgeStatus) -> Cell {
+    let muted = |text: &str| Cell {
+        text: text.into(),
+        detail: None,
+        tone: Tone::Muted,
+    };
+    match (ci, forge) {
+        (BranchCi::Run(run), _) => CiColumn::run_cell(run),
+        (BranchCi::Error(e), _) => Cell {
+            text: "error".into(),
+            detail: Some(e.clone()),
+            tone: Tone::Error,
+        },
+        (BranchCi::None, _) | (BranchCi::Unknown, ForgeStatus::NotOnForge) => muted("—"),
+        (BranchCi::Unknown, ForgeStatus::SignedOut { .. }) => muted("sign in"),
+        (BranchCi::Unknown, _) => muted(""),
+    }
+}
+
+/// The tooltip of [`ci_cell`]: the run and its jobs, failures first.
+#[must_use]
+pub fn ci_tooltip(ci: &BranchCi, forge: &ForgeStatus) -> Option<Vec<String>> {
+    match (ci, forge) {
+        (BranchCi::Run(run), _) => {
+            let short: String = run.sha.chars().take(8).collect();
+            let mut lines = vec![format!("{} · {short}", ci_label(Some(run.state)))];
+            let mut jobs: Vec<&CiJob> = run.jobs.iter().collect();
+            jobs.sort_by_key(|j| CiColumn::job_rank(j));
+            lines.extend(
+                jobs.iter()
+                    .take(MAX_TOOLTIP_JOBS)
+                    .map(|j| CiColumn::job_line(j)),
+            );
+            if jobs.len() > MAX_TOOLTIP_JOBS {
+                lines.push(format!("… and {} more", jobs.len() - MAX_TOOLTIP_JOBS));
+            }
+            Some(lines)
+        }
+        (BranchCi::Error(e), _) => Some(vec![e.clone()]),
+        (BranchCi::None, _) => Some(vec![
+            "No CI run for this branch on the forge (not pushed, or no CI)".into(),
+        ]),
+        (BranchCi::Unknown, ForgeStatus::SignedOut { host }) => Some(vec![format!(
+            "Not signed in to {host}: “Forge accounts…” in the palette"
+        )]),
+        _ => None,
     }
 }
 

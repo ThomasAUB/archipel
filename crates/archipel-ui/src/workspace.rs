@@ -256,9 +256,15 @@ impl Workspace {
             AppEvent::RowsChanged(ids) => {
                 let rows = self.core.rows();
                 for id in ids {
-                    let summary = rows.iter().find(|r| r.id == id).and_then(|r| r.summary());
+                    let row = rows.iter().find(|r| r.id == id);
+                    let summary = row.and_then(|r| r.summary());
                     if let Some(view) = self.repo_views.get(&id) {
-                        view.update(cx, |v, cx| v.on_summary(summary, cx));
+                        view.update(cx, |v, cx| {
+                            if let Some(row) = row {
+                                v.on_forge(&row.ci, &row.forge, cx);
+                            }
+                            v.on_summary(summary, cx);
+                        });
                     }
                     if let Some((pane, _)) = &self.quick_edit
                         && pane.read(cx).repo() == id

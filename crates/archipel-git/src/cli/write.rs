@@ -50,6 +50,37 @@ impl GitCli {
             })
         }))
     }
+
+    /// The submodules (gitlink entries) among `paths` in `tree` (the index
+    /// when `None`), with the commit each one records.
+    fn gitlinks(
+        &self,
+        repo: &RepoPath,
+        tree: Option<&str>,
+        paths: &[String],
+    ) -> Result<Vec<(String, String)>, GitError> {
+        let cmd = match tree {
+            Some(t) => Cmd::new(repo.as_path(), CmdKind::Read, &["ls-tree", "-r", "-z", t]),
+            None => Cmd::new(repo.as_path(), CmdKind::Read, &["ls-files", "-s", "-z"]),
+        };
+        let out = self
+            .runner
+            .run(cmd.arg("--").args(paths.iter().map(String::as_str)))?;
+        // `ls-tree`: `160000 commit <oid>\t<path>`; `ls-files -s`:
+        // `160000 <oid> <stage>\t<path>`.
+        Ok(nul_separated(&out.stdout)
+            .into_iter()
+            .filter_map(|e| {
+                let (meta, path) = e.split_once('\t')?;
+                let mut fields = meta.split(' ');
+                if fields.next()? != "160000" {
+                    return None;
+                }
+                let oid = fields.find(|f| f.len() >= 40)?;
+                Some((path.to_owned(), oid.to_owned()))
+            })
+            .collect())
+    }
 }
 
 impl CommitWriter for GitCli {
@@ -120,6 +151,27 @@ impl IndexWriter for GitCli {
 
     fn discard(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
         let (tracked, untracked) = self.partition_tracked(repo, paths)?;
+        // `restore` never touches a submodule's checkout: put it back on the
+        // commit the index records, and drop the changes made inside it.
+        let submodules = self.gitlinks(repo, None, &tracked)?;
+        let tracked: Vec<String> = tracked
+            .into_iter()
+            .filter(|p| !submodules.iter().any(|(s, _)| s == p))
+            .collect();
+        for (path, oid) in &submodules {
+            let sub = RepoPath::new(repo.as_path().join(path));
+            let Some(head) = self.resolve(&sub, "HEAD")? else {
+                continue; // not initialized: nothing checked out to discard
+            };
+            // Same commit: keep the branch checked out there, if any.
+            let reset: &[&str] = if head.to_hex() == *oid {
+                &["reset", "-q", "--hard"]
+            } else {
+                &["checkout", "-q", "-f", "--detach", oid]
+            };
+            self.write(&sub, reset)?;
+            self.write(&sub, &["clean", "-f", "-d", "-q"])?;
+        }
         if !tracked.is_empty() {
             self.runner.run(
                 Cmd::new(
@@ -410,6 +462,15 @@ impl StashWriter for GitCli {
             .arg(format!("--source={}", snapshot.to_hex()))
             .stdin(pathspec_stdin(&paths)),
         )?;
+        // Submodules: `restore` skips them, check their commit out directly.
+        for (path, oid) in self.gitlinks(repo, Some(&snapshot.to_hex()), &paths)? {
+            let dir = repo.as_path().join(&path);
+            self.runner.run(Cmd::new(
+                &dir,
+                CmdKind::Write,
+                &["checkout", "-q", "--detach", &oid],
+            ))?;
+        }
         Ok(())
     }
 }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use archipel_app::{App, AppEvent, Command, Extensions, Services};
 use archipel_model::journal::OperationKind;
-use archipel_model::ports::{JournalStore, ProjectSource, Scope, SummaryStore};
+use archipel_model::ports::{JournalStore, ProjectSource, Scope, SummaryStore, UiStateStore};
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
 use archipel_model::requests::{CommitMode, CommitRequest};
 use archipel_model::settings::Settings;
@@ -232,6 +232,14 @@ fn filters_sorting_tabs_and_missing_repos() {
     e.app.close_project();
     e.app.open_project(&p1_id()).unwrap();
     assert_eq!(e.app.ui_state().unwrap().filters, ["ahead"]);
+
+    // …and is saved as soon as a command changes it, without a close (the
+    // app may be killed).
+    e.app
+        .dispatch(Command::ToggleFilter("dirty".into()))
+        .unwrap();
+    let saved = e.store.load_ui_state(&p1_id()).unwrap().unwrap();
+    assert_eq!(saved.filters, ["ahead", "dirty"]);
     drop(e.dir);
 }
 

@@ -117,7 +117,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ libfoo                                                                   │  <- Repo Toolbar
+│ libfoo   CI ✓ 12                                                         │  <- Repo Toolbar, CI Badge
 │ New branch at HEAD: [__________] [OK] [Cancel]                           │  <- Name Form
 ├────────────┬───────────────────────────────────┬─────────────────────────┤
 │ REFS PANEL │ GRAPH PANE                        │ DETAILS PANE            │
@@ -135,7 +135,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 
 | Name | What it is |
 | ---- | ---------- |
-| **Repo Toolbar** | Top line with the repo name. (`render_toolbar`) |
+| **Repo Toolbar** | Top line with the repo name and the **CI Badge**: the latest CI run of the current branch, as in the Dashboard's CI column (jobs on hover, click opens the run). (`render_toolbar`, `render_ci`) |
 | **Name Form** | Inline form under the Repo Toolbar to name a new branch, a new tag, or rename a branch. (`NameForm`, `render_name_form`) |
 | **Refs Panel** | Left pane, virtualized: sections **LOCAL**, **REMOTE**, **TAGS**, **SUBMODULES**, each collapsible. Branch rows can be dragged onto other branches. (`render_refs`) |
 | **Graph Pane** | Centre pane: the virtualized **Commit Graph**, or an Open Diff. (`render_graph`) |

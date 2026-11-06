@@ -5,7 +5,9 @@
 
 use archipel_fixtures::TestRepo;
 use archipel_git::GitCli;
-use archipel_model::ports::{SubmoduleReader, SubmoduleWriter};
+use archipel_model::ports::{
+    IndexWriter, StashWriter, StatusReader, SubmoduleReader, SubmoduleWriter,
+};
 use archipel_model::requests::SubmoduleUpdate;
 use archipel_model::{CancelToken, NoProgress, Oid, RepoPath};
 
@@ -95,4 +97,42 @@ fn update_initializes_a_deinitialized_submodule() {
     let subs = cli.submodules(&repo).unwrap();
     assert!(subs[0].initialized);
     assert_eq!(subs[0].checked_out, Some(pinned));
+}
+
+#[test]
+fn discard_resets_a_moved_submodule_and_restore_brings_it_back() {
+    let (parent, _lib, pinned) = parent_with_submodule();
+    let sub_dir = parent.path().join("libs/lib");
+    archipel_fixtures::configure(&sub_dir).unwrap();
+    archipel_fixtures::write_file(&sub_dir, "lib.txt", "v2\n").unwrap();
+    archipel_fixtures::git(&sub_dir, &["commit", "-q", "-am", "lib v2"]).unwrap();
+    let cli = GitCli::default();
+    let repo = RepoPath::new(parent.path());
+    let moved = cli.submodules(&repo).unwrap()[0].checked_out;
+    assert_ne!(moved, Some(pinned));
+
+    let paths = vec!["libs/lib".to_owned()];
+    let snapshot = cli.snapshot_paths(&repo, &paths).unwrap().unwrap();
+    cli.discard(&repo, &paths).unwrap();
+    assert_eq!(cli.submodules(&repo).unwrap()[0].checked_out, Some(pinned));
+    assert!(!cli.summary(&repo).unwrap().changes.is_dirty());
+
+    cli.restore_paths(&repo, snapshot).unwrap();
+    assert_eq!(cli.submodules(&repo).unwrap()[0].checked_out, moved);
+}
+
+#[test]
+fn discard_drops_changes_inside_a_submodule() {
+    let (parent, _lib, pinned) = parent_with_submodule();
+    let sub_dir = parent.path().join("libs/lib");
+    archipel_fixtures::write_file(&sub_dir, "lib.txt", "edited\n").unwrap();
+    archipel_fixtures::write_file(&sub_dir, "new.txt", "new\n").unwrap();
+    let cli = GitCli::default();
+    let repo = RepoPath::new(parent.path());
+    assert!(cli.summary(&repo).unwrap().changes.is_dirty());
+
+    cli.discard(&repo, &["libs/lib".to_owned()]).unwrap();
+    assert!(!cli.summary(&repo).unwrap().changes.is_dirty());
+    assert_eq!(cli.submodules(&repo).unwrap()[0].checked_out, Some(pinned));
+    assert!(!sub_dir.join("new.txt").exists());
 }

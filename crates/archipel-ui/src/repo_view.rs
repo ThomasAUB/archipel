@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use archipel_app::App as Core;
-use archipel_app::forge::pick_remote;
+use archipel_app::forge::{BranchCi, ForgeStatus, ci_cell, ci_tooltip, pick_remote};
 use archipel_graph::{Edge, EdgeKind, GraphError, GraphRow, HistoryView};
 use archipel_model::changes::{ChangeKind, FileChange};
 use archipel_model::diff::FileDiff;
@@ -37,7 +37,7 @@ use gpui_kit::{
 
 use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Staging};
-use crate::theme::{color, lane, mono_font, radius, row_height};
+use crate::theme::{color, lane, mono_font, radius, row_height, tone};
 use crate::widgets::{
     Pane, PaneDrag, TextTooltip, button, condense_status, context_menu, menu_item, menu_separator,
     primary_button, resize_pane, scroll_list, section, splitter,
@@ -524,6 +524,9 @@ pub struct RepoView {
     /// Refs state of the last summary seen; `None` until the next summary,
     /// which is then taken as is (the graph was just loaded).
     refs_state: Option<RefsState>,
+    /// CI of the current branch and forge status, as in the dashboard row.
+    ci: BranchCi,
+    forge: ForgeStatus,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
 }
@@ -537,11 +540,9 @@ impl RepoView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let summary = core
-            .rows()
-            .iter()
-            .find(|r| r.id == path.id())
-            .and_then(|r| r.summary().cloned());
+        let row = core.rows().into_iter().find(|r| r.id == path.id());
+        let summary = row.as_ref().and_then(|r| r.summary().cloned());
+        let (ci, forge) = row.map(|r| (r.ci, r.forge)).unwrap_or_default();
         let staging = staging::Panel::new(summary, window, cx);
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let name_sub = cx.subscribe_in(
@@ -582,6 +583,8 @@ impl RepoView {
             refs: Arc::default(),
             submodules: Arc::default(),
             refs_state: None,
+            ci,
+            forge,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
         };
@@ -949,6 +952,15 @@ impl RepoView {
         // A checkout or an update inside a submodule only shows in the
         // working copy, not in the refs.
         self.load_submodules(cx);
+    }
+
+    /// The forge status of the repo was read again (or its branch changed).
+    pub fn on_forge(&mut self, ci: &BranchCi, forge: &ForgeStatus, cx: &mut Context<Self>) {
+        if self.ci != *ci || self.forge != *forge {
+            self.ci = ci.clone();
+            self.forge = forge.clone();
+            cx.notify();
+        }
     }
 
     fn load_submodules(&mut self, cx: &mut Context<Self>) {
@@ -1611,11 +1623,13 @@ impl RepoView {
 
     // ----- rendering ----------------------------------------------------
 
-    /// The repo name; the repo actions are in the details pane.
+    /// The repo name and the CI of the current branch; the repo actions are
+    /// in the details pane.
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
+            .gap_3()
             .px_3()
             .py_1()
             .border_b_1()
@@ -1625,6 +1639,39 @@ impl RepoView {
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .child(self.name.clone()),
             )
+            .children(self.render_ci(cx))
+    }
+
+    /// The CI badge, as the dashboard "CI" cell: jobs on hover, click opens
+    /// the run.
+    fn render_ci(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let cell = ci_cell(&self.ci, &self.forge);
+        if cell.text.is_empty() {
+            return None;
+        }
+        let tooltip = ci_tooltip(&self.ci, &self.forge);
+        let url = self.ci.run().and_then(|run| run.url.clone());
+        let hover = color(cx, T::BgHover);
+        Some(
+            div()
+                .id("repo-ci")
+                .flex()
+                .gap_1()
+                .px_1()
+                .rounded(radius(cx))
+                .text_sm()
+                .child(div().text_color(color(cx, T::FgSubtle)).child("CI"))
+                .child(div().text_color(tone(cx, cell.tone)).child(cell.text))
+                .when_some(url, |d, url| {
+                    d.cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(move |_, _, cx| cx.open_url(&url))
+                })
+                .when_some(tooltip, |d, lines| {
+                    d.tooltip(move |_, cx| TextTooltip::view(&lines, cx))
+                })
+                .into_any_element(),
+        )
     }
 
     /// The name form: what is named, the name, OK / Cancel.
@@ -2026,53 +2073,78 @@ impl RepoView {
         let oid = row.oid;
         let index = row.row;
         let refs = row.refs.clone();
-        let badges = row.refs.iter().enumerate().map(|(i, r)| {
+        let is_head = row.refs.iter().any(|r| r.kind == RefKind::Head);
+        // On the checked-out commit, the current branch stands for HEAD;
+        // a detached HEAD keeps its own badge.
+        let current = self.current_branch().filter(|name| {
+            row.refs
+                .iter()
+                .any(|r| r.kind == RefKind::LocalBranch && r.name == *name)
+        });
+        let badges = row.refs.iter().enumerate().filter_map(|(i, r)| {
+            if r.kind == RefKind::Head && current.is_some() {
+                return None;
+            }
             let tip = r.clone();
-            div()
-                .id(SharedString::from(format!("badge-{index}-{i}")))
-                .px_1()
-                .rounded(radius(cx))
-                .text_xs()
-                .bg(color(cx, T::AccentSubtle))
-                .text_color(color(cx, T::Accent))
-                .when(r.kind == RefKind::Head, |d| {
-                    d.font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                })
-                // A single click bubbles to the row (select); a double click
-                // checks out this ref rather than the row's preferred one.
-                .on_click({
-                    let tip = tip.clone();
-                    cx.listener(move |v, e: &ClickEvent, _, cx| {
-                        if e.click_count() > 1 {
-                            cx.stop_propagation();
-                            v.checkout_ref(&tip, cx);
+            let checked_out = is_head
+                && match r.kind {
+                    RefKind::Head => true,
+                    RefKind::LocalBranch => current == Some(r.name.as_str()),
+                    _ => false,
+                };
+            Some(
+                div()
+                    .id(SharedString::from(format!("badge-{index}-{i}")))
+                    .px_1()
+                    .rounded(radius(cx))
+                    .text_xs()
+                    .map(|d| {
+                        if checked_out {
+                            d.bg(color(cx, T::Accent))
+                                .text_color(color(cx, T::AccentFg))
+                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        } else {
+                            d.bg(color(cx, T::AccentSubtle))
+                                .text_color(color(cx, T::Accent))
                         }
                     })
-                })
-                // HEAD and stash badges leave the right click to the row.
-                .when(
-                    matches!(
-                        r.kind,
-                        RefKind::LocalBranch | RefKind::RemoteBranch | RefKind::Tag
-                    ),
-                    |d| {
-                        let menu_tip = tip.clone();
-                        d.on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |v, e: &MouseDownEvent, _, cx| {
+                    // A single click bubbles to the row (select); a double click
+                    // checks out this ref rather than the row's preferred one.
+                    .on_click({
+                        let tip = tip.clone();
+                        cx.listener(move |v, e: &ClickEvent, _, cx| {
+                            if e.click_count() > 1 {
                                 cx.stop_propagation();
-                                v.open_menu(MenuTarget::Ref(menu_tip.clone()), e.position, cx);
-                            }),
-                        )
-                    },
-                )
-                // Drag onto another branch to merge or rebase.
-                .when(is_branch(r), |d| branch_drag_and_drop(d, &tip, cx))
-                .child(r.name.clone())
+                                v.checkout_ref(&tip, cx);
+                            }
+                        })
+                    })
+                    // HEAD and stash badges leave the right click to the row.
+                    .when(
+                        matches!(
+                            r.kind,
+                            RefKind::LocalBranch | RefKind::RemoteBranch | RefKind::Tag
+                        ),
+                        |d| {
+                            let menu_tip = tip.clone();
+                            d.on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |v, e: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    v.open_menu(MenuTarget::Ref(menu_tip.clone()), e.position, cx);
+                                }),
+                            )
+                        },
+                    )
+                    // Drag onto another branch to merge or rebase.
+                    .when(is_branch(r), |d| branch_drag_and_drop(d, &tip, cx))
+                    .child(r.name.clone()),
+            )
         });
         let hover = color(cx, T::BgHover);
         div()
             .id(SharedString::from(format!("g-{index}")))
+            .relative()
             .w_full()
             .h(row_height(cx))
             .flex()
@@ -2080,6 +2152,18 @@ impl RepoView {
             .gap_2()
             .pr_3()
             .cursor_pointer()
+            // The checked-out commit: tinted, with an accent bar on its edge.
+            .when(is_head, |d| {
+                d.bg(color(cx, T::AccentSubtle).opacity(0.5)).child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .h_full()
+                        .w(px(3.0))
+                        .bg(color(cx, T::Accent)),
+                )
+            })
             .when(selected, |d| d.bg(color(cx, T::BgSelected)))
             .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
@@ -2116,7 +2200,14 @@ impl RepoView {
                     .whitespace_nowrap()
                     .children(badges),
             )
-            .child(div().flex_1().min_w(px(0.0)).truncate().child(summary))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .when(is_head, |d| d.font_weight(gpui_kit::FontWeight::SEMIBOLD))
+                    .child(summary),
+            )
             .child(
                 div()
                     .w(px(140.0))
@@ -2835,8 +2926,8 @@ fn graph_cell(
         edges.push((kind, col, to, color(cx, T::StatusDirty)));
     }
     let node = (row.column, lane(cx, row.color));
-    // The checked-out commit gets a ring around its node.
-    let head_ring = is_head.then(|| color(cx, T::FgDefault));
+    // The checked-out commit gets an accent ring around its node.
+    let head_ring = is_head.then(|| color(cx, T::Accent));
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, (), window, _| {
@@ -2879,7 +2970,7 @@ fn graph_cell(
                         gpui_kit::transparent_black(),
                     )
                     .corner_radii(r)
-                    .border_widths(px(1.5))
+                    .border_widths(px(2.0))
                     .border_color(ring),
                 );
             }
