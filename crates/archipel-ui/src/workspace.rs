@@ -253,7 +253,12 @@ impl Workspace {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        // Missed events: resync every repo as if each changed.
+                        let resync = this.update(cx, |w, cx| {
+                            let ids = w.core.rows().iter().map(|r| r.id).collect();
+                            w.on_event(AppEvent::RowsChanged(ids), cx);
+                        });
+                        if resync.is_err() {
                             break;
                         }
                     }

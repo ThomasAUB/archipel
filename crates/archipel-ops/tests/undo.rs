@@ -519,3 +519,27 @@ fn undo_failing_midway_restores_the_refs_and_can_be_retried() {
     assert_eq!(e.cli.resolve(&e.path, "refs/heads/feature").unwrap(), tip);
     assert!(e.cli.resolve(&e.path, "refs/heads/feat").unwrap().is_none());
 }
+
+#[test]
+fn remote_branch_of_a_remote_named_with_a_slash_is_deleted() {
+    let e = env();
+    let remote_dir = tempfile::tempdir().unwrap();
+    let bare = remote_dir.path().join("fork.git");
+    git(
+        remote_dir.path(),
+        &["init", "-q", "--bare", bare.to_str().unwrap()],
+    )
+    .unwrap();
+    e.repo
+        .git(&["remote", "add", "team/fork", bare.to_str().unwrap()])
+        .unwrap();
+    e.repo
+        .git(&["push", "-q", "team/fork", "HEAD:refs/heads/feat"])
+        .unwrap();
+    e.repo.git(&["fetch", "-q", "team/fork"]).unwrap();
+    e.actions
+        .delete_remote_branch(&e.path, "team/fork/feat", &NoProgress, &CancelToken::new())
+        .unwrap();
+    let left = git(&bare, &["branch", "--list", "feat"]).unwrap();
+    assert!(left.trim().is_empty(), "{left}");
+}

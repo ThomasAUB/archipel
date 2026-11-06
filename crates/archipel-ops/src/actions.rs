@@ -361,6 +361,29 @@ impl RepoActions {
         Ok(self.git.remote.push(repo, &request, progress, cancel)?)
     }
 
+    /// Deletes a branch on its remote; `short` is the remote-tracking name
+    /// (`origin/feat`, or `team/fork/feat` for a remote named `team/fork`).
+    pub fn delete_remote_branch(
+        &self,
+        repo: &RepoPath,
+        short: &str,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), OpError> {
+        let remotes = self.git.remotes.remotes(repo)?;
+        let names: Vec<&str> = remotes.iter().map(|r| r.name.as_str()).collect();
+        let (remote, branch) = split_remote_ref(short, &names);
+        if !names.contains(&remote) {
+            return Err(OpError::Refused(format!("no remote holds {short}")));
+        }
+        let request = PushRequest {
+            remote: Some(remote.to_owned()),
+            refspec: Some(format!(":refs/heads/{branch}")),
+            ..PushRequest::default()
+        };
+        self.push(repo, &request, progress, cancel, None)
+    }
+
     /// Pushes a stash entry; returns `false` when there was nothing to stash.
     pub fn stash_push(&self, repo: &RepoPath, request: &StashRequest) -> Result<bool, OpError> {
         let pushed = self.git.stash_writer.stash_push(repo, request)?;

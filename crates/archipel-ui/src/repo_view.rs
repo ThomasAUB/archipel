@@ -19,7 +19,7 @@ use archipel_model::history::CommitMeta;
 use archipel_model::ports::DiffSide;
 use archipel_model::refs::{RefKind, RefTip, StashEntry};
 use archipel_model::requests::{
-    CheckoutTarget, DeleteMode, MergeMode, PushRequest, ResetMode, StashApplyMode, TagRequest,
+    CheckoutTarget, DeleteMode, MergeMode, ResetMode, StashApplyMode, TagRequest,
 };
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::{
@@ -1593,19 +1593,11 @@ impl RepoView {
                 });
             }
             MenuAction::DeleteRemoteBranch(name) => {
-                let Some((remote, branch)) = name.split_once('/') else {
-                    return;
-                };
-                let request = PushRequest {
-                    remote: Some(remote.to_owned()),
-                    refspec: Some(format!(":refs/heads/{branch}")),
-                    ..PushRequest::default()
-                };
                 self.run_as(
                     OpClass::Network,
                     format!("Delete {name}"),
                     cx,
-                    move |a, p, op| a.push(p, &request, op, op.cancel(), None),
+                    move |a, p, op| a.delete_remote_branch(p, &name, op, op.cancel()),
                 );
             }
             MenuAction::DeleteTag(name) => {
