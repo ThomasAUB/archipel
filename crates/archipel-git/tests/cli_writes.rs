@@ -341,6 +341,10 @@ fn remote_operations_with_progress() {
     git(&other, &["commit", "-q", "-m", "teammate"]).unwrap();
     git(&other, &["push", "-q"]).unwrap();
 
+    // A background fetch tells whether it brought anything.
+    assert!(cli.fetch_background(&path, &none).unwrap());
+    assert!(!cli.fetch_background(&path, &none).unwrap());
+
     cli.fetch(
         &path,
         &FetchRequest {

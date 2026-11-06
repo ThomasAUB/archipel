@@ -290,7 +290,7 @@ impl UiTheme {
 }
 
 #[allow(clippy::cast_lossless)] // u8 → f32 is exact
-fn hsla(c: Color) -> Hsla {
+pub(crate) fn hsla(c: Color) -> Hsla {
     Rgba {
         r: f32::from(c.r) / 255.0,
         g: f32::from(c.g) / 255.0,
@@ -358,4 +358,15 @@ pub fn mono_font(cx: &App) -> String {
 /// Base text size.
 pub fn text_size(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.typography.size)
+}
+
+/// A surface `t` of the way from `bg.app` (0) to `bg.panel` (1): side panes
+/// use slightly different surfaces so they read apart from each other.
+pub fn surface_between(cx: &App, t: f64) -> Hsla {
+    let theme = &cx.global::<UiTheme>().theme;
+    hsla(
+        theme
+            .color(ColorToken::BgApp)
+            .mix(theme.color(ColorToken::BgPanel), t),
+    )
 }

@@ -111,6 +111,7 @@ fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
         app_id: Some(APP_ID.to_owned()),
         ..WindowOptions::default()
     };
+    core.start_auto_fetch();
     let window_core = core.clone();
     match gpui_kit::open_window(options, cx, move |window, cx| {
         cx.new(|cx| Workspace::new(window_core, warnings, window, cx))

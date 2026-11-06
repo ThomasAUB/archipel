@@ -17,6 +17,9 @@ pub enum OpError {
     /// The operation was cancelled before or while running.
     #[error("operation cancelled")]
     Cancelled,
+    /// A background operation was skipped: its repository was busy.
+    #[error("repository busy")]
+    Busy,
     /// The operation was refused because it would lose work or is invalid.
     #[error("{0}")]
     Refused(String),

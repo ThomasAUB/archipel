@@ -37,7 +37,7 @@ use gpui_kit::{
 
 use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Staging};
-use crate::theme::{color, lane, mono_font, radius, row_height, tone};
+use crate::theme::{color, lane, mono_font, radius, row_height, surface_between, tone};
 use crate::widgets::{
     Pane, PaneDrag, TextTooltip, button, condense_status, context_menu, menu_item, menu_separator,
     primary_button, resize_pane, scroll_list, section, splitter,
@@ -3138,6 +3138,7 @@ impl Render for RepoView {
                 div()
                     .w(px(ui.refs_width))
                     .flex_none()
+                    .bg(color(cx, T::BgPanel))
                     .flex()
                     .flex_col()
                     .child(refs),
@@ -3161,6 +3162,7 @@ impl Render for RepoView {
                 div()
                     .w(px(ui.details_width))
                     .flex_none()
+                    .bg(surface_between(cx, 0.5))
                     .flex()
                     .flex_col()
                     .child(details),

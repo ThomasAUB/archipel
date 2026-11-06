@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use archipel_model::journal::JournalEntry;
 use archipel_model::ports::{
-    ChangeSource, Coverage, Invalidation, ProjectRegistry, ProjectSource, RepoDiscovery,
+    ChangeSource, Coverage, Invalidation, ProjectRegistry, ProjectSource, RepoDiscovery, Scope,
     SummaryStore, UiStateStore, WatchHandle,
 };
 use archipel_model::project::{
@@ -40,6 +40,7 @@ use crate::groups::{
     passes_category_filter,
 };
 
+mod auto_fetch;
 mod forge_flow;
 
 use crate::keymap::Keymap;
@@ -380,6 +381,8 @@ pub struct App {
     undo: UndoService,
     session: Mutex<Option<Session>>,
     events: broadcast::Sender<AppEvent>,
+    /// Background fetch plan (per window, like the session).
+    auto_fetch: Mutex<auto_fetch::AutoFetch>,
 }
 
 /// Event channel capacity; slow subscribers miss old events and re-read state.
@@ -389,7 +392,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Applies a tab command (open, close, cycle) to the UI state.
+/// Applies a tab command (open, close, cycle, move) to the UI state.
 fn tab_command(ui: &mut UiState, command: &Command) {
     match *command {
         Command::OpenRepoTab(repo) => {
@@ -422,6 +425,19 @@ fn tab_command(ui: &mut UiState, command: &Command) {
             } else {
                 (ui.active_tab + n - 1) % n
             };
+        }
+        Command::MoveTab { from, to } => {
+            let len = ui.tabs.len();
+            if from == 0 || from >= len || from == to {
+                return;
+            }
+            let to = to.clamp(1, len - 1);
+            let active = ui.tabs.get(ui.active_tab).cloned();
+            let tab = ui.tabs.remove(from);
+            ui.tabs.insert(to, tab);
+            ui.active_tab = active
+                .and_then(|t| ui.tabs.iter().position(|x| *x == t))
+                .unwrap_or(0);
         }
         _ => {}
     }
@@ -468,6 +484,7 @@ impl App {
         ));
         let undo = UndoService::new(services.git.clone(), journal);
         let events = broadcast::channel(EVENT_CAPACITY).0;
+        let settings_auto_fetch = settings.auto_fetch_secs;
         let app = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             services,
@@ -480,6 +497,9 @@ impl App {
             undo,
             session: Mutex::new(None),
             events,
+            auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
+                settings_auto_fetch,
+            ))),
         });
         app.forward_op_events();
         app
@@ -513,6 +533,7 @@ impl App {
     #[must_use]
     pub fn sibling(&self) -> Arc<Self> {
         let events = broadcast::channel(EVENT_CAPACITY).0;
+        let settings_auto_fetch = self.settings.auto_fetch_secs;
         let app = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             services: self.services.clone(),
@@ -525,6 +546,9 @@ impl App {
             undo: self.undo.clone(),
             session: Mutex::new(None),
             events,
+            auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
+                settings_auto_fetch,
+            ))),
         });
         app.forward_op_events();
         app
@@ -1547,7 +1571,11 @@ impl App {
         let me = self.me.clone();
         let sink: Arc<dyn archipel_model::ports::InvalidationSink> =
             Arc::new(move |inv: Invalidation| {
-                if let Some(app) = me.upgrade() {
+                let Some(app) = me.upgrade() else { return };
+                // Only `FETCH_HEAD` written: a fetch that moved no ref.
+                if inv.scope == Scope::FETCH {
+                    app.note_fetched(inv.repo);
+                } else {
                     app.refresh_repo(inv.repo);
                 }
             });
@@ -1662,9 +1690,12 @@ impl App {
             }
             Command::RefreshForge => self.refresh_forge_all(),
             Command::RefreshRepo(r) => self.refresh_repo(r),
-            Command::Fetch(ids) => self.spawn_batch("Fetch", &ids, |b, t| async move {
-                b.fetch_all(&t, FetchRequest::default()).await
-            }),
+            Command::Fetch(ids) => {
+                self.auto_fetch_reset(&ids);
+                self.spawn_batch("Fetch", &ids, |b, t| async move {
+                    b.fetch_all(&t, FetchRequest::default()).await
+                });
+            }
             Command::Pull(ids) => {
                 let mode = self.settings.pull_mode;
                 self.spawn_batch("Pull", &ids, move |b, t| async move {
@@ -1720,7 +1751,8 @@ impl App {
             | Command::CloseOtherTabs(_)
             | Command::CloseTabsToRight(_)
             | Command::CloseAllTabs
-            | Command::CycleTab(_)) => self.update_ui_state(|ui| tab_command(ui, &command)),
+            | Command::CycleTab(_)
+            | Command::MoveTab { .. }) => self.update_ui_state(|ui| tab_command(ui, &command)),
             Command::ToggleDrawer => {
                 if let Some(s) = lock(&self.session).as_mut() {
                     s.drawer_open = !s.drawer_open;

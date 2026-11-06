@@ -408,6 +408,11 @@ impl RepoActions {
         Ok(self.git.remote.fetch(repo, request, progress, cancel)?)
     }
 
+    /// Fetches every remote unattended; returns whether any ref moved.
+    pub fn fetch_background(&self, repo: &RepoPath, cancel: &CancelToken) -> Result<bool, OpError> {
+        Ok(self.git.remote.fetch_background(repo, cancel)?)
+    }
+
     /// Pulls the current branch (the local part is undoable).
     pub fn pull(
         &self,

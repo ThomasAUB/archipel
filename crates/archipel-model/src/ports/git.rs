@@ -11,7 +11,7 @@
 use std::ops::ControlFlow;
 use std::path::Path;
 
-use crate::cancel::{CancelToken, ProgressSink};
+use crate::cancel::{CancelToken, NoProgress, ProgressSink};
 use crate::changes::FileChange;
 use crate::diff::{FileDiff, NumStat};
 use crate::error::GitError;
@@ -263,6 +263,13 @@ pub trait RemoteOps: Send + Sync {
         progress: &dyn ProgressSink,
         cancel: &CancelToken,
     ) -> Result<(), GitError>;
+    /// Fetches every remote unattended (periodic background fetch): no
+    /// progress, no automatic maintenance. Returns whether any ref was
+    /// updated, so callers can skip work when nothing changed.
+    fn fetch_background(&self, repo: &RepoPath, cancel: &CancelToken) -> Result<bool, GitError> {
+        self.fetch(repo, &FetchRequest::default(), &NoProgress, cancel)
+            .map(|()| true)
+    }
     /// Pulls the current branch.
     fn pull(
         &self,

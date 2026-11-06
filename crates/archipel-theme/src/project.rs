@@ -7,6 +7,7 @@
 //! which tints the selection and accent tokens consistently.
 
 use crate::color::{Color, Oklab, Oklch};
+use crate::derive::{BaseColors, derive_colors};
 use crate::theme::Theme;
 
 /// OKLCH lightness of automatic project accents (readable on light and dark).
@@ -48,25 +49,24 @@ pub fn accent_for_key(key: &str) -> Color {
     .to_color()
 }
 
-/// `theme` re-derived with `accent` as its accent color; explicit token
-/// overrides of the theme are kept.
+/// `theme` re-derived with `accent` as its accent color. Overrides of the
+/// tokens derived from the accent (`accent`, `bg.selected`, …) are dropped,
+/// or a theme setting them would hide the project color.
 #[must_use]
 pub fn with_project_accent(theme: &Theme, accent: Color) -> Theme {
-    let mut out = theme.clone();
     let mut base = *theme.base();
     base.accent = accent;
-    out.set_base(base);
-    out
+    rebased(theme, base)
 }
 
 /// `theme` re-derived with its background tinted by its accent: `percent`
 /// (0–100, clamped) of the accent's Oklab hue and chroma mixed into the
 /// background, whose lightness is kept so text contrast and the light /
-/// dark appearance are unchanged. Explicit token overrides are kept.
+/// dark appearance are unchanged. Overrides of the tokens derived from the
+/// background are dropped, as in [`with_project_accent`].
 #[must_use]
 pub fn with_background_tint(theme: &Theme, percent: u8) -> Theme {
     let t = f64::from(percent.min(100)) / 100.0;
-    let mut out = theme.clone();
     let mut base = *theme.base();
     let (bg, accent) = (base.background.to_oklab(), base.accent.to_oklab());
     base.background = Oklab {
@@ -75,7 +75,22 @@ pub fn with_background_tint(theme: &Theme, percent: u8) -> Theme {
         ..bg
     }
     .to_color();
+    rebased(theme, base)
+}
+
+/// `theme` with `base`, keeping only the overrides of tokens `base` does not
+/// change.
+fn rebased(theme: &Theme, base: BaseColors) -> Theme {
+    let (before, after) = (derive_colors(theme.base()), derive_colors(&base));
+    let overrides = theme
+        .overrides()
+        .iter()
+        .filter(|&(&t, _)| before[t] == after[t])
+        .map(|(&t, &c)| (t, c))
+        .collect();
+    let mut out = theme.clone();
     out.set_base(base);
+    out.set_overrides(overrides);
     out
 }
 
@@ -107,6 +122,22 @@ mod tests {
         assert_eq!(
             themed.color(ColorToken::BgApp),
             dark.color(ColorToken::BgApp)
+        );
+    }
+
+    #[test]
+    fn project_accent_wins_over_theme_overrides() {
+        let mut theme = builtin::dark();
+        let (fixed, kept) = (Color::rgb(0x7f, 0xb3, 0xb8), Color::rgb(0x11, 0x13, 0x17));
+        theme.set_token(ColorToken::Accent, fixed);
+        theme.set_token(ColorToken::BgApp, kept);
+        let accent = accent_for_key("/x");
+        let themed = with_project_accent(&theme, accent);
+        assert_eq!(themed.color(ColorToken::Accent), accent);
+        assert_eq!(themed.color(ColorToken::BgApp), kept);
+        assert_eq!(
+            with_background_tint(&themed, 30).color(ColorToken::Accent),
+            accent
         );
     }
 

@@ -23,7 +23,7 @@ pub const IDS: [&str; 3] = [LIGHT_ID, DARK_ID, HIGH_CONTRAST_ID];
 pub fn light() -> Theme {
     Theme::from_base(
         LIGHT_ID,
-        "Light",
+        "Classic Light",
         BaseColors {
             // Cool off-white paper, slate ink, a restrained cobalt.
             background: Color::rgb(0xfa, 0xfb, 0xfd),
@@ -38,7 +38,7 @@ pub fn light() -> Theme {
 pub fn dark() -> Theme {
     Theme::from_base(
         DARK_ID,
-        "Dark",
+        "Classic Dark",
         BaseColors {
             // Slate (faint blue cast), dimmed cool grey text (~11:1, not a
             // glaring 14:1), periwinkle.

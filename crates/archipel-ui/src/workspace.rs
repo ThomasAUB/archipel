@@ -13,12 +13,14 @@ use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, RepoPath, Timestamp};
 use archipel_ops::OpEventKind;
 use archipel_theme::ColorToken as T;
+use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::{Colorize as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Action, AnyElement, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle, KeyDownEvent,
-    MouseButton, MouseDownEvent, ObjectFit, PathPromptOptions, Pixels, Point, SharedString,
-    Subscription, TextRun, Window, anchored, deferred, div, font, img, px, rems,
+    Action, Anchor, AnyElement, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle,
+    KeyDownEvent, MouseButton, MouseDownEvent, ObjectFit, PathPromptOptions, Pixels, Point,
+    SharedString, Subscription, TextRun, Window, anchored, deferred, div, font, img, px, rems,
 };
 
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
@@ -105,6 +107,28 @@ enum Overlay {
 /// Lines kept in the operations drawer.
 const DRAWER_LINES: usize = 300;
 
+/// Drag payload of a repo tab: its index.
+struct TabDrag(usize);
+
+/// The tab label following the pointer while a tab is dragged.
+struct TabGhost(SharedString);
+
+impl Render for TabGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1()
+            .rounded(radius(cx))
+            .whitespace_nowrap()
+            .bg(color(cx, T::BgElevated))
+            .border_1()
+            .border_color(color(cx, T::Accent))
+            .text_color(color(cx, T::FgDefault))
+            .shadow_md()
+            .child(self.0.clone())
+    }
+}
+
 /// The main window view.
 pub struct Workspace {
     core: Arc<Core>,
@@ -131,6 +155,14 @@ pub struct Workspace {
     /// Where a click outside last closed that dropdown, so the same click
     /// landing on its button does not reopen it.
     category_filter_closed_at: Option<Point<Pixels>>,
+    /// Open theme picker (status bar): where it opens.
+    theme_menu: Option<Point<Pixels>>,
+    /// Where a click outside last closed the theme picker (see
+    /// `category_filter_closed_at`).
+    theme_menu_closed_at: Option<Point<Pixels>>,
+    /// The status bar's project color picker, left of the theme picker.
+    accent_picker: Entity<ColorPickerState>,
+    _accent_picked: Subscription,
     /// Folder scan progress: repos found, still running.
     scan: Option<(usize, bool)>,
     /// Submodule being opened from the tree (adding it to the project
@@ -157,6 +189,20 @@ impl Workspace {
             crate::windows::closed(cx, window.window_handle());
             true
         });
+        let accent_picker = cx.new(|cx| ColorPickerState::new(window, cx));
+        let on_accent = cx.subscribe_in(
+            &accent_picker,
+            window,
+            |this, _, event: &ColorPickerEvent, _, cx| {
+                let ColorPickerEvent::Change(picked) = event;
+                // Opaque: the project file holds `#rrggbb`.
+                let hex = picked.map(|c| gpui_kit::Hsla { a: 1.0, ..c }.to_hex());
+                let current = this.core.identity().map(|i| i.accent.to_hex());
+                if hex.is_some() && hex != current {
+                    this.dispatch(Command::SetAccent(hex), cx);
+                }
+            },
+        );
         Self {
             core,
             focus,
@@ -173,6 +219,10 @@ impl Workspace {
             renaming_category: None,
             category_filter_menu: None,
             category_filter_closed_at: None,
+            theme_menu: None,
+            theme_menu_closed_at: None,
+            accent_picker,
+            _accent_picked: on_accent,
             scan: None,
             opening: None,
             title: String::new(),
@@ -550,6 +600,13 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Dismisses the open overlay (as Escape / Close would).
+    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn on_palette(
         &mut self,
         kind: PaletteKind,
@@ -628,7 +685,10 @@ impl Workspace {
             "repos.checkout_all" => self.open_palette(PaletteKind::Checkout, window, cx),
             "repos.branch_all" => self.open_palette(PaletteKind::Branch, window, cx),
             "repos.tag_all" => self.open_palette(PaletteKind::Tag, window, cx),
-            "settings.appearance" => self.cycle_theme(window, cx),
+            "settings.appearance" => {
+                let size = window.viewport_size();
+                self.theme_menu = Some(Point::new(size.width, size.height));
+            }
             "app.copy_diagnostics" => self.copy_diagnostics(cx),
             "window.new" => crate::windows::open(cx, None),
             "project.set_color" => self.open_palette(PaletteKind::Color, window, cx),
@@ -738,21 +798,12 @@ impl Workspace {
         }
     }
 
-    fn cycle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let theme = cx.global::<UiTheme>();
-        let ids: Vec<String> = theme.registry.ids().map(str::to_owned).collect();
-        let current = ids.iter().position(|i| *i == theme.theme.id).unwrap_or(0);
-        let next = ids
-            .get((current + 1) % ids.len().max(1))
-            .cloned()
-            .unwrap_or_default();
-        cx.global_mut::<UiTheme>().set(&next);
+    fn set_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        cx.global_mut::<UiTheme>().set(id);
         crate::theme::sync_toolkit_theme(cx);
-        let ui = cx.global::<UiTheme>();
-        self.notice = Some(match ui.remember() {
-            Ok(()) => format!("Theme: {}", ui.theme.name),
-            Err(e) => format!("Theme: {} (not remembered: {e})", ui.theme.name),
-        });
+        if let Err(e) = cx.global::<UiTheme>().remember() {
+            self.notice = Some(format!("Theme not remembered: {e}"));
+        }
         window.refresh();
         crate::windows::refresh_all(cx);
     }
@@ -925,9 +976,8 @@ impl Workspace {
         let row_frame = if grouped { 20.0 } else { 8.0 } + 8.0 + 8.0 + 2.0 * 8.0;
         // Group header: padding (px_2), arrow, and the gaps around the name.
         let header_frame = 16.0 + 12.0 + 2.0 * 4.0;
-        // Footer: padding, gap, and each button's padding and border.
-        let mut fit: f32 =
-            16.0 + 8.0 + 2.0 * 18.0 + measure("Add repos…", size) + measure("Theme", size);
+        // Footer: padding, and the button's padding and border.
+        let mut fit: f32 = 16.0 + 18.0 + measure("Add repos…", size);
         for group in &groups {
             if grouped {
                 let name = group.category.as_deref().unwrap_or("Uncategorized");
@@ -1064,11 +1114,6 @@ impl Workspace {
                     .child(
                         button("add-repo", "Add repos…", cx)
                             .on_click(cx.listener(|this, _, _, cx| this.add_repos(cx))),
-                    )
-                    .child(
-                        button("theme", "Theme", cx).on_click(
-                            cx.listener(|this, _, window, cx| this.cycle_theme(window, cx)),
-                        ),
                     ),
             )
     }
@@ -1119,8 +1164,25 @@ impl Workspace {
                         cx.notify();
                     }),
                 )
-                .child(label);
+                // Every tab takes drops (on the dashboard: becomes the first
+                // repo tab); the side bar shows where the dragged tab lands.
+                .drag_over::<TabDrag>(move |s, d, _, cx| {
+                    let s = s.bg(color(cx, T::BgHover));
+                    if d.0 < i {
+                        s.border_r_2().border_color(color(cx, T::Accent))
+                    } else {
+                        s.border_l_2().border_color(color(cx, T::Accent))
+                    }
+                })
+                .on_drop(cx.listener(move |this, d: &TabDrag, _, cx| {
+                    this.dispatch(Command::MoveTab { from: d.0, to: i }, cx);
+                }))
+                .child(label.clone());
             if i > 0 {
+                let label = SharedString::from(label);
+                el = el.on_drag(TabDrag(i), move |_, _, _, cx| {
+                    cx.new(|_| TabGhost(label.clone()))
+                });
                 el = el.child(
                     div()
                         .id(SharedString::from(format!("tab-close-{i}")))
@@ -1422,7 +1484,8 @@ impl Workspace {
     }
 
     /// The dependency tree (spec §9): project repos keep their dashboard
-    /// columns; other submodules show their state and actions.
+    /// columns, with their update buttons on hover when they are
+    /// submodules; other submodules show their state and actions.
     fn render_tree(
         &self,
         tree: &[TreeRow],
@@ -1484,9 +1547,31 @@ impl Workspace {
                 match node.repo.and_then(|id| by_id.get(&id)) {
                     Some(row) => {
                         let cells = row_cells(&ext, row, now, 1, cx);
+                        let actions = Self::node_actions(i, node, true, opening, cx);
+                        let group = SharedString::from(format!("tree-row-{i}"));
+                        let hover = color(cx, T::BgHover);
                         Self::row_shell(row, selected, cx)
+                            .relative()
+                            .group(group.clone())
                             .child(name)
                             .children(cells)
+                            .when(!actions.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right_0()
+                                        .px_3()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .bg(hover)
+                                        .opacity(0.0)
+                                        .group_hover(group, |s| s.opacity(1.0))
+                                        .children(actions),
+                                )
+                            })
                             .into_any_element()
                     }
                     None => div()
@@ -1508,7 +1593,7 @@ impl Workspace {
                                 .gap_2()
                                 .overflow_hidden()
                                 .child(Self::node_state(node, cx))
-                                .children(Self::node_actions(i, node, opening, cx)),
+                                .children(Self::node_actions(i, node, false, opening, cx)),
                         )
                         .into_any_element(),
                 }
@@ -1549,9 +1634,12 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// A submodule node's buttons; a project repo (`in_project`) has its
+    /// row's own open and menu, so it only gets the update buttons.
     fn node_actions(
         i: usize,
         node: &TreeRow,
+        in_project: bool,
         opening: Option<&RepoPath>,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -1562,6 +1650,7 @@ impl Workspace {
             let state = state.clone();
             button(SharedString::from(format!("tree-{label}-{i}")), label, cx)
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
                     this.dispatch(
                         Command::UpdateSubmodules {
                             parent: state.parent.clone(),
@@ -1578,6 +1667,9 @@ impl Workspace {
         if state.initialized {
             out.push(update("Update", false, false, cx));
             out.push(update("Update all", false, true, cx));
+            if in_project {
+                return out;
+            }
             let path = node.path.clone();
             out.push(if opening == Some(&path) {
                 div()
@@ -2055,7 +2147,7 @@ impl Workspace {
             .children(lines)
     }
 
-    fn render_status(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text = self.notice.clone().or_else(|| self.warnings.first().cloned()).unwrap_or_else(|| {
             "Ctrl+P switch project · Ctrl+Shift+P actions · Ctrl+K commit · Ctrl+Z undo · Ctrl+H hide · Ctrl+N new window".into()
         });
@@ -2077,6 +2169,133 @@ impl Workspace {
                 cx.notify();
             }))
             .child(div().flex_1().min_w_0().truncate().child(text))
+            .children(self.render_accent_picker(window, cx))
+            .child(self.render_theme_picker(cx))
+    }
+
+    /// The status bar's project color button: a swatch of the window's
+    /// accent, opening a color picker. None without a project.
+    fn render_accent_picker(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let accent = self.core.identity()?.accent;
+        // Follow the accent (project switch, palette prompt) unless the
+        // picker is open: its own changes come back here.
+        self.accent_picker.update(cx, |state, cx| {
+            let shown = state
+                .value()
+                .map(|c| gpui_kit::Hsla { a: 1.0, ..c }.to_hex());
+            if !state.is_open() && shown.as_deref() != Some(accent.to_hex().as_str()) {
+                state.set_value(crate::theme::hsla(accent), window, cx);
+            }
+        });
+        Some(
+            div()
+                .id("accent-picker")
+                .flex_none()
+                .ml_2()
+                // The status bar's click dismisses its notice; not this one.
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    ColorPicker::new(&self.accent_picker)
+                        .xsmall()
+                        .anchor(Anchor::BottomRight)
+                        .accessibility_label("Project color"),
+                ),
+        )
+    }
+
+    /// The status bar's theme picker: the current theme's name, opening a
+    /// list of every theme.
+    fn render_theme_picker(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = cx.global::<UiTheme>();
+        let current = ui.theme.id.clone();
+        let themes: Vec<(String, String)> = ui
+            .registry
+            .themes()
+            .map(|t| (t.id.clone(), t.name.clone()))
+            .collect();
+        let name = ui.theme.name.clone();
+        let hover = color(cx, T::BgHover);
+        let fg = color(cx, T::FgDefault);
+        let label = div()
+            .id("theme-picker")
+            .flex_none()
+            .ml_2()
+            .px_1()
+            .rounded(radius(cx))
+            .whitespace_nowrap()
+            .hover(move |s| s.text_color(fg))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                    let closed_now = this.theme_menu_closed_at.take() == Some(e.position);
+                    this.theme_menu = match this.theme_menu {
+                        Some(_) => None,
+                        None if closed_now => None,
+                        None => Some(e.position),
+                    };
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            // The status bar's click dismisses its notice; not this one.
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(format!("{name} ▾"));
+        let menu = self.theme_menu.map(|position| {
+            let accent = color(cx, T::Accent);
+            let items = themes.into_iter().map(|(id, name)| {
+                let checked = id == current;
+                div()
+                    .id(SharedString::from(format!("theme-{id}")))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.theme_menu = None;
+                        this.set_theme(&id, window, cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(div().w(px(14.0)).text_color(accent).child(if checked {
+                        "✓"
+                    } else {
+                        ""
+                    }))
+                    .child(name)
+            });
+            let menu = div()
+                .id("theme-menu")
+                .occlude()
+                .min_w(px(160.0))
+                .max_h(px(360.0))
+                .overflow_y_scrollbar()
+                .py_1()
+                .flex()
+                .flex_col()
+                .font_family(ui_font(cx))
+                .text_size(text_size(cx))
+                .text_color(color(cx, T::FgDefault))
+                .whitespace_nowrap()
+                .bg(color(cx, T::BgElevated))
+                .border_1()
+                .border_color(color(cx, T::Border))
+                .rounded(radius(cx))
+                .shadow_md()
+                .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                    this.theme_menu = None;
+                    this.theme_menu_closed_at = Some(e.position);
+                    cx.notify();
+                }))
+                .children(items);
+            deferred(anchored().position(position).snap_to_window().child(menu)).with_priority(1)
+        });
+        div().child(label).children(menu)
     }
 
     fn active_repo_view(
@@ -2130,10 +2349,26 @@ impl Render for Workspace {
             None => self.render_dashboard(cx),
         };
         let drawer_open = self.core.drawer_open();
-        let overlay: Option<AnyElement> = self.overlay.as_ref().map(|(o, _)| match o {
-            Overlay::Palette(p) => p.clone().into_any_element(),
-            Overlay::Commit(c) => c.clone().into_any_element(),
-            Overlay::Forge(f) => f.clone().into_any_element(),
+        let overlay: Option<AnyElement> = self.overlay.as_ref().map(|(o, _)| {
+            let view = match o {
+                Overlay::Palette(p) => p.clone().into_any_element(),
+                Overlay::Commit(c) => c.clone().into_any_element(),
+                Overlay::Forge(f) => f.clone().into_any_element(),
+            };
+            // A click outside the overlay (which occludes its own area)
+            // dismisses it, without reaching what lies underneath.
+            div()
+                .id("overlay-backdrop")
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .occlude()
+                .on_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.close_overlay(window, cx);
+                }))
+                .child(view)
+                .into_any_element()
         });
         div()
             .id("workspace")
@@ -2224,7 +2459,7 @@ impl Render for Workspace {
                     ),
             )
             .when(drawer_open, |d| d.child(self.render_drawer(cx)))
-            .child(self.render_status(cx))
+            .child(self.render_status(window, cx))
             .children(overlay)
             .children(row_menu)
             .children(category_menu)

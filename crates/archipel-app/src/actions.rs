@@ -49,6 +49,14 @@ pub enum Command {
     CloseAllTabs,
     /// Activate the next (`true`) or previous tab.
     CycleTab(bool),
+    /// Move a tab to another position (drag and drop); the dashboard tab
+    /// stays first. The active tab keeps following its tab.
+    MoveTab {
+        /// Index of the moved tab.
+        from: usize,
+        /// Index it ends up at.
+        to: usize,
+    },
     /// Show or hide the operations drawer.
     ToggleDrawer,
     /// Add or remove a repo from the multi-selection (Ctrl+click).

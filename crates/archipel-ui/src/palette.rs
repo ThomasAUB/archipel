@@ -189,6 +189,8 @@ impl Render for Palette {
             .justify_center()
             .child(
                 div()
+                    .id("palette")
+                    .occlude()
                     .w(px(560.0))
                     .flex()
                     .flex_col()

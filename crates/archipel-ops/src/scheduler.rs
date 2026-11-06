@@ -2,6 +2,9 @@
 //!
 //! * Writes are serialized **per repository** (network operations too, since
 //!   they move refs); different repositories run in parallel.
+//! * Background operations (periodic fetch) give way to the user: skipped
+//!   when their repository is busy, cancelled when a write or network
+//!   operation is submitted for it, and silent (no events).
 //! * Reads run in a bounded pool; network operations in a smaller bounded pool.
 //! * Every operation runs on a blocking worker thread (Git calls are
 //!   blocking), returns an [`OpHandle`] with cancellation and a typed result,
@@ -31,6 +34,11 @@ pub enum OpClass {
     Write,
     /// Network: serialized per repository and bounded by the network pool.
     Network,
+    /// Unattended work on one repository (periodic fetch): fails with
+    /// [`OpError::Busy`] when the repository is locked, is cancelled by any
+    /// later write or network operation on it, emits no event and uses no
+    /// pool (callers run them one at a time).
+    Background,
 }
 
 /// Description of an operation to schedule.
@@ -104,6 +112,9 @@ impl OpContext {
     }
 
     fn emit(&self, kind: OpEventKind) {
+        if self.spec.class == OpClass::Background {
+            return;
+        }
         // No subscriber is fine: events are informational.
         let _ = self.events.send(OpEvent {
             id: self.id,
@@ -162,6 +173,24 @@ impl<T> OpHandle<T> {
     }
 }
 
+/// The repo lock of a running background operation; unregisters its
+/// cancellation token before releasing the lock.
+struct BackgroundGuard {
+    repo: RepoId,
+    running: Arc<Mutex<HashMap<RepoId, CancelToken>>>,
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for BackgroundGuard {
+    fn drop(&mut self) {
+        lock(&self.running).remove(&self.repo);
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Capacity of the event channel; slow subscribers miss old events.
 const EVENT_CAPACITY: usize = 1024;
 
@@ -171,6 +200,8 @@ pub struct Scheduler {
     reads: Arc<Semaphore>,
     network: Arc<Semaphore>,
     repo_locks: Mutex<HashMap<RepoId, Arc<tokio::sync::Mutex<()>>>>,
+    /// Cancellation of the background operation holding each repo lock.
+    background: Arc<Mutex<HashMap<RepoId, CancelToken>>>,
     events: broadcast::Sender<OpEvent>,
     next_id: AtomicU64,
 }
@@ -189,6 +220,7 @@ impl Scheduler {
             reads: Arc::new(Semaphore::new(reads)),
             network: Arc::new(Semaphore::new(settings.network_concurrency.max(1))),
             repo_locks: Mutex::new(HashMap::new()),
+            background: Arc::default(),
             events: broadcast::channel(EVENT_CAPACITY).0,
             next_id: AtomicU64::new(1),
         }
@@ -207,12 +239,7 @@ impl Scheduler {
     }
 
     fn repo_lock(&self, repo: RepoId) -> Arc<tokio::sync::Mutex<()>> {
-        self.repo_locks
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(repo)
-            .or_default()
-            .clone()
+        lock(&self.repo_locks).entry(repo).or_default().clone()
     }
 
     /// Schedules `job`. It runs on a blocking worker once its resources are free.
@@ -232,19 +259,45 @@ impl Scheduler {
             events: self.events.clone(),
         };
         ctx.emit(OpEventKind::Queued);
-        let lock = match spec.class {
-            OpClass::Read => None,
-            OpClass::Write | OpClass::Network => spec.repo.map(|r| self.repo_lock(r)),
+        // Taken right away for a background operation, waited for otherwise.
+        let mut held = None;
+        let repo_lock = match (spec.class, spec.repo) {
+            (OpClass::Read, _) | (_, None) => None,
+            (OpClass::Background, Some(repo)) => {
+                let mut running = lock(&self.background);
+                let Ok(guard) = self.repo_lock(repo).try_lock_owned() else {
+                    let _ = tx.send(Err(OpError::Busy));
+                    return OpHandle {
+                        id,
+                        cancel,
+                        result: rx,
+                    };
+                };
+                running.insert(repo, cancel.clone());
+                held = Some(BackgroundGuard {
+                    repo,
+                    running: self.background.clone(),
+                    _lock: guard,
+                });
+                None
+            }
+            (OpClass::Write | OpClass::Network, Some(repo)) => {
+                if let Some(running) = lock(&self.background).get(&repo) {
+                    running.cancel();
+                }
+                Some(self.repo_lock(repo))
+            }
         };
         let pool = match spec.class {
             OpClass::Read => Some(self.reads.clone()),
             OpClass::Network => Some(self.network.clone()),
-            OpClass::Write => None,
+            OpClass::Write | OpClass::Background => None,
         };
         self.runtime.spawn(async move {
+            let _held = held;
             // Repo lock first, then the pool permit, so no permit is held idle
             // while waiting for a busy repository.
-            let _guard = match lock {
+            let _guard = match repo_lock {
                 Some(l) => Some(l.lock_owned().await),
                 None => None,
             };
@@ -374,6 +427,67 @@ mod tests {
         queued.cancel();
         assert_eq!(blocker.wait_blocking(), Ok(1));
         assert_eq!(queued.wait_blocking(), Err(OpError::Cancelled));
+    }
+
+    #[test]
+    fn background_operation_skips_a_busy_repo() {
+        let rt = runtime();
+        let s = Scheduler::new(rt.handle().clone(), &settings(6));
+        let (started, release) = (Arc::new(std::sync::Barrier::new(2)), CancelToken::new());
+        let (b, r) = (started.clone(), release.clone());
+        let write = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Write, "w"),
+            move |_| {
+                b.wait();
+                while !r.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            },
+        );
+        started.wait();
+        let bg = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Background, "fetch"),
+            |_| Ok(()),
+        );
+        assert_eq!(bg.wait_blocking(), Err(OpError::Busy));
+        release.cancel();
+        write.wait_blocking().unwrap();
+        let bg = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Background, "fetch"),
+            |_| Ok(()),
+        );
+        assert_eq!(bg.wait_blocking(), Ok(()));
+    }
+
+    #[test]
+    fn write_cancels_a_running_background_operation() {
+        let rt = runtime();
+        let s = Scheduler::new(rt.handle().clone(), &settings(6));
+        let mut events = s.subscribe();
+        let started = Arc::new(std::sync::Barrier::new(2));
+        let b = started.clone();
+        let bg = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Background, "fetch"),
+            move |ctx| {
+                b.wait();
+                while !ctx.cancel().is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err::<(), _>(OpError::Cancelled)
+            },
+        );
+        started.wait();
+        let write = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Write, "commit"),
+            |_| Ok(()),
+        );
+        assert_eq!(bg.wait_blocking(), Err(OpError::Cancelled));
+        write.wait_blocking().unwrap();
+        // Only the write shows in the operations drawer.
+        while let Ok(e) = events.try_recv() {
+            assert_eq!(e.label, "commit");
+        }
     }
 
     #[test]

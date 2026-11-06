@@ -23,7 +23,6 @@ too; prefer the names of this document in prose and in new code.
 │   Repo List  │                                                           │
 │              │                                                           │
 │ Add repos... │                                                           │
-│ Theme        │                                                           │
 ├──────────────┴───────────────────────────────────────────────────────────┤
 │ OPERATIONS DRAWER  (Ctrl+J, hidden by default)                           │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -41,7 +40,7 @@ too; prefer the names of this document in prose and in new code.
 | **Tab Bar** | The tabs above the Main Area. | `Workspace::render_tabs` |
 | **Main Area** | What the active tab shows: the Dashboard or a Repo View. | `Workspace::render` |
 | **Operations Drawer** | Log of operations, progress and errors (`Ctrl+J`). | `Workspace::render_drawer` |
-| **Status Bar** | One line at the bottom: notice, warning or shortcut hints; click to dismiss a notice. | `Workspace::render_status` |
+| **Status Bar** | One line at the bottom: notice, warning or shortcut hints; click to dismiss a notice. At its right end, the **Project Color** swatch (with a project open): click for a color picker setting the project's accent color, as *Set the project color…* does. Then the **Theme Picker**: the current theme's name; click to pick another (Classic Dark, Classic Light, High contrast, user themes). The choice is remembered across launches. | `Workspace::render_status` |
 | **Overlay** | A panel drawn over the Workspace: Palette, Commit Panel or Forge Panel. | `Overlay` enum |
 
 ## 2. Sidebar
@@ -58,7 +57,7 @@ too; prefer the names of this document in prose and in new code.
 │ v Uncategorized (1)    │
 │     * app         -3   │
 ├────────────────────────┤
-│ [Add repos...] [Theme] │
+│ [Add repos...]         │
 └────────────────────────┘
   * / o  Status Dot (dirty / clean)    +2 / -3  Sync Badge (ahead / behind)
 ```
@@ -75,7 +74,7 @@ too; prefer the names of this document in prose and in new code.
 | Name | What it is |
 | ---- | ---------- |
 | **Dashboard Tab** | Always the first tab; shows the Dashboard. |
-| **Repo Tab** | One per opened repo; shows its Repo View. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs. |
+| **Repo Tab** | One per opened repo; shows its Repo View. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs. Drag a repo tab onto another to reorder them (the Dashboard Tab stays first). |
 | **Tab Menu** | Right-click on a tab: Close, Close others, Close tabs to the right, Close all. (`Workspace::render_tab_menu`) |
 
 ## 4. Dashboard
@@ -106,7 +105,7 @@ The project overview, one row per repo (spec §3). Rendered by
 | **View Chips** | **Tree** (shows the Dependency Tree) and **Hidden (N)** (shows hidden repos). |
 | **Column Header** | Column titles; click sorts. Columns: Repo, Branch, Sync, Changes, Version, Fetch, then forge columns Pull request and CI. |
 | **Dashboard Row** | One repo. Click: select it and open the Quick Edit Pane; Ctrl+click: add to the selection; double-click: open its Repo Tab. |
-| **Dependency Tree** | Replaces the flat rows when Tree is on: repos and nested submodules with connectors, each **Tree Node** with its state and actions (init / update / open / add). (`render_tree`) |
+| **Dependency Tree** | Replaces the flat rows when Tree is on: repos and nested submodules with connectors, each **Tree Node** with its state and actions (init / update / open / add); a submodule that is a project repo keeps its dashboard columns and shows its init / update buttons on hover. (`render_tree`) |
 | **Row Menu** | Right-click on a row: Open, Fetch, Hide / Unhide, Set category…, Remove from project, forge entries (pull request, CI run). (`render_row_menu`) |
 | **Quick Edit Pane** | Resizable pane over the right edge of the rows, for everyday edits without the Repo Tab: a **Quick Edit Header** (repo name, branch, sync, Open, Close) above a Staging Panel. A click on the same row or Esc closes it. ([quick_edit.rs](../crates/archipel-ui/src/quick_edit.rs)) |
 | **Quick Edit Diff** | A file clicked in the Quick Edit Pane shows its Diff View in place of the rows (toolbar and header included). |
@@ -198,6 +197,9 @@ Shown as the Open Diff (Repo View) and as the Quick Edit Diff (Dashboard).
 | **File Editor** | Replaces the Diff View to edit the file in place (Edit or double-click a line): Save (`Ctrl+S`), Cancel (`Esc`). ([file_edit.rs](../crates/archipel-ui/src/file_edit.rs)) |
 
 ## 7. Overlays
+
+An Overlay sits on a transparent backdrop: clicking outside it dismisses it
+(like `Esc`), and that click does not reach the Workspace underneath.
 
 | Name | What it is | Opened by |
 | ---- | ---------- | --------- |

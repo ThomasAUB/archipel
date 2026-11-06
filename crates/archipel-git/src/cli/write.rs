@@ -504,6 +504,14 @@ fn nul_separated(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Whether `git fetch` (without `--quiet`) reported a ref update: update
+/// lines are the indented ones (` * [new branch]`, `   a..b  main -> …`,
+/// ` - [deleted]`), whatever the locale; `From …`, `Fetching …` and
+/// warnings are not.
+fn fetch_updated_refs(stderr: &str) -> bool {
+    stderr.lines().any(|l| l.starts_with(' '))
+}
+
 /// Paths as a NUL-separated pathspec file (`--pathspec-from-file=-`).
 fn pathspec_stdin(paths: &[String]) -> Vec<u8> {
     paths.iter().flat_map(|p| p.bytes().chain([0])).collect()
@@ -528,6 +536,17 @@ impl RemoteOps for GitCli {
             None => cmd.arg("--all"),
         };
         self.runner.run(cmd).map(drop)
+    }
+
+    fn fetch_background(&self, repo: &RepoPath, cancel: &CancelToken) -> Result<bool, GitError> {
+        let cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Network,
+            &["fetch", "--all", "--no-auto-maintenance"],
+        )
+        .cancel(cancel);
+        let out = self.runner.run(cmd)?;
+        Ok(fetch_updated_refs(&out.stderr))
     }
 
     fn pull(

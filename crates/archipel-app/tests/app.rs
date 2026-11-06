@@ -289,6 +289,42 @@ fn closing_several_tabs() {
 }
 
 #[test]
+fn moving_tabs() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    for r in &e.repos {
+        e.app.dispatch(Command::OpenRepoTab(r.id())).unwrap();
+    }
+    let tabs = || {
+        let ui = e.app.ui_state().unwrap();
+        (ui.tabs, ui.active_tab)
+    };
+    let repo = |i: usize| TabState::Repo(e.repos[i].id());
+
+    // Tabs: dashboard, r0, r1, r2 (active). The active tab follows its tab.
+    e.app.dispatch(Command::MoveTab { from: 3, to: 1 }).unwrap();
+    assert_eq!(
+        tabs(),
+        (vec![TabState::Dashboard, repo(2), repo(0), repo(1)], 1)
+    );
+    e.app.dispatch(Command::MoveTab { from: 2, to: 3 }).unwrap();
+    assert_eq!(
+        tabs(),
+        (vec![TabState::Dashboard, repo(2), repo(1), repo(0)], 1)
+    );
+    // The dashboard stays first: it cannot move nor be displaced.
+    e.app.dispatch(Command::MoveTab { from: 0, to: 2 }).unwrap();
+    e.app.dispatch(Command::MoveTab { from: 3, to: 0 }).unwrap();
+    assert_eq!(
+        tabs(),
+        (vec![TabState::Dashboard, repo(0), repo(2), repo(1)], 2)
+    );
+    e.app.dispatch(Command::MoveTab { from: 9, to: 1 }).unwrap(); // out of range: no-op
+    assert_eq!(tabs().0.len(), 4);
+    drop(e.dir);
+}
+
+#[test]
 fn batch_fetch_reports_and_refreshes() {
     let e = env();
     e.app.open_project(&p1_id()).unwrap();
@@ -304,6 +340,54 @@ fn batch_fetch_reports_and_refreshes() {
     });
     assert_eq!(finished, ("Fetch".into(), 3, 0, 0));
     assert_eq!(e.git.calls().iter().filter(|c| c.op == "fetch").count(), 3);
+}
+
+#[test]
+fn background_fetch_starts_with_the_selected_repo() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    e.app
+        .dispatch(Command::Select(Some(e.repos[2].id())))
+        .unwrap();
+    let mut events = e.app.subscribe();
+    e.app.start_auto_fetch();
+    wait_until(&e.app, "background fetch", |app| {
+        app.rows()[2]
+            .summary()
+            .is_some_and(|s| s.last_fetch.is_some())
+    });
+    let fetches: Vec<_> = e
+        .git
+        .calls()
+        .into_iter()
+        .filter(|c| c.op == "fetch")
+        .collect();
+    assert_eq!(fetches.len(), 1, "one repo at a time");
+    assert_eq!(fetches[0].repo, e.repos[2].as_path().display().to_string());
+    // The fetch itself stays out of the operations drawer.
+    while let Ok(ev) = events.try_recv() {
+        if let AppEvent::Op(op) = ev {
+            assert!(!op.label.starts_with("Auto fetch"), "{op:?}");
+        }
+    }
+}
+
+#[test]
+fn fetch_head_alone_only_updates_the_last_fetch_time() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    e.git
+        .with_repo(&e.repos[1], |r| r.summary.changes.modified = 4);
+    e.watcher.trigger(e.repos[1].id(), Scope::FETCH);
+    wait_until(&e.app, "last fetch", |app| {
+        app.rows()[1]
+            .summary()
+            .is_some_and(|s| s.last_fetch.is_some())
+    });
+    // No summary recomputed.
+    assert_eq!(e.app.rows()[1].summary().unwrap().changes.modified, 0);
 }
 
 #[test]

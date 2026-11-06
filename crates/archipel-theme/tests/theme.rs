@@ -560,7 +560,7 @@ fn registry_loads_directory_with_chains_cycles_and_broken_files() {
     ));
 
     // Built-in ids cannot be shadowed.
-    assert_eq!(reg.get("dark").unwrap().name, "Dark");
+    assert_eq!(reg.get("dark").unwrap().name, "Classic Dark");
     assert!(matches!(
         reg.warnings("dark"),
         [ThemeWarning::ReservedId { .. }]
