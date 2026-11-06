@@ -68,7 +68,7 @@ impl App {
             path
         };
         let source = self.ext.dependencies.clone();
-        let git = self.services.git.clone();
+        let git = crate::deptree::DependencyReaders::from_ports(&self.services.git);
         let me = self.me.clone();
         let spec = OpSpec::new(
             Some(repo),

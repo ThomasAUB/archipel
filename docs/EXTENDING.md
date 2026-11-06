@@ -144,15 +144,14 @@ repo, so any source that returns paths nests project repos automatically.
 
 ```rust
 use std::sync::Arc;
-use archipel_app::deptree::{DependencySource, SubmoduleSource};
+use archipel_app::deptree::{DependencyReaders, DependencySource, SubmoduleSource};
 use archipel_model::submodule::SubmoduleNode;
 use archipel_model::{GitError, RepoPath};
-use archipel_ops::GitPorts;
 
 /// Submodules plus the repos listed in a `repo` manifest.
 struct WithManifest;
 impl DependencySource for WithManifest {
-    fn dependencies(&self, git: &GitPorts, repo: &RepoPath) -> Result<Vec<SubmoduleNode>, GitError> {
+    fn dependencies(&self, git: &DependencyReaders, repo: &RepoPath) -> Result<Vec<SubmoduleNode>, GitError> {
         let mut nodes = SubmoduleSource.dependencies(git, repo)?;
         nodes.extend(todo!("parse .repo/manifest.xml into nodes"));
         Ok(nodes)

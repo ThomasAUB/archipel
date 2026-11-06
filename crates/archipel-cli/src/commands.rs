@@ -41,15 +41,15 @@ pub fn wait_fresh(app: &App) -> Result<()> {
 
 /// `tree`: prints the repo dependency tree (spec §9) of a project.
 pub fn tree(dirs: AppDirs, target: &Path) -> Result<()> {
-    use archipel_app::deptree::{TreeInput, build_tree};
+    use archipel_app::deptree::{DependencyReaders, TreeInput, build_tree};
     let c = compose(dirs)?;
     open_target(&c.app, target)?;
     let rows = c.app.rows();
-    let ports = c.app.repo_actions().ports();
+    let ports = DependencyReaders::from_ports(c.app.repo_actions().ports());
     let source = c.app.extensions().dependencies.clone();
     let mut dependencies = std::collections::HashMap::new();
     for row in &rows {
-        match source.dependencies(ports, &row.path) {
+        match source.dependencies(&ports, &row.path) {
             Ok(nodes) => {
                 dependencies.insert(row.id, nodes);
             }
