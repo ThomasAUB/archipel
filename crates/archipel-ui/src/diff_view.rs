@@ -665,5 +665,7 @@ pub(crate) fn step(
     files.get(next).cloned()
 }
 
+// Needs a headless renderer, which gpui only has on Linux and macOS.
 #[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod render_tests;
