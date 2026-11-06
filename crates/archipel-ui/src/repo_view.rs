@@ -2487,9 +2487,9 @@ impl RepoView {
         cx: &mut Context<Self>,
     ) {
         // Every row listening for `PaneDrag` sees every splitter's drag,
-        // the workspace sidebar's included.
+        // the workspace sidebar's and the quick edit pane's included.
         let pane = e.drag(cx).0;
-        if pane == Pane::Sidebar {
+        if !matches!(pane, Pane::Refs | Pane::Details) {
             return;
         }
         let (x, bounds) = (e.event.position.x, e.bounds);

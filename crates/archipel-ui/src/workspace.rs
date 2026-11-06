@@ -1315,12 +1315,34 @@ impl Workspace {
                 )
                 .into_any_element(),
         };
+        let width = ui.quick_edit_width;
         div()
             .flex_1()
             .flex()
             .overflow_hidden()
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PaneDrag>, _, cx| {
+                // Every row listening for `PaneDrag` sees every splitter's
+                // drag: only the quick edit pane is ours.
+                let pane = e.drag(cx).0;
+                if pane != Pane::QuickEdit {
+                    return;
+                }
+                let (x, bounds) = (e.event.position.x, e.bounds);
+                this.core
+                    .update_ui_state(|ui| resize_pane(ui, pane, x, bounds));
+                cx.notify();
+            }))
             .child(main)
-            .children(pane)
+            .when_some(pane, |d, pane| {
+                d.child(splitter(Pane::QuickEdit, cx)).child(
+                    div()
+                        .w(px(width))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .child(pane),
+                )
+            })
             .into_any_element()
     }
 

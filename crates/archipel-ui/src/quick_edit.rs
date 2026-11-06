@@ -29,9 +29,6 @@ use crate::staging::{self, Job, Staging};
 use crate::theme::{color, row_height};
 use crate::widgets::{button, icon_button, section};
 
-/// Width of the pane.
-pub const WIDTH: f32 = 360.0;
-
 /// Height of the branch switcher list before it scrolls.
 const BRANCH_LIST_HEIGHT: f32 = 160.0;
 
@@ -565,15 +562,12 @@ impl Render for QuickEdit {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("quick-edit")
-            .w(px(WIDTH))
-            .flex_none()
+            .size_full()
             .flex()
             .flex_col()
             .gap_2()
             .p_2()
             .bg(color(cx, T::BgPanel))
-            .border_l_1()
-            .border_color(color(cx, T::Border))
             .track_focus(&self.focus)
             // Only Esc from here: ↑ / ↓ belong to the inputs.
             .on_key_down(cx.listener(|v, e: &KeyDownEvent, _, cx| {

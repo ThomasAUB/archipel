@@ -49,6 +49,8 @@ pub struct UiState {
     pub refs_width: f32,
     /// Width of a repo view's details pane in logical pixels.
     pub details_width: f32,
+    /// Width of the dashboard's quick edit pane in logical pixels.
+    pub quick_edit_width: f32,
     /// Whether the sidebar is collapsed.
     pub sidebar_collapsed: bool,
     /// Height of the operations drawer in logical pixels.
@@ -113,6 +115,7 @@ impl Default for UiState {
             sidebar_width: 240.0,
             refs_width: 220.0,
             details_width: 460.0,
+            quick_edit_width: 360.0,
             sidebar_collapsed: false,
             drawer_height: 180.0,
             selection: Vec::new(),

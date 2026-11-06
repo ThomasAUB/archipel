@@ -69,6 +69,7 @@ fn ui_state() -> UiState {
         sidebar_width: 300.5,
         refs_width: 200.0,
         details_width: 500.0,
+        quick_edit_width: 400.0,
         sidebar_collapsed: true,
         drawer_height: 120.0,
         selection: vec![RepoId(8)],
