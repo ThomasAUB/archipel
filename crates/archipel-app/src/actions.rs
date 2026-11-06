@@ -111,6 +111,9 @@ pub enum Command {
     SetIcon(Option<String>),
     /// UI-only commands (palettes, dialogs) the frontend handles itself.
     Ui(String),
+    /// A fork's own use case, run against the app's public API: the way an
+    /// [`Action`] does something no built-in command covers.
+    Custom(CustomCommand),
 }
 
 /// What an action can see to decide availability and build its command.
@@ -135,6 +138,47 @@ pub trait Action: Send + Sync {
     /// The command to dispatch (`None`: nothing to do).
     fn command(&self, ctx: &ActionContext) -> Option<Command>;
 }
+
+/// Runs a fork's use case: blocking work belongs in a scheduler job (see
+/// `App::submit_repo_job`), not here.
+pub type CustomRun = dyn Fn(&crate::App) -> Result<(), crate::AppError> + Send + Sync;
+
+/// A command defined outside the core ([`Command::Custom`]).
+#[derive(Clone)]
+pub struct CustomCommand {
+    /// Name, for logs and debugging.
+    pub name: String,
+    /// What it does.
+    pub run: Arc<CustomRun>,
+}
+
+impl CustomCommand {
+    /// A custom command named `name`.
+    pub fn new(
+        name: impl Into<String>,
+        run: impl Fn(&crate::App) -> Result<(), crate::AppError> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            run: Arc::new(run),
+        }
+    }
+}
+
+impl std::fmt::Debug for CustomCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CustomCommand").field(&self.name).finish()
+    }
+}
+
+/// Two custom commands are equal when they are the same closure.
+impl PartialEq for CustomCommand {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.run, &other.run)
+    }
+}
+
+impl Eq for CustomCommand {}
 
 /// Builds the command of a [`SimpleAction`].
 pub type CommandBuilder = dyn Fn(&ActionContext) -> Option<Command> + Send + Sync;

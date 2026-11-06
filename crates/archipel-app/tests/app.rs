@@ -459,6 +459,20 @@ fn repo_jobs_run_through_the_scheduler() {
 }
 
 #[test]
+fn custom_commands_run_against_the_app() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(0));
+    let s = seen.clone();
+    let command = archipel_app::CustomCommand::new("count rows", move |app| {
+        *s.lock().unwrap() = app.rows().len();
+        Ok(())
+    });
+    e.app.dispatch(Command::Custom(command)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), 3);
+}
+
+#[test]
 fn refused_undo_fails_the_operation() {
     let e = env();
     e.app.open_project(&p1_id()).unwrap();

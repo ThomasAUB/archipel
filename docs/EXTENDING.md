@@ -88,6 +88,24 @@ Then bind it in `keymap.toml` (user config dir):
 "ctrl-j" = ""          # unbind a default shortcut
 ```
 
+An action whose work no built-in command covers sends a `Command::Custom`,
+which runs against the app's public API (submit blocking work as a scheduler
+job with `App::submit_repo_job`):
+
+```rust
+use archipel_app::{Command, CustomCommand, actions::SimpleAction};
+
+let report = SimpleAction::new(
+    "my.count_dirty", "Count dirty repos",
+    |ctx| ctx.project_open,
+    |_| Some(Command::Custom(CustomCommand::new("count dirty", |app| {
+        let dirty = app.rows().iter().filter(|r| r.summary().is_some_and(|s| s.changes.is_dirty())).count();
+        tracing::info!(dirty, "dirty repos");
+        Ok(())
+    }))),
+);
+```
+
 ## A self-hosted forge
 
 ```rust

@@ -110,6 +110,7 @@ impl App {
             | Command::MoveTab { .. }) => self.update_ui_state(|ui| tab_command(ui, &command)),
             Command::ToggleDrawer => self.toggle_drawer(),
             Command::Ui(_) => {}
+            Command::Custom(custom) => (custom.run)(self)?,
             other => self.dispatch_project(other)?,
         }
         Ok(())
