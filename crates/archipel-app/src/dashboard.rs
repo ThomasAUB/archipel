@@ -13,7 +13,9 @@ use archipel_model::{
     ContainingBranch, HeadState, Oid, RepoId, RepoOp, RepoPath, RepoSummary, Timestamp,
 };
 
-use crate::forge::{CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter};
+use crate::forge::{
+    BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter,
+};
 
 /// Availability of a repository of the project.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +47,8 @@ pub struct DashboardRow {
     pub hidden: bool,
     /// Pull request, CI and review state on the forge (spec §8).
     pub forge: ForgeStatus,
+    /// CI of the current branch's head on the forge (spec §8).
+    pub ci: BranchCi,
 }
 
 impl DashboardRow {
@@ -492,7 +496,7 @@ pub struct ColumnRegistry {
 }
 
 impl ColumnRegistry {
-    /// The six built-in columns of spec §3, then the forge status (§8).
+    /// The six built-in columns of spec §3, then the forge status and CI (§8).
     #[must_use]
     pub fn with_builtins() -> Self {
         let mut r = Self::default();
@@ -503,6 +507,7 @@ impl ColumnRegistry {
         r.register(Arc::new(VersionColumn));
         r.register(Arc::new(FetchColumn));
         r.register(Arc::new(ForgeColumn));
+        r.register(Arc::new(CiColumn));
         r
     }
 
@@ -666,6 +671,7 @@ mod tests {
             stale: false,
             hidden: false,
             forge: ForgeStatus::Unknown,
+            ci: BranchCi::Unknown,
         }
     }
 
@@ -676,7 +682,7 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "repo", "branch", "sync", "changes", "version", "fetch", "forge"
+                "repo", "branch", "sync", "changes", "version", "fetch", "forge", "ci"
             ]
         );
         let r = row("app", |s| {
@@ -877,6 +883,6 @@ mod tests {
         let mut cols = ColumnRegistry::with_builtins();
         cols.register(Arc::new(Custom));
         assert_eq!(cols.columns()[4].header(), "Release");
-        assert_eq!(cols.columns().len(), 7);
+        assert_eq!(cols.columns().len(), 8);
     }
 }

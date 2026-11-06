@@ -155,6 +155,7 @@ impl QuickEdit {
     pub fn render_diff(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (file, side, doc) = self.open_diff.clone()?;
         Some(diff_view::render_open(
+            self,
             file,
             diff_view::side_note(side),
             Some(side),

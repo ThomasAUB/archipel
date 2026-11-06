@@ -54,7 +54,7 @@ gpui_kit::actions!(
 );
 
 /// Relative widths of the dashboard columns.
-const WIDTHS: [f32; 6] = [2.0, 1.4, 1.0, 1.2, 1.0, 0.8];
+const WIDTHS: [f32; 8] = [2.0, 1.4, 1.0, 1.2, 1.0, 0.8, 1.0, 0.9];
 
 /// Height of the project color band at the top of the window.
 const BAND_HEIGHT: f32 = 3.0;
@@ -642,6 +642,7 @@ impl Workspace {
             }
             "forge.clone" => self.open_forge(ForgeTab::Clone, window, cx),
             "forge.open_pull_request" => self.open_pull_request(cx),
+            "forge.open_ci" => self.open_ci(cx),
             other => self.notice = Some(format!("“{other}” is not available in this build")),
         }
         cx.notify();
@@ -711,6 +712,23 @@ impl Workspace {
         match url {
             Some(url) => cx.open_url(&url),
             None => self.notice = Some("No open pull request for this repository".into()),
+        }
+    }
+
+    fn open_ci(&mut self, cx: &mut Context<Self>) {
+        let ctx = self.core.action_context();
+        let target = ctx
+            .active_repo
+            .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]));
+        let url = self
+            .core
+            .rows()
+            .into_iter()
+            .find(|r| Some(r.id) == target)
+            .and_then(|r| r.ci.run().and_then(|run| run.url.clone()));
+        match url {
+            Some(url) => cx.open_url(&url),
+            None => self.notice = Some("No CI run for this branch".into()),
         }
     }
 
@@ -885,24 +903,36 @@ impl Workspace {
                 )
                 .into_any_element()
         };
-        // Wide enough for every name, collapsed groups' included, so the
-        // pane does not jump when a group opens; capped at half the window.
+        // Fits the longest visible name (repo or category), never narrower
+        // than its footer buttons; capped at half the window.
         let (size, xs) = (text_size(cx), rems(0.75).to_pixels(window.rem_size()));
-        let measure = |text: &str, size| text_width(text, size, window, cx);
-        let indent = if grouped { 20.0 } else { 8.0 };
-        let mut fit: f32 = 0.0;
+        let measure = |text: &str, size| text_width(text, size, window, cx).ceil();
+        // List padding (px_1) and right border, plus a pixel of slack so
+        // rounding never truncates the longest name.
+        let frame = 8.0 + 1.0 + 1.0;
+        // Repo row: left padding (pl_5 grouped, else px_2), right padding,
+        // dot, and the gaps around the name.
+        let row_frame = if grouped { 20.0 } else { 8.0 } + 8.0 + 8.0 + 2.0 * 8.0;
+        // Group header: padding (px_2), arrow, and the gaps around the name.
+        let header_frame = 16.0 + 12.0 + 2.0 * 4.0;
+        // Footer: padding, gap, and each button's padding and border.
+        let mut fit: f32 =
+            16.0 + 8.0 + 2.0 * 18.0 + measure("Add repos…", size) + measure("Theme", size);
         for group in &groups {
             if grouped {
                 let name = group.category.as_deref().unwrap_or("Uncategorized");
                 let count = group.rows.len().to_string();
-                fit = fit.max(36.0 + measure(name, xs) + measure(&count, xs));
+                fit = fit.max(frame + header_frame + measure(name, xs) + measure(&count, xs));
+            }
+            if group.collapsed {
+                continue;
             }
             for row in &group.rows {
                 let extra = side_status(&row.status).1;
-                fit = fit.max(indent + 32.0 + measure(&row.name, size) + measure(&extra, xs));
+                fit = fit.max(frame + row_frame + measure(&row.name, size) + measure(&extra, xs));
             }
         }
-        let fit = (fit + 8.0).min(f32::from(window.viewport_size().width) / 2.0);
+        let fit = fit.min(f32::from(window.viewport_size().width) / 2.0);
         let mut repos: Vec<AnyElement> = Vec::new();
         for (i, group) in groups.into_iter().enumerate() {
             if grouped {
@@ -965,9 +995,10 @@ impl Workspace {
                 }
             }
         }
-        let width = self.core.ui_state().unwrap_or_default().sidebar_width;
         div()
-            .w(px(width.max(fit)))
+            .w(px(fit))
+            .border_r_1()
+            .border_color(color(cx, T::BorderSubtle))
             .h_full()
             .flex()
             .flex_col()
@@ -1610,6 +1641,32 @@ impl Workspace {
         }
     }
 
+    /// Row menu entry: open the CI run of the repo's branch, when it has one.
+    fn ci_menu_item(&self, id: RepoId, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let hover = color(cx, T::BgHover);
+        let url = self
+            .core
+            .rows()
+            .into_iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.ci.run().and_then(|run| run.url.clone()))?;
+        Some(
+            div()
+                .id("menu-ci")
+                .px_3()
+                .py_1()
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.row_menu = None;
+                    cx.open_url(&url);
+                    cx.notify();
+                }))
+                .child("Open CI run")
+                .into_any_element(),
+        )
+    }
+
     /// The category filter: one dropdown button whatever the number of
     /// categories, its menu a checklist (several can be selected).
     fn render_category_filter(
@@ -1938,6 +1995,7 @@ impl Workspace {
                 cx,
             ))
             .child(self.forge_menu_item(id, targets, cx))
+            .children(self.ci_menu_item(id, cx))
             .child(
                 div()
                     .id("menu-remove")
@@ -2144,20 +2202,7 @@ impl Render for Workspace {
                     .flex_1()
                     .flex()
                     .overflow_hidden()
-                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PaneDrag>, _, cx| {
-                        // Every row listening for `PaneDrag` sees every
-                        // splitter's drag: only the sidebar is ours.
-                        let pane = e.drag(cx).0;
-                        if pane != Pane::Sidebar {
-                            return;
-                        }
-                        let (x, bounds) = (e.event.position.x, e.bounds);
-                        this.core
-                            .update_ui_state(|ui| resize_pane(ui, pane, x, bounds));
-                        cx.notify();
-                    }))
                     .child(self.render_sidebar(window, cx))
-                    .child(splitter(Pane::Sidebar, cx))
                     .child(
                         div()
                             .flex_1()

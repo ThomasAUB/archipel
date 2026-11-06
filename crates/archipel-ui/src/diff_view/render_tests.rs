@@ -50,7 +50,11 @@ impl Render for Lines {
             .flex_col()
             .bg(color(cx, T::BgApp))
             .text_color(color(cx, T::FgDefault))
-            .children(self.0.iter().map(|l| diff_line_row(l, LINENO_WIDTH, cx)))
+            .children(
+                self.0
+                    .iter()
+                    .map(|l| diff_line_row(l, LINENO_WIDTH, false, cx)),
+            )
     }
 }
 

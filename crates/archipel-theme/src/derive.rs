@@ -67,13 +67,13 @@ pub const FG_HUE_LIGHTNESS_LIGHT: f64 = 0.52;
 pub const FG_HUE_CHROMA: f64 = 0.11;
 
 /// Lightness step from `bg.app` to the diff line backgrounds.
-pub const DIFF_BG_STEP: f64 = 0.06;
+pub const DIFF_BG_STEP: f64 = 0.07;
 /// Chroma of the diff line backgrounds.
-pub const DIFF_BG_CHROMA: f64 = 0.035;
+pub const DIFF_BG_CHROMA: f64 = 0.06;
 /// Lightness step from `bg.app` to the word-level diff highlights.
-pub const DIFF_WORD_STEP: f64 = 0.13;
+pub const DIFF_WORD_STEP: f64 = 0.15;
 /// Chroma of the word-level diff highlights.
-pub const DIFF_WORD_CHROMA: f64 = 0.07;
+pub const DIFF_WORD_CHROMA: f64 = 0.11;
 
 /// Graph lane palette, derived from the accent: lanes alternate between the
 /// accent's hue family and its complementary family (a split-complementary
@@ -87,8 +87,13 @@ pub const DIFF_WORD_CHROMA: f64 = 0.07;
 /// at least 120 degrees apart, and gives hues that are close within a family
 /// opposite lightness tiers. The first lane (usually the main line) has the
 /// accent's own hue.
-pub const LANE_FAMILY: [(f64, f64); LANE_COUNT / 2] =
-    [(0.0, 0.0), (2.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (-2.0, 1.0)];
+pub const LANE_FAMILY: [(f64, f64); LANE_COUNT / 2] = [
+    (0.0, 0.0),
+    (2.0, -1.0),
+    (1.0, 1.0),
+    (-1.0, -1.0),
+    (-2.0, 1.0),
+];
 // Two families of `LANE_FAMILY.len()` lanes cover the palette.
 const _: () = assert!(LANE_COUNT == 2 * LANE_FAMILY.len());
 /// Hue distance (OKLCH degrees, on the full wheel) between neighbors of a
@@ -469,11 +474,7 @@ pub fn lane_hue(center: f64, turn: f64) -> f64 {
     let u = (u_center + turn * span / 360.0).rem_euclid(span);
     // `u` at `start` is the band itself: either of its edges.
     let below = if upper_edge { u < start } else { u <= start };
-    if below {
-        u
-    } else {
-        u + width
-    }
+    if below { u } else { u + width }
 }
 
 /// Picks a readable text color on `fill`: the first candidate reaching AA,

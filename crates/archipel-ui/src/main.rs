@@ -27,6 +27,7 @@
 
 mod commit_panel;
 mod diff_view;
+mod file_edit;
 mod forge_panel;
 mod instance;
 mod palette;

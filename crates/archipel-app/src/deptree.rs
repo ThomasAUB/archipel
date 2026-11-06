@@ -306,6 +306,7 @@ mod tests {
             stale: false,
             hidden: false,
             forge: crate::forge::ForgeStatus::Unknown,
+            ci: crate::forge::BranchCi::Unknown,
         }
     }
 

@@ -106,6 +106,18 @@ impl IndexWriter for GitCli {
         Ok(())
     }
 
+    fn discard_patch(&self, repo: &RepoPath, patch: &str) -> Result<(), GitError> {
+        self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Write,
+                &["apply", "--reverse", "--whitespace=nowarn", "-"],
+            )
+            .stdin(patch.to_owned()),
+        )?;
+        Ok(())
+    }
+
     fn discard(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
         let (tracked, untracked) = self.partition_tracked(repo, paths)?;
         if !tracked.is_empty() {

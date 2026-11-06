@@ -19,8 +19,8 @@ mod status;
 pub use locate::{Located, locate, pick_remote};
 pub use ports::ForgePorts;
 pub use status::{
-    CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter, ci_label, linked_description,
-    review_label,
+    BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter, ci_label,
+    linked_description, review_label,
 };
 
 /// A repository on a forge, parsed from a remote URL.

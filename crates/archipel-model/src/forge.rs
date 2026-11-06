@@ -116,6 +116,80 @@ pub enum CiState {
     Failure,
 }
 
+/// State of one CI job (GitHub check run or commit status, GitLab job).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CiJobState {
+    /// Waiting for a runner.
+    Queued,
+    /// Running.
+    Running,
+    /// Waiting for someone to start it (GitLab manual job).
+    Manual,
+    /// Passed.
+    Success,
+    /// Failed (or timed out).
+    Failed,
+    /// Canceled.
+    Canceled,
+    /// Skipped, or finished without a verdict (GitHub neutral).
+    Skipped,
+}
+
+impl CiJobState {
+    /// Whether the job still has to run or finish.
+    #[must_use]
+    pub fn is_pending(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+
+    /// Whether the job failed or was canceled.
+    #[must_use]
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Failed | Self::Canceled)
+    }
+}
+
+/// One job of a CI run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CiJob {
+    /// Job name (GitHub check run name or status context).
+    pub name: String,
+    /// GitLab stage, when the forge has stages.
+    pub stage: Option<String>,
+    /// State.
+    pub state: CiJobState,
+    /// Web page of the job.
+    pub url: Option<String>,
+}
+
+/// The CI of a branch head on the forge: its overall state and its jobs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CiRun {
+    /// Overall state.
+    pub state: CiState,
+    /// Commit the run is for (the branch head on the forge).
+    pub sha: String,
+    /// Web page of the run (GitLab pipeline, GitHub commit checks).
+    pub url: Option<String>,
+    /// Jobs, in the forge's order.
+    pub jobs: Vec<CiJob>,
+}
+
+/// Overall state of a set of jobs: any failure wins, then anything still to
+/// run, then success; `None` without jobs.
+#[must_use]
+pub fn overall_ci_state(jobs: &[CiJob]) -> Option<CiState> {
+    if jobs.is_empty() {
+        None
+    } else if jobs.iter().any(|j| j.state.is_failure()) {
+        Some(CiState::Failure)
+    } else if jobs.iter().any(|j| j.state.is_pending()) {
+        Some(CiState::Pending)
+    } else {
+        Some(CiState::Success)
+    }
+}
+
 /// Review state of a pull request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewState {

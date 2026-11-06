@@ -146,6 +146,16 @@ pub trait CommitWriter: Send + Sync {
     fn commit(&self, repo: &RepoPath, request: &CommitRequest) -> Result<Oid, GitError>;
 }
 
+/// Reads and writes files of the worktree as raw bytes (the diff view's
+/// file editor). `path` is relative to the repository root, `/`-separated,
+/// as in [`FileChange::path`]; a path leaving the worktree is refused.
+pub trait WorktreeFiles: Send + Sync {
+    /// The bytes of `path`.
+    fn read_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError>;
+    /// Replaces the bytes of `path` (an existing file).
+    fn write_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError>;
+}
+
 /// Modifies the index and the worktree.
 pub trait IndexWriter: Send + Sync {
     /// Stages whole paths (`git add`).
@@ -159,6 +169,9 @@ pub trait IndexWriter: Send + Sync {
         patch: &str,
         direction: PatchDirection,
     ) -> Result<(), GitError>;
+    /// Discards part of the worktree changes: applies a patch of the
+    /// unstaged diff in reverse to the worktree (hunk / line discard).
+    fn discard_patch(&self, repo: &RepoPath, patch: &str) -> Result<(), GitError>;
     /// Discards worktree changes of paths (tracked: restore; untracked: delete).
     fn discard(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError>;
 }

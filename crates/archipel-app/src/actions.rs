@@ -386,9 +386,14 @@ impl ActionRegistry {
             "Open the pull request in the browser",
             with_repo,
         ));
+        r.register(ui(
+            "forge.open_ci",
+            "Open the CI run of the branch in the browser",
+            with_repo,
+        ));
         r.register(Arc::new(SimpleAction::new(
             "forge.refresh",
-            "Refresh pull request status",
+            "Refresh pull request and CI status",
             with_project,
             |_| Some(Command::RefreshForge),
         )));

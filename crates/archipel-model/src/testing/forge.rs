@@ -7,11 +7,11 @@ use std::sync::Mutex;
 use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
 };
 use crate::ports::{
-    CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
+    CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
     PullRequestWriter,
 };
 
@@ -35,6 +35,8 @@ type FakeHost = (ForgeKind, String, String);
 struct ForgeState {
     /// `(repo path, branch)` → open pull request.
     open: HashMap<(String, String), PullRequestStatus>,
+    /// `(repo path, branch)` → CI run of the branch head.
+    ci: HashMap<(String, String), CiRun>,
     created: Vec<CreatedPullRequest>,
     repos: HashMap<String, Vec<RemoteRepo>>,
     hosts: HashMap<String, FakeHost>,
@@ -68,6 +70,13 @@ impl FakeForge {
         lock(&self.state)
             .open
             .insert((path.into(), branch.into()), pr);
+    }
+
+    /// Declares the CI run of `branch` of repo `path`.
+    pub fn with_ci(&self, path: &str, branch: &str, run: CiRun) {
+        lock(&self.state)
+            .ci
+            .insert((path.into(), branch.into()), run);
     }
 
     /// Declares the repositories of a namespace.
@@ -110,6 +119,16 @@ impl PullRequestReader for FakeForge {
         let mut s = lock(&self.state);
         s.reads += 1;
         Ok(s.open.get(&(repo.path.clone(), branch.to_owned())).cloned())
+    }
+}
+
+impl CiReader for FakeForge {
+    fn ci_for_branch(&self, repo: &ForgeRepo, branch: &str) -> Result<Option<CiRun>, ForgeError> {
+        self.check(repo)?;
+        Ok(lock(&self.state)
+            .ci
+            .get(&(repo.path.clone(), branch.to_owned()))
+            .cloned())
     }
 }
 

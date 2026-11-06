@@ -123,6 +123,7 @@ pub fn forge_ports(settings: &Settings, dirs: &AppDirs) -> ForgePorts {
     let client = Arc::new(ForgeClient::with_builtins(http, credentials.clone()));
     ForgePorts {
         pull_requests: client.clone(),
+        ci: client.clone(),
         pull_request_writer: client.clone(),
         directory: client.clone(),
         sign_in: client,

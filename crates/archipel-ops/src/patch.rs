@@ -60,11 +60,78 @@ pub fn lines_patch(
     selected: &[usize],
     direction: PatchDirection,
 ) -> Result<String, OpError> {
+    selection_patch(file, &[(hunk, selected.to_vec())], direction)
+}
+
+/// Patch restricted to selected lines of several hunks: `(hunk, line
+/// indices)` pairs. Hunks without a selected change are skipped.
+///
+/// Besides staging and unstaging, a [`PatchDirection::Reverse`] patch of an
+/// *unstaged* diff discards the selected lines when applied in reverse to
+/// the worktree (it matches the worktree, the new side).
+pub fn selection_patch(
+    file: &FileDiff,
+    selection: &[(usize, Vec<usize>)],
+    direction: PatchDirection,
+) -> Result<String, OpError> {
     let mut out = header(file)?;
-    let h: &Hunk = file
-        .hunks
-        .get(hunk)
-        .ok_or_else(|| OpError::Refused(format!("no hunk {hunk}")))?;
+    let mut picks: Vec<&(usize, Vec<usize>)> = selection.iter().collect();
+    picks.sort_by_key(|(h, _)| *h);
+    // Lines added minus lines removed by the hunks already written, which
+    // shifts the free side of the following ones.
+    let mut shift = 0i64;
+    let mut any = false;
+    for (hunk, selected) in picks {
+        let h: &Hunk = file
+            .hunks
+            .get(*hunk)
+            .ok_or_else(|| OpError::Refused(format!("no hunk {hunk}")))?;
+        let Some(part) = hunk_part(h, selected, direction)? else {
+            continue;
+        };
+        any = true;
+        let start = |anchor: i64, count: u32| if count == 0 { anchor - 1 } else { anchor }.max(0);
+        let anchor = i64::from(part.anchor);
+        let (old_start, new_start) = match direction {
+            PatchDirection::Forward => (
+                start(anchor, part.old_count),
+                start(anchor + shift, part.new_count),
+            ),
+            PatchDirection::Reverse => (
+                start(anchor - shift, part.old_count),
+                start(anchor, part.new_count),
+            ),
+        };
+        shift += i64::from(part.new_count) - i64::from(part.old_count);
+        let _ = writeln!(
+            out,
+            "@@ -{old_start},{} +{new_start},{} @@",
+            part.old_count, part.new_count
+        );
+        out.push_str(&part.body);
+    }
+    if !any {
+        return Err(OpError::Refused("no changed line selected".into()));
+    }
+    Ok(out)
+}
+
+/// One hunk of a selection patch.
+struct HunkPart {
+    body: String,
+    old_count: u32,
+    new_count: u32,
+    /// Exact start on the side matched against the target.
+    anchor: u32,
+}
+
+/// The patch lines of hunk `h` restricted to `selected`, `None` when no
+/// changed line is selected.
+fn hunk_part(
+    h: &Hunk,
+    selected: &[usize],
+    direction: PatchDirection,
+) -> Result<Option<HunkPart>, OpError> {
     let mut body = String::new();
     let (mut old_count, mut new_count, mut changes) = (0u32, 0u32, 0usize);
     for i in ordered_lines(h, selected, direction) {
@@ -108,41 +175,22 @@ pub fn lines_patch(
         }
     }
     if changes == 0 {
-        return Err(OpError::Refused("no changed line selected".into()));
+        return Ok(None);
     }
-    // The side matched against the index keeps its exact position: the old
-    // side when staging, the new side when unstaging (applied in reverse).
-    let anchor = match direction {
-        PatchDirection::Forward => {
-            if h.old_lines == 0 {
-                h.old_start + 1
-            } else {
-                h.old_start
-            }
-        }
-        PatchDirection::Reverse => {
-            if h.new_lines == 0 {
-                h.new_start + 1
-            } else {
-                h.new_start
-            }
-        }
+    // The side matched against the target keeps its exact position: the
+    // old side when staging, the new side when unstaging (applied in
+    // reverse).
+    let (start, lines) = match direction {
+        PatchDirection::Forward => (h.old_start, h.old_lines),
+        PatchDirection::Reverse => (h.new_start, h.new_lines),
     };
-    let start = |count: u32| {
-        if count == 0 {
-            anchor.saturating_sub(1)
-        } else {
-            anchor
-        }
-    };
-    let _ = writeln!(
-        out,
-        "@@ -{},{old_count} +{},{new_count} @@",
-        start(old_count),
-        start(new_count)
-    );
-    out.push_str(&body);
-    Ok(out)
+    let anchor = if lines == 0 { start + 1 } else { start };
+    Ok(Some(HunkPart {
+        body,
+        old_count,
+        new_count,
+        anchor,
+    }))
 }
 
 /// Order in which hunk lines are emitted.
@@ -244,6 +292,47 @@ mod tests {
         ]);
         let p = lines_patch(&f, 0, &[3], PatchDirection::Reverse).unwrap();
         assert!(p.ends_with("@@ -1,2 +1,3 @@\n a\n B\n+X\n"), "{p}");
+    }
+
+    #[test]
+    fn multi_hunk_selection_shifts_the_free_side() {
+        let mut f = file(vec![
+            line(LineOrigin::Context, "a"),
+            line(LineOrigin::Added, "x"),
+            line(LineOrigin::Added, "y"),
+        ]);
+        f.hunks[0].old_lines = 1;
+        f.hunks.push(Hunk {
+            old_start: 10,
+            old_lines: 2,
+            new_start: 12,
+            new_lines: 1,
+            header: String::new(),
+            lines: vec![
+                line(LineOrigin::Context, "k"),
+                line(LineOrigin::Removed, "z"),
+            ],
+        });
+        let p = selection_patch(
+            &f,
+            &[(1, vec![1]), (0, vec![1, 2])],
+            PatchDirection::Forward,
+        )
+        .unwrap();
+        assert!(
+            p.ends_with("@@ -1,1 +1,3 @@\n a\n+x\n+y\n@@ -10,2 +12,1 @@\n k\n-z\n"),
+            "{p}"
+        );
+        // Only the second hunk: no shift.
+        let p = selection_patch(&f, &[(1, vec![1])], PatchDirection::Forward).unwrap();
+        assert!(p.ends_with("@@ -10,2 +10,1 @@\n k\n-z\n"), "{p}");
+        // Reverse (unstage / discard) anchors on the new side.
+        let p =
+            selection_patch(&f, &[(0, vec![2]), (1, vec![1])], PatchDirection::Reverse).unwrap();
+        assert!(
+            p.ends_with("@@ -1,2 +1,3 @@\n a\n x\n+y\n@@ -11,2 +12,1 @@\n k\n-z\n"),
+            "{p}"
+        );
     }
 
     #[test]

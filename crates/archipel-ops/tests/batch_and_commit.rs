@@ -13,12 +13,13 @@ use archipel_fixtures::project::{RepoState, generate_project};
 use archipel_fixtures::{TestRepo, git};
 use archipel_git::GitCli;
 use archipel_model::RepoPath;
+use archipel_model::diff::LineOrigin;
 use archipel_model::ports::{DiffReader, DiffSide, JournalStore, StatusReader};
 use archipel_model::requests::{FetchRequest, PatchDirection, TagRequest};
 use archipel_model::settings::Settings;
 use archipel_model::testing::InMemoryStore;
 use archipel_ops::batch::BatchTarget;
-use archipel_ops::patch::{hunk_patch, lines_patch};
+use archipel_ops::patch::{hunk_patch, lines_patch, selection_patch};
 use archipel_ops::{
     BatchOps, CommitOptions, Direction, GitPorts, Journal, MultiCommit, OpError, Outcome,
     RepoActions, Scheduler, UndoService,
@@ -305,4 +306,95 @@ fn line_staging_in_crlf_file() {
     let index = git(repo.path(), &["show", ":w.txt"]).unwrap();
     // `git()` trims trailing whitespace, including the final `\r\n`.
     assert_eq!(index, "A\r\nb\r\nc");
+}
+
+#[test]
+fn selection_across_hunks_and_line_discard() {
+    let o = ops();
+    let repo = TestRepo::new().unwrap();
+    let original: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    repo.write("f.txt", &original).unwrap();
+    repo.commit_all("init").unwrap();
+    let changed = original
+        .replace("line 2\n", "LINE 2\nextra\n")
+        .replace("line 25\n", "LINE 25\n");
+    repo.write("f.txt", &changed).unwrap();
+    let path = RepoPath::new(repo.path());
+    let cli = GitCli::default();
+    let diff = &cli.worktree_diff(&path, DiffSide::Unstaged, None).unwrap()[0];
+    assert_eq!(diff.hunks.len(), 2);
+    let pick = |h: usize, f: &dyn Fn(&str) -> bool| -> Vec<usize> {
+        diff.hunks[h]
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.origin != LineOrigin::Context && f(&l.content))
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    // Stage "extra" (first hunk) and "LINE 25" (second hunk) in one patch.
+    let selection = [
+        (0, pick(0, &|c| c == "extra")),
+        (1, pick(1, &|c| c.ends_with("25"))),
+    ];
+    let patch = selection_patch(diff, &selection, PatchDirection::Forward).unwrap();
+    o.actions
+        .apply_patch(&path, &patch, PatchDirection::Forward)
+        .unwrap();
+    let cached = repo.git(&["diff", "--cached", "-U0"]).unwrap();
+    assert!(
+        cached.contains("+extra") && cached.contains("+LINE 25"),
+        "{cached}"
+    );
+    assert!(!cached.contains("LINE 2\n"), "{cached}");
+
+    // Discard "line 2 -> LINE 2" from the worktree, keep the rest.
+    let diff = &cli.worktree_diff(&path, DiffSide::Unstaged, None).unwrap()[0];
+    let picks: Vec<usize> = diff.hunks[0]
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.origin != LineOrigin::Context && l.content.ends_with(" 2"))
+        .map(|(i, _)| i)
+        .collect();
+    let patch = lines_patch(diff, 0, &picks, PatchDirection::Reverse).unwrap();
+    o.actions.discard_patch(&path, "f.txt", &patch).unwrap();
+    let worktree = std::fs::read_to_string(repo.path().join("f.txt")).unwrap();
+    assert_eq!(
+        worktree,
+        original
+            .replace("line 2\n", "line 2\nextra\n")
+            .replace("line 25\n", "LINE 25\n")
+    );
+    // Nothing left unstaged.
+    assert!(repo.git(&["diff"]).unwrap().is_empty());
+}
+
+#[test]
+fn saving_an_edited_file_refuses_a_change_made_meanwhile() {
+    let o = ops();
+    let repo = TestRepo::new().unwrap();
+    repo.write("src/e.txt", "one\r\ntwo\r\n").unwrap();
+    repo.commit_all("init").unwrap();
+    let path = RepoPath::new(repo.path());
+    let opened = o.actions.read_file(&path, "src/e.txt").unwrap();
+    assert_eq!(opened, b"one\r\ntwo\r\n");
+
+    o.actions
+        .save_file(&path, "src/e.txt", &opened, b"one\r\nTWO\r\n")
+        .unwrap();
+    let on_disk = std::fs::read(repo.path().join("src/e.txt")).unwrap();
+    assert_eq!(on_disk, b"one\r\nTWO\r\n");
+    // The edit shows as an unstaged change.
+    assert!(!repo.git(&["diff", "--name-only"]).unwrap().is_empty());
+
+    // Saved again over the old contents: changed meanwhile, refused.
+    let err = o
+        .actions
+        .save_file(&path, "src/e.txt", &opened, b"lost\r\n")
+        .unwrap_err();
+    assert!(matches!(err, OpError::Refused(_)), "{err}");
+    let on_disk = std::fs::read(repo.path().join("src/e.txt")).unwrap();
+    assert_eq!(on_disk, b"one\r\nTWO\r\n");
 }

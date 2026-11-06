@@ -26,6 +26,7 @@ use gpui_kit::{
     AnyElement, Context, Div, Entity, SharedString, Stateful, Subscription, Window, div, px,
 };
 
+use crate::file_edit::FileEdit;
 use crate::theme::{color, row_height};
 use crate::widgets::{button, icon_button, primary_button, section};
 
@@ -56,6 +57,8 @@ pub struct Panel {
     /// Local branches other than the current one, while the switcher is
     /// open (`None`: closed).
     branches: Option<Vec<String>>,
+    /// The working-copy file being edited in place of its diff.
+    pub(crate) edit: Option<FileEdit>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -94,8 +97,14 @@ impl Panel {
             summary,
             branch_input,
             branches: None,
+            edit: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The Discard button clicked once, waiting for its second click.
+    pub fn armed(&self) -> Option<&str> {
+        self.armed.as_deref()
     }
 
     /// The last summary of the repo.
@@ -147,7 +156,9 @@ fn click_discard<V: Staging>(v: &mut V, file: String, cx: &mut Context<V>) {
     arm_discard(v, file, cx, move |a, p| a.discard(p, &files));
 }
 
-fn arm_discard<V: Staging>(
+/// A Discard button: the first click arms `key`, a second one on the same
+/// key before [`DISCARD_ARM_TIME`] runs `job`.
+pub(crate) fn arm_discard<V: Staging>(
     v: &mut V,
     key: String,
     cx: &mut Context<V>,

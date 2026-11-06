@@ -21,7 +21,8 @@ use archipel_ops::{GitPorts, OpClass, OpError, OpSpec};
 use super::{App, AppError, AppEvent, lock};
 use crate::dashboard::DashboardRow;
 use crate::forge::{
-    ForgePorts, ForgeRegistry, ForgeStatus, Located, linked_description, locate, pick_remote,
+    BranchCi, ForgePorts, ForgeRegistry, ForgeStatus, Located, linked_description, locate,
+    pick_remote,
 };
 
 /// One repository of a pull request plan.
@@ -125,25 +126,60 @@ pub struct CloneOutcome {
     pub result: Result<RepoPath, String>,
 }
 
-/// Reads the forge status of one repo (blocking; on a scheduler worker).
-/// Returns the status and, for real failures, the error for the drawer.
-fn read_status(
+/// What one forge read found for a repo.
+struct ForgeRead {
+    status: ForgeStatus,
+    ci: BranchCi,
+    /// A real failure, for the drawer.
+    error: Option<ForgeError>,
+}
+
+/// Reads the forge status and branch CI of one repo (blocking; on a
+/// scheduler worker).
+fn read_forge(
     git: &GitPorts,
     forge: &ForgePorts,
     links: &ForgeRegistry,
     path: &RepoPath,
     branch: &str,
     preferred: Option<&str>,
-) -> (ForgeStatus, Option<ForgeError>) {
+) -> ForgeRead {
     let remotes = match git.remotes.remotes(path) {
         Ok(r) => r,
-        Err(e) => return (ForgeStatus::Error(e.to_string()), None),
+        Err(e) => {
+            return ForgeRead {
+                status: ForgeStatus::Error(e.to_string()),
+                ci: BranchCi::Unknown,
+                error: None,
+            };
+        }
     };
     let accounts = forge.accounts.accounts().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "cannot read forge accounts");
         Vec::new()
     });
-    match locate(&remotes, preferred, &accounts, links) {
+    let located = locate(&remotes, preferred, &accounts, links);
+    let ci = match &located {
+        Located::Repo { repo, .. } => match forge.ci.ci_for_branch(repo, branch) {
+            Ok(Some(run)) => BranchCi::Run(run),
+            Ok(None) => BranchCi::None,
+            Err(ForgeError::NotSignedIn { .. }) => BranchCi::Unknown,
+            // Reported once, by the pull request read below.
+            Err(e) => BranchCi::Error(e.to_string()),
+        },
+        _ => BranchCi::Unknown,
+    };
+    let (status, error) = pull_request_status(forge, located, branch);
+    ForgeRead { status, ci, error }
+}
+
+/// The pull request status of a located repo, and the error for the drawer.
+fn pull_request_status(
+    forge: &ForgePorts,
+    located: Located,
+    branch: &str,
+) -> (ForgeStatus, Option<ForgeError>) {
+    match located {
         Located::NotOnForge => (ForgeStatus::NotOnForge, None),
         Located::SignedOut { host } => (ForgeStatus::SignedOut { host }, None),
         Located::Repo { repo, .. } => {
@@ -339,8 +375,9 @@ impl App {
             let Some(summary) = row.summary() else { return };
             let Some(branch) = summary.head.branch().map(str::to_owned) else {
                 // Detached or no commit: nothing to show on the forge.
-                let changed = row.forge != ForgeStatus::NotOnForge;
+                let changed = row.forge != ForgeStatus::NotOnForge || row.ci != BranchCi::Unknown;
                 row.forge = ForgeStatus::NotOnForge;
+                row.ci = BranchCi::Unknown;
                 drop(guard);
                 if changed {
                     self.emit(AppEvent::RowsChanged(vec![repo]));
@@ -363,16 +400,15 @@ impl App {
         let me = self.me.clone();
         let spec = OpSpec::new(Some(repo), OpClass::Network, format!("Forge status {name}"));
         let _handle = self.scheduler.submit(spec, move |_| {
-            let (status, error) =
-                read_status(&git, &forge, &links, &path, &branch, preferred.as_deref());
+            let read = read_forge(&git, &forge, &links, &path, &branch, preferred.as_deref());
             if let Some(app) = me.upgrade() {
-                app.apply_forge(repo, branch, status);
+                app.apply_forge(repo, branch, read.status, read.ci);
             }
-            error.map_or(Ok(()), |e| Err(OpError::Forge(e)))
+            read.error.map_or(Ok(()), |e| Err(OpError::Forge(e)))
         });
     }
 
-    fn apply_forge(&self, repo: RepoId, branch: String, status: ForgeStatus) {
+    fn apply_forge(&self, repo: RepoId, branch: String, status: ForgeStatus, ci: BranchCi) {
         let changed = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
@@ -385,8 +421,9 @@ impl App {
                 .and_then(|s| s.head.branch())
                 == Some(branch.as_str());
             let changed = match row {
-                Some(row) if current && row.forge != status => {
+                Some(row) if current && (row.forge != status || row.ci != ci) => {
                     row.forge = status;
+                    row.ci = ci;
                     true
                 }
                 _ => false,

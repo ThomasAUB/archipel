@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo, normalize_host,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
 };
 use archipel_model::ports::{
-    CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
+    CiReader, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
 };
 
 use crate::github::GitHub;
@@ -96,6 +96,12 @@ impl PullRequestReader for ForgeClient {
         branch: &str,
     ) -> Result<Option<PullRequestStatus>, ForgeError> {
         self.with(&repo.account, |p, at| p.for_branch(at, &repo.path, branch))
+    }
+}
+
+impl CiReader for ForgeClient {
+    fn ci_for_branch(&self, repo: &ForgeRepo, branch: &str) -> Result<Option<CiRun>, ForgeError> {
+        self.with(&repo.account, |p, at| p.branch_ci(at, &repo.path, branch))
     }
 }
 

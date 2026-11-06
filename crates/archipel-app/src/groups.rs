@@ -132,7 +132,7 @@ mod tests {
 
     use super::*;
     use crate::dashboard::RepoStatus;
-    use crate::forge::ForgeStatus;
+    use crate::forge::{BranchCi, ForgeStatus};
 
     fn row(name: &str) -> DashboardRow {
         let path = RepoPath::new(format!("/work/{name}"));
@@ -144,6 +144,7 @@ mod tests {
             stale: false,
             hidden: false,
             forge: ForgeStatus::Unknown,
+            ci: BranchCi::Unknown,
         }
     }
 

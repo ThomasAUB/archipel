@@ -10,11 +10,11 @@ use archipel_forge::ForgeClient;
 use archipel_forge::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind,
+    CiJobState, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind,
     PullRequestDraft, ReviewState,
 };
 use archipel_model::ports::{
-    CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
+    CiReader, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
 };
 use archipel_model::testing::InMemoryCredentials;
 use serde_json::json;
@@ -473,4 +473,118 @@ fn errors_never_contain_the_token() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("boom") && !err.contains("tok"), "{err}");
+}
+
+#[test]
+fn github_branch_ci_lists_check_runs_and_statuses() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/repos/octo/app/branches/feat%2Fx",
+        200,
+        json!({"name": "feat/x", "commit": {"sha": "abc123"}}),
+    );
+    http.on(
+        Method::Get,
+        "/commits/abc123/check-runs",
+        200,
+        json!({"check_runs": [
+            {"name": "build", "status": "completed", "conclusion": "success", "html_url": "hb"},
+            {"name": "test", "status": "in_progress", "conclusion": null}
+        ]}),
+    );
+    http.on(
+        Method::Get,
+        "/commits/abc123/status",
+        200,
+        json!({"state": "failure", "total_count": 1,
+               "statuses": [{"context": "ci/legacy", "state": "error", "target_url": "hl"}]}),
+    );
+    let c = client(&http, &["github.com"]);
+    let run = c.ci_for_branch(&github_repo(), "feat/x").unwrap().unwrap();
+    assert_eq!(run.state, CiState::Failure, "a failed status wins");
+    assert_eq!(run.sha, "abc123");
+    assert_eq!(
+        run.url.as_deref(),
+        Some("https://github.com/octo/app/commit/abc123")
+    );
+    let jobs: Vec<_> = run
+        .jobs
+        .iter()
+        .map(|j| (j.name.as_str(), j.state))
+        .collect();
+    assert_eq!(
+        jobs,
+        [
+            ("build", CiJobState::Success),
+            ("test", CiJobState::Running),
+            ("ci/legacy", CiJobState::Failed)
+        ]
+    );
+}
+
+#[test]
+fn github_branch_ci_absent() {
+    let http = Arc::new(FakeHttp::default());
+    let c = client(&http, &["github.com"]);
+    // Branch not pushed: 404.
+    assert_eq!(c.ci_for_branch(&github_repo(), "local").unwrap(), None);
+    // Pushed, no checks at all.
+    http.on(
+        Method::Get,
+        "/branches/main",
+        200,
+        json!({"commit": {"sha": "s"}}),
+    );
+    http.on(Method::Get, "/check-runs", 200, json!({"check_runs": []}));
+    http.on(
+        Method::Get,
+        "/status",
+        200,
+        json!({"state": "pending", "total_count": 0, "statuses": []}),
+    );
+    assert_eq!(c.ci_for_branch(&github_repo(), "main").unwrap(), None);
+}
+
+#[test]
+fn gitlab_branch_ci_lists_pipeline_jobs() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/projects/team%2Fsub%2Fapp/pipelines";
+    http.on(
+        Method::Get,
+        &format!("{base}?ref=feat%2Fx&per_page=1"),
+        200,
+        json!([{"id": 9, "status": "running", "sha": "def", "web_url": "pw"}]),
+    );
+    // Newest job first, as GitLab returns them.
+    http.on(
+        Method::Get,
+        &format!("{base}/9/jobs"),
+        200,
+        json!([
+            {"name": "deploy", "stage": "deploy", "status": "manual", "web_url": "j3"},
+            {"name": "lint", "stage": "test", "status": "failed", "allow_failure": true, "web_url": "j2"},
+            {"name": "build", "stage": "build", "status": "success", "web_url": "j1"}
+        ]),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let run = c.ci_for_branch(&gitlab_repo(), "feat/x").unwrap().unwrap();
+    assert_eq!(run.state, CiState::Pending);
+    assert_eq!((run.sha.as_str(), run.url.as_deref()), ("def", Some("pw")));
+    let jobs: Vec<_> = run
+        .jobs
+        .iter()
+        .map(|j| (j.name.as_str(), j.stage.as_deref(), j.state))
+        .collect();
+    assert_eq!(
+        jobs,
+        [
+            ("build", Some("build"), CiJobState::Success),
+            ("lint", Some("test"), CiJobState::Skipped),
+            ("deploy", Some("deploy"), CiJobState::Manual)
+        ]
+    );
+    // No pipeline on the branch.
+    http.on(Method::Get, &format!("{base}?ref=other"), 200, json!([]));
+    assert_eq!(c.ci_for_branch(&gitlab_repo(), "other").unwrap(), None);
 }

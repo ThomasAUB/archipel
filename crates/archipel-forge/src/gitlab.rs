@@ -3,14 +3,14 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiState, ForgeKind, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo, ReviewState,
+    CiJob, CiJobState, CiRun, CiState, ForgeKind, Namespace, NamespaceKind, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::http::{Api, Auth, Method, encode};
-use crate::provider::{DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitLab provider.
 pub struct GitLab;
@@ -51,6 +51,24 @@ struct Pipeline {
 }
 
 #[derive(Deserialize)]
+struct BranchPipeline {
+    id: u64,
+    status: String,
+    sha: String,
+    web_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Job {
+    name: String,
+    stage: Option<String>,
+    status: String,
+    web_url: Option<String>,
+    #[serde(default)]
+    allow_failure: bool,
+}
+
+#[derive(Deserialize)]
 struct Approvals {
     #[serde(default)]
     approved_by: Vec<serde_json::Value>,
@@ -85,6 +103,21 @@ fn ci_state(pipeline: Option<&Pipeline>) -> Option<CiState> {
         "failed" | "canceled" => Some(CiState::Failure),
         "skipped" => None,
         _ => Some(CiState::Pending),
+    }
+}
+
+/// State of one job. An allowed failure does not fail the pipeline, so it
+/// is not reported as one.
+fn job_state(job: &Job) -> CiJobState {
+    match job.status.as_str() {
+        "success" => CiJobState::Success,
+        "failed" if job.allow_failure => CiJobState::Skipped,
+        "failed" => CiJobState::Failed,
+        "canceled" | "canceling" => CiJobState::Canceled,
+        "skipped" => CiJobState::Skipped,
+        "manual" => CiJobState::Manual,
+        "running" => CiJobState::Running,
+        _ => CiJobState::Queued,
     }
 }
 
@@ -206,6 +239,58 @@ impl PullRequestApi for GitLab {
                 &format!("merge request !{number}"),
             )
             .map(drop)
+    }
+}
+
+impl CiApi for GitLab {
+    fn branch_ci(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Option<CiRun>, ForgeError> {
+        let api = api(at);
+        let base = project(repo);
+        // Newest first: the first pipeline is the latest of the branch.
+        let pipelines: Vec<BranchPipeline> = match api.get(
+            &format!("{base}/pipelines?ref={}&per_page=1", encode(branch)),
+            &format!("project {repo}"),
+        ) {
+            Ok(p) => p,
+            // CI disabled on the project.
+            Err(ForgeError::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some(pipeline) = pipelines.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some(state) = ci_state(Some(&Pipeline {
+            status: pipeline.status.clone(),
+        })) else {
+            return Ok(None);
+        };
+        // Newest job first; retried jobs are left out by the API.
+        let mut jobs: Vec<Job> = api
+            .get(
+                &format!("{base}/pipelines/{}/jobs?per_page=100", pipeline.id),
+                "jobs",
+            )
+            .unwrap_or_default();
+        jobs.reverse();
+        Ok(Some(CiRun {
+            state,
+            sha: pipeline.sha,
+            url: pipeline.web_url,
+            jobs: jobs
+                .into_iter()
+                .map(|j| CiJob {
+                    state: job_state(&j),
+                    name: j.name,
+                    stage: j.stage,
+                    url: j.web_url,
+                })
+                .collect(),
+        }))
     }
 }
 

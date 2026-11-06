@@ -10,8 +10,8 @@
 
 use crate::error::ForgeError;
 use crate::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 
 /// Reads the open pull / merge request of a branch (dashboard column).
@@ -23,6 +23,13 @@ pub trait PullRequestReader: Send + Sync {
         repo: &ForgeRepo,
         branch: &str,
     ) -> Result<Option<PullRequestStatus>, ForgeError>;
+}
+
+/// Reads the CI of a branch head (dashboard "CI" column).
+pub trait CiReader: Send + Sync {
+    /// The latest CI run of `branch` on the forge with its jobs; `None` when
+    /// the branch is not on the forge or has no CI.
+    fn ci_for_branch(&self, repo: &ForgeRepo, branch: &str) -> Result<Option<CiRun>, ForgeError>;
 }
 
 /// Creates pull / merge requests.

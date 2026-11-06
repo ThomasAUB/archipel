@@ -797,6 +797,8 @@ impl Render for ForgePanel {
                     .child(text.clone())
             });
         div()
+            .id("forge-panel")
+            .occlude()
             .absolute()
             .top_0()
             .right_0()

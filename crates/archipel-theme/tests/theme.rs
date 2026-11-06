@@ -201,14 +201,26 @@ fn lane_palette_follows_any_accent_and_stays_distinguishable() {
         if !(95.0..135.0).contains(&accent_hue) {
             let h = c.lane(0).to_oklch().h;
             let d = (h - accent_hue + 180.0).rem_euclid(360.0) - 180.0;
-            assert!(d.abs() < 6.0, "{} lane 0 hue {h:.0} vs {accent_hue:.0}", theme.id);
+            assert!(
+                d.abs() < 6.0,
+                "{} lane 0 hue {h:.0} vs {accent_hue:.0}",
+                theme.id
+            );
         }
         for i in 0..LANE_COUNT {
             assert!(c.lane(i).contrast_ratio(bg) >= WCAG_AA_LARGE_TEXT);
-            assert!(c.lane(i).delta_e(c.lane(i + 1)) >= 0.15, "{} adjacent {i}", theme.id);
+            assert!(
+                c.lane(i).delta_e(c.lane(i + 1)) >= 0.15,
+                "{} adjacent {i}",
+                theme.id
+            );
             for j in (i + 1)..LANE_COUNT {
                 let d = c.lane(i).delta_e(c.lane(j));
-                assert!(d >= 0.05, "{} accent {accent_hue:.0}: lanes {i}/{j}", theme.id);
+                assert!(
+                    d >= 0.05,
+                    "{} accent {accent_hue:.0}: lanes {i}/{j}",
+                    theme.id
+                );
             }
         }
     }
@@ -235,9 +247,7 @@ fn status_colors_lean_towards_the_accent_but_keep_their_meaning() {
     }
     // A warm accent warms the green, a cool one cools it.
     let dark = builtin::dark();
-    let with = |h| {
-        archipel_theme::with_project_accent(&dark, Oklch::new(0.7, 0.12, h).to_color())
-    };
+    let with = |h| archipel_theme::with_project_accent(&dark, Oklch::new(0.7, 0.12, h).to_color());
     let success = |t: &Theme| hue(t, ColorToken::StatusSuccess);
     assert!(success(&with(60.0)) < success(&with(230.0)));
     // Syntax colors follow the same way.

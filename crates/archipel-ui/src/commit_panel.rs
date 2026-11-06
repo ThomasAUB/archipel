@@ -264,6 +264,8 @@ impl Render for CommitPanel {
         });
         let push = self.push_after;
         div()
+            .id("commit-panel")
+            .occlude()
             .absolute()
             .top_0()
             .right_0()

@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 use archipel_model::ports::{
-    CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
+    CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
     PullRequestWriter,
 };
 
@@ -17,6 +17,8 @@ use archipel_model::ports::{
 pub struct ForgePorts {
     /// Open pull request of a branch (dashboard column).
     pub pull_requests: Arc<dyn PullRequestReader>,
+    /// CI of a branch head (dashboard "CI" column).
+    pub ci: Arc<dyn CiReader>,
     /// Pull request creation and linking.
     pub pull_request_writer: Arc<dyn PullRequestWriter>,
     /// Namespaces and repositories of an account (clone from an account).
@@ -33,11 +35,17 @@ impl ForgePorts {
     /// One forge adapter for the API ports, one store for the credentials.
     pub fn from_backend<F, C>(forge: Arc<F>, credentials: Arc<C>) -> Self
     where
-        F: PullRequestReader + PullRequestWriter + ForgeDirectory + ForgeSignIn + 'static,
+        F: PullRequestReader
+            + CiReader
+            + PullRequestWriter
+            + ForgeDirectory
+            + ForgeSignIn
+            + 'static,
         C: CredentialStore + ForgeAccountStore + 'static,
     {
         Self {
             pull_requests: forge.clone(),
+            ci: forge.clone(),
             pull_request_writer: forge.clone(),
             directory: forge.clone(),
             sign_in: forge,
@@ -68,6 +76,12 @@ impl PullRequestReader for NoForge {
         repo: &ForgeRepo,
         _branch: &str,
     ) -> Result<Option<PullRequestStatus>, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+}
+
+impl CiReader for NoForge {
+    fn ci_for_branch(&self, repo: &ForgeRepo, _branch: &str) -> Result<Option<CiRun>, ForgeError> {
         Err(refused(&repo.account.host))
     }
 }

@@ -2,14 +2,14 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiState, ForgeKind, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo, ReviewState,
+    CiJob, CiJobState, CiRun, CiState, ForgeKind, Namespace, NamespaceKind, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState, overall_ci_state,
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::http::{Api, Auth, Method, encode, encode_path};
-use crate::provider::{DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitHub provider.
 pub struct GitHub;
@@ -55,8 +55,12 @@ struct Pull {
 
 #[derive(Deserialize)]
 struct CheckRun {
+    #[serde(default)]
+    name: String,
     status: String,
     conclusion: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,25 @@ struct CheckRuns {
 struct CombinedStatus {
     state: String,
     total_count: u64,
+    #[serde(default)]
+    statuses: Vec<CommitStatus>,
+}
+
+#[derive(Deserialize)]
+struct CommitStatus {
+    context: String,
+    state: String,
+    target_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Branch {
+    commit: BranchCommit,
+}
+
+#[derive(Deserialize)]
+struct BranchCommit {
+    sha: String,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +141,53 @@ fn ci_state(runs: &[CheckRun], combined: Option<&CombinedStatus>) -> Option<CiSt
     [CiState::Failure, CiState::Pending, CiState::Success]
         .into_iter()
         .find(|s| states.contains(s))
+}
+
+/// State of one check run.
+fn check_run_state(run: &CheckRun) -> CiJobState {
+    match (run.status.as_str(), run.conclusion.as_deref()) {
+        ("completed", Some("success")) => CiJobState::Success,
+        ("completed", Some("neutral" | "skipped" | "stale")) => CiJobState::Skipped,
+        ("completed", Some("cancelled")) => CiJobState::Canceled,
+        ("completed", Some("action_required")) => CiJobState::Manual,
+        ("completed", _) => CiJobState::Failed,
+        ("in_progress", _) => CiJobState::Running,
+        _ => CiJobState::Queued,
+    }
+}
+
+/// State of one legacy commit status.
+fn commit_status_state(state: &str) -> CiJobState {
+    match state {
+        "success" => CiJobState::Success,
+        "pending" => CiJobState::Running,
+        _ => CiJobState::Failed,
+    }
+}
+
+/// The jobs of a commit: its check runs, then its commit statuses.
+fn ci_jobs(runs: Vec<CheckRun>, combined: Option<CombinedStatus>) -> Vec<CiJob> {
+    let mut jobs: Vec<CiJob> = runs
+        .into_iter()
+        .map(|r| CiJob {
+            state: check_run_state(&r),
+            name: r.name,
+            stage: None,
+            url: r.html_url,
+        })
+        .collect();
+    jobs.extend(
+        combined
+            .into_iter()
+            .flat_map(|c| c.statuses)
+            .map(|s| CiJob {
+                state: commit_status_state(&s.state),
+                name: s.context,
+                stage: None,
+                url: s.target_url,
+            }),
+    );
+    jobs
 }
 
 /// Review state from the reviews (chronological): each reviewer's latest
@@ -257,6 +327,48 @@ impl PullRequestApi for GitHub {
                 &format!("pull request #{number}"),
             )
             .map(drop)
+    }
+}
+
+impl CiApi for GitHub {
+    fn branch_ci(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Option<CiRun>, ForgeError> {
+        let api = api(at);
+        let base = format!("/repos/{}", encode_path(repo));
+        let head = match api.get::<Branch>(
+            &format!("{base}/branches/{}", encode(branch)),
+            &format!("branch {branch}"),
+        ) {
+            Ok(b) => b.commit.sha,
+            // Not pushed yet.
+            Err(ForgeError::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let sha = encode(&head);
+        let runs = api
+            .get::<CheckRuns>(
+                &format!("{base}/commits/{sha}/check-runs?per_page=100"),
+                "check runs",
+            )
+            .map(|r| r.check_runs)
+            .unwrap_or_default();
+        let combined = api
+            .get::<CombinedStatus>(&format!("{base}/commits/{sha}/status"), "commit status")
+            .ok();
+        let jobs = ci_jobs(runs, combined);
+        let Some(state) = overall_ci_state(&jobs) else {
+            return Ok(None);
+        };
+        Ok(Some(CiRun {
+            state,
+            url: Some(format!("https://{}/{repo}/commit/{head}", at.host)),
+            sha: head,
+            jobs,
+        }))
     }
 }
 

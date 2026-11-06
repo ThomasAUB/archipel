@@ -1,5 +1,6 @@
 //! The `git` CLI adapter: implements every reader and writer trait.
 
+mod files;
 mod read;
 mod runner;
 mod submodule;

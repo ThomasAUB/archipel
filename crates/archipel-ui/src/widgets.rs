@@ -241,8 +241,6 @@ pub fn section(label: impl Into<SharedString>, cx: &App) -> Div {
 /// A pane whose width a [`splitter`] drags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
-    /// The workspace sidebar (left of the main area).
-    Sidebar,
     /// A repo view's refs (left of the graph).
     Refs,
     /// A repo view's details (right of the graph).
@@ -287,7 +285,6 @@ pub fn splitter(pane: Pane, cx: &App) -> Stateful<Div> {
 /// holding it, keeping it and its neighbors at least [`MIN_PANE`] wide.
 pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixels>) {
     let (width, other) = match pane {
-        Pane::Sidebar => (x - bounds.left(), 0.0),
         Pane::Refs => (x - bounds.left(), ui.details_width),
         Pane::Details => (bounds.right() - x, ui.refs_width),
         Pane::QuickEdit => (bounds.right() - x, 0.0),
@@ -295,7 +292,6 @@ pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixel
     let max = (f32::from(bounds.size.width) - other - MIN_PANE).max(MIN_PANE);
     let width = f32::from(width).clamp(MIN_PANE, max);
     *match pane {
-        Pane::Sidebar => &mut ui.sidebar_width,
         Pane::Refs => &mut ui.refs_width,
         Pane::Details => &mut ui.details_width,
         Pane::QuickEdit => &mut ui.quick_edit_width,

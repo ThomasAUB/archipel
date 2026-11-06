@@ -22,6 +22,7 @@ use crate::ports::{
     MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps,
     RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
     SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, UiStateStore, WatchHandle,
+    WorktreeFiles,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -78,6 +79,8 @@ pub struct FakeRepo {
     pub head: HeadRef,
     /// Submodules (one level).
     pub submodules: Vec<SubmoduleInfo>,
+    /// Worktree files (relative path → bytes), for `WorktreeFiles`.
+    pub files: BTreeMap<String, Vec<u8>>,
 }
 
 impl Default for FakeRepo {
@@ -95,6 +98,7 @@ impl Default for FakeRepo {
             refs: BTreeMap::new(),
             head: HeadRef::Symbolic("refs/heads/main".into()),
             submodules: Vec::new(),
+            files: BTreeMap::new(),
         }
     }
 }
@@ -378,6 +382,24 @@ impl CommitWriter for FakeGit {
     }
 }
 
+impl WorktreeFiles for FakeGit {
+    fn read_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError> {
+        if let Some(err) = lock(&self.failures).get(&(repo.clone(), "read_file")) {
+            return Err(err.clone());
+        }
+        self.with_repo(repo, |r| r.files.get(path).cloned())
+            .ok_or_else(|| GitError::Io {
+                path: repo.as_path().join(path),
+                message: "no such file".into(),
+            })
+    }
+    fn write_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError> {
+        self.record("write_file", repo, path)?;
+        self.with_repo(repo, |r| r.files.insert(path.to_owned(), contents.to_vec()));
+        Ok(())
+    }
+}
+
 impl IndexWriter for FakeGit {
     fn stage(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
         self.record("stage", repo, paths.join(","))
@@ -392,6 +414,9 @@ impl IndexWriter for FakeGit {
         direction: PatchDirection,
     ) -> Result<(), GitError> {
         self.record("apply_patch", repo, format!("{direction:?}:{patch}"))
+    }
+    fn discard_patch(&self, repo: &RepoPath, patch: &str) -> Result<(), GitError> {
+        self.record("discard_patch", repo, patch.to_owned())
     }
     fn discard(&self, repo: &RepoPath, paths: &[String]) -> Result<(), GitError> {
         self.record("discard", repo, paths.join(","))

@@ -83,7 +83,7 @@ One struct may implement several traits (the `gix` adapter implements all reader
 The same principle applies everywhere else, for example:
 
 - storage: `SummaryStore`, `UiStateStore`, `JournalStore`, `StatsStore` rather than one `Database`;
-- forges: `PullRequestReader` (dashboard column), `PullRequestWriter` (create, link), `ForgeDirectory` (clone from an account), `ForgeSignIn` (verify a token, detect the provider), `CredentialStore` (OS keychain), `ForgeAccountStore` (signed-in hosts) rather than one `ForgeClient`;
+- forges: `PullRequestReader` (dashboard column), `CiReader` (CI column), `PullRequestWriter` (create, link), `ForgeDirectory` (clone from an account), `ForgeSignIn` (verify a token, detect the provider), `CredentialStore` (OS keychain), `ForgeAccountStore` (signed-in hosts) rather than one `ForgeClient`;
 - project: `ProjectSource` (load/save a project definition) separate from `RepoDiscovery` (scan a folder);
 - watching: `ChangeSource` (emits invalidations) separate from the debouncing policy.
 

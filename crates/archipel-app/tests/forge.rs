@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use archipel_app::forge::{ForgePorts, ForgeStatus};
 use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, Services};
 use archipel_model::forge::{
-    CiState, ForgeKind, NamespaceKind, PullRequestStatus, RemoteRepo, ReviewState,
+    CiJob, CiJobState, CiRun, CiState, ForgeKind, NamespaceKind, PullRequestStatus, RemoteRepo,
+    ReviewState,
 };
 use archipel_model::ports::{CredentialStore, ForgeAccountStore, RemoteInfo};
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
@@ -41,7 +42,7 @@ struct Env {
 
 /// Three repos on branch `feat/x`:
 /// * `r0` on github.com (`acme/r0`), pushed, with an open pull request;
-/// * `r1` on github.com (`acme/r1`), never pushed;
+/// * `r1` on github.com (`acme/r1`), no pull request, CI running;
 /// * `r2` on a GitLab host nobody signed in to.
 fn env() -> Env {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -67,6 +68,29 @@ fn env() -> Env {
             target: "main".into(),
             ci: Some(CiState::Failure),
             review: ReviewState::Approved,
+        },
+    );
+    forge.with_ci(
+        "acme/r1",
+        "feat/x",
+        CiRun {
+            state: CiState::Pending,
+            sha: "abc".into(),
+            url: Some("https://github.com/acme/r1/commit/abc".into()),
+            jobs: vec![
+                CiJob {
+                    name: "build".into(),
+                    stage: None,
+                    state: CiJobState::Success,
+                    url: None,
+                },
+                CiJob {
+                    name: "test".into(),
+                    stage: None,
+                    state: CiJobState::Running,
+                    url: None,
+                },
+            ],
         },
     );
     let services = Services {
@@ -241,6 +265,18 @@ fn status_column_follows_sign_in() {
     let col = ext.columns.get("forge").unwrap();
     let row = e.app.rows().into_iter().next().unwrap();
     assert_eq!(col.cell(&row, Timestamp(0)).text, "#7 ✗ approved");
+
+    // The CI column shows the branch CI, with or without a pull request.
+    let ci = ext.columns.get("ci").unwrap();
+    let rows = e.app.rows();
+    assert_eq!(ci.cell(&rows[0], Timestamp(0)).text, "—", "no CI run");
+    assert_eq!(ci.cell(&rows[1], Timestamp(0)).text, "● 1/2");
+    assert_eq!(
+        ci.tooltip(&rows[1]).unwrap()[1],
+        "● test · running",
+        "running jobs before passed ones"
+    );
+    assert_eq!(ci.cell(&rows[2], Timestamp(0)).text, "sign in");
     e.app
         .dispatch(Command::ToggleFilter("ci-failing".into()))
         .unwrap();

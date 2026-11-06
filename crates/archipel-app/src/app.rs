@@ -34,7 +34,7 @@ use tokio::sync::broadcast;
 use crate::actions::{ActionContext, ActionRegistry, Command};
 use crate::dashboard::{ColumnRegistry, DashboardRow, FilterRegistry, RepoStatus, visible_rows};
 use crate::deptree::{DependencySource, SubmoduleSource, TreeInput, TreeRow, build_tree};
-use crate::forge::{ForgePorts, ForgeRegistry, ForgeStatus};
+use crate::forge::{BranchCi, ForgePorts, ForgeRegistry, ForgeStatus};
 use crate::groups::{
     RepoGroup, category_filter_keys, distinct_categories, group_by_category, normalize_category,
     passes_category_filter,
@@ -940,6 +940,7 @@ impl App {
                     status,
                     hidden: ui.is_hidden(rid),
                     forge: ForgeStatus::Unknown,
+                    ci: BranchCi::Unknown,
                 }
             })
             .collect();
@@ -1028,6 +1029,7 @@ impl App {
                         stale: true,
                         hidden: s.ui.is_hidden(p.id()),
                         forge: ForgeStatus::Unknown,
+                        ci: BranchCi::Unknown,
                     });
                 }
             }
@@ -1431,6 +1433,7 @@ impl App {
                             stale: true,
                             hidden: s.ui.is_hidden(rid),
                             forge: ForgeStatus::Unknown,
+                            ci: BranchCi::Unknown,
                         },
                     }
                 })

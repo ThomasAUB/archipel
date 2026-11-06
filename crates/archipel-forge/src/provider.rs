@@ -4,7 +4,7 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    ForgeKind, ForgeToken, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    CiRun, ForgeKind, ForgeToken, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus,
     RemoteRepo,
 };
 
@@ -63,6 +63,18 @@ pub trait PullRequestApi: Send + Sync {
     ) -> Result<(), ForgeError>;
 }
 
+/// CI of branches.
+pub trait CiApi: Send + Sync {
+    /// The latest CI run of `branch` with its jobs; `None` when the branch
+    /// is not on the forge or has no CI.
+    fn branch_ci(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Option<CiRun>, ForgeError>;
+}
+
 /// Account browsing (clone from an account / org / group).
 pub trait DirectoryApi: Send + Sync {
     /// `user`'s own namespace first, then its organizations / groups.
@@ -76,6 +88,6 @@ pub trait DirectoryApi: Send + Sync {
 }
 
 /// A complete provider: what [`crate::ForgeClient::register`] takes.
-pub trait Provider: ForgeApi + PullRequestApi + DirectoryApi {}
+pub trait Provider: ForgeApi + PullRequestApi + CiApi + DirectoryApi {}
 
-impl<T: ForgeApi + PullRequestApi + DirectoryApi> Provider for T {}
+impl<T: ForgeApi + PullRequestApi + CiApi + DirectoryApi> Provider for T {}

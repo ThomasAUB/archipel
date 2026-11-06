@@ -7,7 +7,7 @@ use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeToolLauncher,
     RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    SubmoduleReader, SubmoduleWriter, TagWriter,
+    SubmoduleReader, SubmoduleWriter, TagWriter, WorktreeFiles,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -56,6 +56,8 @@ pub struct GitPorts {
     pub submodule_writer: Arc<dyn SubmoduleWriter>,
     /// Remote configuration (forge detection from the remote URL).
     pub remotes: Arc<dyn RemoteReader>,
+    /// Worktree file contents (the diff view's file editor).
+    pub files: Arc<dyn WorktreeFiles>,
 }
 
 impl GitPorts {
@@ -78,6 +80,7 @@ impl GitPorts {
             + SubmoduleReader
             + SubmoduleWriter
             + RemoteReader
+            + WorktreeFiles
             + 'static,
     {
         Self {
@@ -96,7 +99,8 @@ impl GitPorts {
             merge_tool: backend.clone(),
             submodules: backend.clone(),
             submodule_writer: backend.clone(),
-            remotes: backend,
+            remotes: backend.clone(),
+            files: backend,
         }
     }
 }
@@ -171,6 +175,40 @@ impl RepoActions {
         direction: PatchDirection,
     ) -> Result<(), OpError> {
         Ok(self.git.index.apply_patch(repo, patch, direction)?)
+    }
+
+    /// Discards part of the worktree changes of `file` (a hunk / line
+    /// patch of its unstaged diff, see [`crate::patch`]) after snapshotting
+    /// the file (undoable).
+    pub fn discard_patch(&self, repo: &RepoPath, file: &str, patch: &str) -> Result<(), OpError> {
+        let paths = [file.to_owned()];
+        let rec = Recording::new(OperationKind::Discard, format!("Discard lines of {file}"))
+            .snapshot_paths(&paths);
+        self.journal
+            .record(repo, rec, || self.git.index.discard_patch(repo, patch))
+    }
+
+    /// The bytes of a worktree file (`path` relative to the repo root).
+    pub fn read_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, OpError> {
+        Ok(self.git.files.read_file(repo, path)?)
+    }
+
+    /// Saves an edit of a worktree file: writes `contents` over `path`,
+    /// unless the file no longer holds `expected` (what the editor was
+    /// opened on), so a change made meanwhile elsewhere is never lost.
+    pub fn save_file(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        expected: &[u8],
+        contents: &[u8],
+    ) -> Result<(), OpError> {
+        if self.git.files.read_file(repo, path)? != expected {
+            return Err(OpError::Refused(format!(
+                "{path} changed on disk since it was opened: reopen it to edit"
+            )));
+        }
+        Ok(self.git.files.write_file(repo, path, contents)?)
     }
 
     /// Discards worktree changes after snapshotting them (undoable).

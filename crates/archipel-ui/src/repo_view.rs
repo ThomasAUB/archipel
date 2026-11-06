@@ -40,8 +40,7 @@ use crate::staging::{self, Staging};
 use crate::theme::{color, lane, mono_font, radius, row_height};
 use crate::widgets::{
     Pane, PaneDrag, TextTooltip, button, condense_status, context_menu, menu_item, menu_separator,
-    primary_button,
-    resize_pane, scroll_list, section, splitter,
+    primary_button, resize_pane, scroll_list, section, splitter,
 };
 
 /// Width of one graph lane.
@@ -139,6 +138,34 @@ enum MenuTarget {
     Stash(Oid),
     /// A submodule (refs panel).
     Submodule(SubmoduleInfo),
+    /// Branch `source` dropped on branch `target` (drag and drop of
+    /// branch badges or refs panel rows).
+    Drop { source: RefTip, target: RefTip },
+}
+
+/// Drag payload of a branch badge or a refs panel branch row.
+struct BranchDrag(RefTip);
+
+/// Whether `tip` can be dragged, and dropped on (local or remote branch).
+fn is_branch(tip: &RefTip) -> bool {
+    matches!(tip.kind, RefKind::LocalBranch | RefKind::RemoteBranch)
+}
+
+/// The badge following the pointer while a branch is dragged.
+struct BranchGhost(SharedString);
+
+impl Render for BranchGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_1()
+            .rounded(radius(cx))
+            .text_xs()
+            .whitespace_nowrap()
+            .bg(color(cx, T::Accent))
+            .text_color(color(cx, T::AccentFg))
+            .shadow_md()
+            .child(self.0.clone())
+    }
 }
 
 /// An action picked in a right-click menu.
@@ -151,6 +178,16 @@ enum MenuAction {
     Reset(Oid, ResetMode),
     Merge(String),
     Rebase(String),
+    /// Checks out local branch `into`, then merges `rev` into it.
+    MergeInto {
+        rev: String,
+        into: String,
+    },
+    /// Checks out local branch `branch`, then rebases it onto `onto`.
+    RebaseBranch {
+        branch: String,
+        onto: String,
+    },
     DeleteBranch(String, DeleteMode),
     /// A remote branch, `remote/branch`, deleted on the remote.
     DeleteRemoteBranch(String),
@@ -333,6 +370,9 @@ fn menu_entries(
             out.push(item("Pop", A::Stash(oid, Some(StashApplyMode::Pop))));
             out.push(danger("Drop", A::Stash(oid, None)));
         }
+        MenuTarget::Drop { source, target } => {
+            out.extend(drop_entries(source, target, current));
+        }
         MenuTarget::Submodule(sub) => {
             let name = sub.name.clone();
             if sub.initialized {
@@ -351,6 +391,56 @@ fn menu_entries(
         }
     }
     out
+}
+
+/// The actions offered when branch `source` is dropped on branch
+/// `target`: merge `source` into `target` (when `target` is local) and
+/// rebase `source` onto `target` (when `source` is local). A branch other
+/// than `current` is checked out first.
+fn drop_entries(source: &RefTip, target: &RefTip, current: Option<&str>) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    let mut out = Vec::new();
+    if source == target {
+        return out;
+    }
+    let (s, t) = (&source.name, &target.name);
+    if target.kind == RefKind::LocalBranch {
+        out.push(if Some(t.as_str()) == current {
+            item(format!("Merge {s} into {t}"), A::Merge(s.clone()))
+        } else {
+            item(
+                format!("Checkout {t} and merge {s} into it"),
+                A::MergeInto {
+                    rev: s.clone(),
+                    into: t.clone(),
+                },
+            )
+        });
+    }
+    if source.kind == RefKind::LocalBranch {
+        out.push(if Some(s.as_str()) == current {
+            item(format!("Rebase {s} onto {t}"), A::Rebase(t.clone()))
+        } else {
+            item(
+                format!("Checkout {s} and rebase it onto {t}"),
+                A::RebaseBranch {
+                    branch: s.clone(),
+                    onto: t.clone(),
+                },
+            )
+        });
+    }
+    out
+}
+
+/// Whether `git branch -d` failed because the branch is not merged. Git's
+/// message may be translated; its hint names `git branch -D` in any locale.
+fn is_not_merged(e: &archipel_ops::OpError) -> bool {
+    matches!(
+        e,
+        archipel_ops::OpError::Git(archipel_model::GitError::CommandFailed { stderr, .. })
+            if stderr.contains("not fully merged") || stderr.contains("branch -D")
+    )
 }
 
 /// An action waiting for confirmation in a dialog.
@@ -1275,6 +1365,38 @@ impl RepoView {
         cx.notify();
     }
 
+    /// Deletes local branch `name` with `git branch -d`. Git refuses a
+    /// branch that is not merged (typical once its PR was squash-merged or
+    /// its remote branch deleted): the force delete is then offered instead
+    /// of leaving only a status line.
+    fn delete_branch_safe(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let label = format!("Delete branch {name}");
+        let actions = self.core.repo_actions().clone();
+        let path = self.path.clone();
+        let branch = name.clone();
+        let task = cx.background_spawn(async move {
+            actions.delete_branch(&path, &branch, DeleteMode::Safe)
+        });
+        self.status = Some(format!("{label}…"));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |v, window, cx| {
+                match result {
+                    Ok(()) => v.status = Some(format!("{label}: done")),
+                    Err(e) if is_not_merged(&e) => {
+                        v.status = None;
+                        v.choose(MenuAction::DeleteBranch(name, DeleteMode::Force), window, cx);
+                    }
+                    Err(e) => v.status = Some(format!("{label} failed: {e}")),
+                }
+                v.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Opens the name form for `form`, or closes it (`None`). A rename
     /// starts from the old name.
     fn open_name_form(
@@ -1404,6 +1526,21 @@ impl RepoView {
                 self.run(format!("Rebase onto {onto}"), cx, move |a, p| {
                     a.rebase(p, &onto)
                 });
+            }
+            MenuAction::MergeInto { rev, into } => {
+                self.run(format!("Merge {rev} into {into}"), cx, move |a, p| {
+                    a.checkout(p, &CheckoutTarget::Branch(into), None)?;
+                    a.merge(p, &rev, MergeMode::Auto)
+                });
+            }
+            MenuAction::RebaseBranch { branch, onto } => {
+                self.run(format!("Rebase {branch} onto {onto}"), cx, move |a, p| {
+                    a.checkout(p, &CheckoutTarget::Branch(branch), None)?;
+                    a.rebase(p, &onto)
+                });
+            }
+            MenuAction::DeleteBranch(name, DeleteMode::Safe) => {
+                self.delete_branch_safe(name, window, cx);
             }
             MenuAction::DeleteBranch(name, mode) => {
                 self.run(format!("Delete branch {name}"), cx, move |a, p| {
@@ -1914,15 +2051,18 @@ impl RepoView {
                         RefKind::LocalBranch | RefKind::RemoteBranch | RefKind::Tag
                     ),
                     |d| {
+                        let menu_tip = tip.clone();
                         d.on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |v, e: &MouseDownEvent, _, cx| {
                                 cx.stop_propagation();
-                                v.open_menu(MenuTarget::Ref(tip.clone()), e.position, cx);
+                                v.open_menu(MenuTarget::Ref(menu_tip.clone()), e.position, cx);
                             }),
                         )
                     },
                 )
+                // Drag onto another branch to merge or rebase.
+                .when(is_branch(r), |d| branch_drag_and_drop(d, &tip, cx))
                 .child(r.name.clone())
         });
         let hover = color(cx, T::BgHover);
@@ -2319,7 +2459,7 @@ impl RepoView {
             ),
             None => return div().into_any_element(),
         };
-        diff_view::render_open(title, &note, side, doc, cx)
+        diff_view::render_open(self, title, &note, side, doc, cx)
     }
 }
 
@@ -2341,6 +2481,39 @@ fn modal(dialog: impl IntoElement, cx: &App) -> AnyElement {
 #[allow(clippy::cast_precision_loss)]
 fn lane_x(col: u32) -> f32 {
     LANE_WIDTH * col as f32 + LANE_WIDTH / 2.0
+}
+
+/// Makes `element`, showing branch `tip`, draggable onto other branches
+/// and a drop target for them: dropping opens the merge / rebase menu.
+fn branch_drag_and_drop<E: StatefulInteractiveElement>(
+    element: E,
+    tip: &RefTip,
+    cx: &Context<RepoView>,
+) -> E {
+    let target = tip.clone();
+    let name = SharedString::from(tip.name.clone());
+    element
+        .on_drag(BranchDrag(tip.clone()), move |_, _, _, cx| {
+            cx.new(|_| BranchGhost(name.clone()))
+        })
+        .drag_over::<BranchDrag>(|s, _, _, cx| {
+            s.bg(color(cx, T::Accent))
+                .text_color(color(cx, T::AccentFg))
+        })
+        .on_drop(cx.listener(move |v, d: &BranchDrag, window, cx| {
+            cx.stop_propagation();
+            if d.0 != target {
+                let position = window.mouse_position();
+                v.open_menu(
+                    MenuTarget::Drop {
+                        source: d.0.clone(),
+                        target: target.clone(),
+                    },
+                    position,
+                    cx,
+                );
+            }
+        }))
 }
 
 /// One row of the refs panel; `collapsed` for a header whose section is
@@ -2382,6 +2555,7 @@ fn render_ref_row(
             let name = tip.name.clone();
             let tip = tip.clone();
             let menu_tip = tip.clone();
+            let drag_tip = tip.clone();
             base.id(SharedString::from(format!("ref-{i}")))
                 .pl_4()
                 .cursor_pointer()
@@ -2404,6 +2578,9 @@ fn render_ref_row(
                         v.open_menu(MenuTarget::Ref(menu_tip.clone()), e.position, cx);
                     }),
                 )
+                .when(is_branch(&drag_tip), |d| {
+                    branch_drag_and_drop(d, &drag_tip, cx)
+                })
                 .child(div().truncate().child(if *current {
                     format!("● {name}")
                 } else {
@@ -2930,6 +3107,28 @@ impl Render for RepoView {
 mod menu_tests {
     use super::*;
 
+    #[test]
+    fn unmerged_branch_refusal_is_recognized() {
+        let failed = |stderr: &str| {
+            archipel_ops::OpError::Git(archipel_model::GitError::CommandFailed {
+                command: "git branch -d feat".into(),
+                exit_code: Some(1),
+                stderr: stderr.into(),
+            })
+        };
+        assert!(is_not_merged(&failed(
+            "error: the branch 'feat' is not fully merged\nhint: If you are sure you want \
+             to delete it, run 'git branch -D feat'"
+        )));
+        assert!(is_not_merged(&failed(
+            "erreur : la branche 'feat' n'est pas totalement fusionnée\nastuce : lancez \
+             'git branch -D feat'"
+        )));
+        assert!(!is_not_merged(&failed(
+            "error: cannot delete branch 'feat' used by worktree at 'C:/w'"
+        )));
+    }
+
     fn tip(name: &str, kind: RefKind) -> RefTip {
         RefTip {
             name: name.into(),
@@ -3040,6 +3239,56 @@ mod menu_tests {
         assert!(actions.contains(&&MenuAction::Merge("feat".into())));
         assert!(actions.contains(&&MenuAction::Name(NameForm::Rename("feat".into()))));
         assert!(actions.contains(&&MenuAction::DeleteBranch("feat".into(), DeleteMode::Force)));
+    }
+
+    #[test]
+    fn dropping_a_branch_offers_merge_and_rebase() {
+        let entries = |s: RefTip, t: RefTip| {
+            let entries = drop_entries(&s, &t, Some("main"));
+            entries
+                .into_iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item { action, .. } => Some(action),
+                    MenuEntry::Separator => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let main = tip("main", RefKind::LocalBranch);
+        let feat = tip("feat", RefKind::LocalBranch);
+        let remote = tip("origin/feat", RefKind::RemoteBranch);
+        // feat dropped on the current branch: merge into it, or checkout
+        // feat and rebase it.
+        assert_eq!(
+            entries(feat.clone(), main.clone()),
+            vec![
+                MenuAction::Merge("feat".into()),
+                MenuAction::RebaseBranch {
+                    branch: "feat".into(),
+                    onto: "main".into()
+                },
+            ]
+        );
+        // The current branch dropped on feat.
+        assert_eq!(
+            entries(main.clone(), feat.clone()),
+            vec![
+                MenuAction::MergeInto {
+                    rev: "main".into(),
+                    into: "feat".into()
+                },
+                MenuAction::Rebase("feat".into()),
+            ]
+        );
+        // A remote branch cannot be rebased nor merged into.
+        assert_eq!(
+            entries(remote.clone(), main.clone()),
+            vec![MenuAction::Merge("origin/feat".into())]
+        );
+        assert_eq!(
+            entries(main.clone(), remote.clone()),
+            vec![MenuAction::Rebase("origin/feat".into())]
+        );
+        assert!(entries(main.clone(), main).is_empty());
     }
 
     #[test]
