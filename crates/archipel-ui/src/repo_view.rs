@@ -19,8 +19,7 @@ use archipel_model::history::CommitMeta;
 use archipel_model::ports::DiffSide;
 use archipel_model::refs::{RefKind, RefTip, StashEntry};
 use archipel_model::requests::{
-    CheckoutTarget, DeleteMode, FetchRequest, MergeMode, PullMode, PushRequest, ResetMode,
-    StashApplyMode, StashRequest, TagRequest,
+    CheckoutTarget, DeleteMode, MergeMode, PushRequest, ResetMode, StashApplyMode, TagRequest,
 };
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::{
@@ -40,8 +39,9 @@ use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Staging};
 use crate::theme::{color, lane, mono_font, radius, row_height};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, chip, condense_status, context_menu, menu_item,
-    menu_separator, primary_button, resize_pane, scroll_list, section, splitter,
+    Pane, PaneDrag, TextTooltip, button, condense_status, context_menu, menu_item, menu_separator,
+    primary_button,
+    resize_pane, scroll_list, section, splitter,
 };
 
 /// Width of one graph lane.
@@ -116,14 +116,6 @@ enum Item {
     Commit(u32),
 }
 
-/// A push of a branch without upstream, waiting for confirmation.
-struct UpstreamPrompt {
-    branch: String,
-    remotes: Vec<String>,
-    /// Index of the chosen remote.
-    remote: usize,
-}
-
 /// What the name form under the toolbar creates or renames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NameForm {
@@ -165,8 +157,6 @@ enum MenuAction {
     DeleteTag(String),
     PushTag(String),
     Stash(Oid, Option<StashApplyMode>),
-    /// Worktree changes of these files, thrown away.
-    Discard(Vec<String>),
     /// A submodule opened as a repo tab.
     OpenSubmodule(RepoPath),
     /// `git submodule update` of one submodule (path relative to the
@@ -194,10 +184,6 @@ impl MenuAction {
             Self::DeleteRemoteBranch(name) => {
                 Some(format!("Delete {name} on the remote? Others lose it too."))
             }
-            Self::Discard(files) => Some(format!(
-                "Discard the unstaged changes of {} file(s)? Undo (Ctrl+Z) brings them back.",
-                files.len()
-            )),
             _ => None,
         }
     }
@@ -430,20 +416,16 @@ pub struct RepoView {
     changes: Vec<FileChange>,
     /// Diff shown in place of the graph.
     open_diff: Option<OpenDiff>,
-    message: Entity<InputState>,
-    amend: bool,
+    /// The staging panel shown for the uncommitted-changes row.
+    staging: staging::Panel,
     /// Name typed in the name form, shown while `name_form` is set.
     name_input: Entity<InputState>,
     name_form: Option<NameForm>,
     _name_sub: Subscription,
-    /// Shown while a push waits for the user to create the upstream.
-    upstream_prompt: Option<UpstreamPrompt>,
     /// Open right-click menu and where it was opened.
     menu: Option<(MenuTarget, Point<Pixels>)>,
     /// Shown while a destructive menu action waits for confirmation.
     confirm: Option<Confirm>,
-    /// The Discard button clicked once (see [`crate::staging`]).
-    armed_discard: Option<String>,
     prompt_focus: FocusHandle,
     status: Option<String>,
     refs: Arc<RefList>,
@@ -465,7 +447,12 @@ impl RepoView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
+        let summary = core
+            .rows()
+            .iter()
+            .find(|r| r.id == path.id())
+            .and_then(|r| r.summary().cloned());
+        let staging = staging::Panel::new(summary, window, cx);
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let name_sub = cx.subscribe_in(
             &name_input,
@@ -494,15 +481,12 @@ impl RepoView {
             details: None,
             changes: Vec::new(),
             open_diff: None,
-            message,
-            amend: false,
+            staging,
             name_input,
             name_form: None,
             _name_sub: name_sub,
-            upstream_prompt: None,
             menu: None,
             confirm: None,
-            armed_discard: None,
             prompt_focus: cx.focus_handle(),
             status: None,
             refs: Arc::default(),
@@ -870,6 +854,7 @@ impl RepoView {
         if state.is_some() {
             self.refs_state = state;
         }
+        staging::on_summary(self, summary, cx);
         self.load_changes(cx);
         // A checkout or an update inside a submodule only shows in the
         // working copy, not in the refs.
@@ -1290,87 +1275,6 @@ impl RepoView {
         cx.notify();
     }
 
-    /// Pushes the current branch. A branch without upstream asks first
-    /// on which remote to create it.
-    fn push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ports = self.core.repo_actions().ports();
-        let (status, remotes) = (ports.status.clone(), ports.remotes.clone());
-        let path = self.path.clone();
-        let task = cx.background_spawn(async move {
-            let summary = status.summary(&path).map_err(|e| e.to_string())?;
-            let branch = match (summary.head.branch(), summary.upstream) {
-                (Some(b), None) => b.to_owned(),
-                _ => return Ok(None),
-            };
-            let remotes = remotes.remotes(&path).map_err(|e| e.to_string())?;
-            Ok::<_, String>(Some((branch, remotes)))
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            let _ = this.update_in(cx, |v, window, cx| match result {
-                Ok(None) => v.run("Push", cx, |a, p| {
-                    a.push(
-                        p,
-                        &PushRequest::default(),
-                        &NoProgress,
-                        &CancelToken::new(),
-                        None,
-                    )
-                }),
-                Ok(Some((branch, remotes))) if remotes.is_empty() => {
-                    v.status = Some(format!(
-                        "Push failed: {branch} has no upstream and the repository has no remote"
-                    ));
-                    cx.notify();
-                }
-                Ok(Some((branch, remotes))) => {
-                    let remote = pick_remote(&remotes, None)
-                        .and_then(|r| remotes.iter().position(|o| o.name == r.name))
-                        .unwrap_or(0);
-                    v.upstream_prompt = Some(UpstreamPrompt {
-                        branch,
-                        remotes: remotes.into_iter().map(|r| r.name).collect(),
-                        remote,
-                    });
-                    v.prompt_focus.focus(window, cx);
-                    cx.notify();
-                }
-                Err(e) => {
-                    v.status = Some(format!("Push failed: {e}"));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    /// Pushes the prompted branch to the chosen remote and sets it as the
-    /// upstream.
-    fn push_set_upstream(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(prompt) = self.upstream_prompt.take() else {
-            return;
-        };
-        self.focus.focus(window, cx);
-        let remote = prompt.remotes[prompt.remote].clone();
-        let request = PushRequest {
-            remote: Some(remote.clone()),
-            refspec: Some(prompt.branch.clone()),
-            set_upstream: true,
-            ..PushRequest::default()
-        };
-        self.run(
-            format!("Push {} to {remote}", prompt.branch),
-            cx,
-            move |a, p| a.push(p, &request, &NoProgress, &CancelToken::new(), None),
-        );
-    }
-
-    fn cancel_upstream_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.upstream_prompt = None;
-        self.focus.focus(window, cx);
-        cx.notify();
-    }
-
     /// Opens the name form for `form`, or closes it (`None`). A rename
     /// starts from the old name.
     fn open_name_form(
@@ -1534,9 +1438,6 @@ impl RepoView {
                 });
             }
             MenuAction::Stash(oid, mode) => self.stash_op(oid, mode, cx),
-            MenuAction::Discard(files) => {
-                self.run("Discard all", cx, move |a, p| a.discard(p, &files));
-            }
             MenuAction::OpenSubmodule(path) => {
                 if let Err(e) = self
                     .core
@@ -1568,11 +1469,11 @@ impl RepoView {
 
     // ----- rendering ----------------------------------------------------
 
+    /// The repo name; the repo actions are in the details pane.
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
-            .justify_between()
             .px_3()
             .py_1()
             .border_b_1()
@@ -1581,75 +1482,6 @@ impl RepoView {
                 div()
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .child(self.name.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .child(button("r-branch", "Branch", cx).on_click(cx.listener(
-                        |v, _, window, cx| {
-                            let form = match v.name_form {
-                                Some(_) => None,
-                                None => Some(NameForm::Branch(None)),
-                            };
-                            v.open_name_form(form, window, cx);
-                        },
-                    )))
-                    .child(
-                        button("r-fetch", "Fetch", cx).on_click(cx.listener(|v, _, _, cx| {
-                            v.run("Fetch", cx, |a, p| {
-                                a.fetch(
-                                    p,
-                                    &FetchRequest::default(),
-                                    &NoProgress,
-                                    &CancelToken::new(),
-                                )
-                            });
-                        })),
-                    )
-                    .child(
-                        button("r-pull", "Pull", cx).on_click(cx.listener(|v, _, _, cx| {
-                            v.run("Pull", cx, |a, p| {
-                                a.pull(
-                                    p,
-                                    PullMode::FastForwardOnly,
-                                    &NoProgress,
-                                    &CancelToken::new(),
-                                    None,
-                                )
-                            });
-                        })),
-                    )
-                    .child(
-                        button("r-push", "Push", cx)
-                            .on_click(cx.listener(|v, _, window, cx| v.push(window, cx))),
-                    )
-                    .child(
-                        button("r-stash", "Stash", cx).on_click(cx.listener(|v, _, _, cx| {
-                            v.run("Stash", cx, |a, p| {
-                                a.stash_push(p, &StashRequest::default()).map(drop)
-                            });
-                        })),
-                    )
-                    .child(
-                        button("r-pop", "Pop", cx).on_click(cx.listener(|v, _, _, cx| {
-                            v.run("Pop stash", cx, |a, p| {
-                                a.stash_apply(p, 0, StashApplyMode::Pop)
-                            });
-                        })),
-                    )
-                    .child(
-                        button("r-undo", "Undo", cx).on_click(cx.listener(|v, _, _, cx| {
-                            let _ = v.core.dispatch(archipel_app::Command::Undo(v.path.id()));
-                            v.reload(cx);
-                        })),
-                    )
-                    .child(
-                        button("r-redo", "Redo", cx).on_click(cx.listener(|v, _, _, cx| {
-                            let _ = v.core.dispatch(archipel_app::Command::Redo(v.path.id()));
-                            v.reload(cx);
-                        })),
-                    ),
             )
     }
 
@@ -1698,71 +1530,6 @@ impl RepoView {
                 )
                 .into_any_element(),
         )
-    }
-
-    /// The dialog offering to create the upstream of a branch on push.
-    fn render_upstream_prompt(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let prompt = self.upstream_prompt.as_ref()?;
-        let remote = &prompt.remotes[prompt.remote];
-        let remotes = prompt.remotes.iter().enumerate().map(|(i, name)| {
-            chip(("up-remote", i), name.clone(), i == prompt.remote, cx).on_click(cx.listener(
-                move |v, _, _, cx| {
-                    if let Some(p) = &mut v.upstream_prompt {
-                        p.remote = i;
-                    }
-                    cx.notify();
-                },
-            ))
-        });
-        let dialog = div()
-            .id("upstream-prompt")
-            .occlude()
-            .track_focus(&self.prompt_focus)
-            .on_key_down(cx.listener(|v, e: &KeyDownEvent, window, cx| {
-                match e.keystroke.key.as_str() {
-                    "escape" => v.cancel_upstream_prompt(window, cx),
-                    "enter" => v.push_set_upstream(window, cx),
-                    _ => return,
-                }
-                cx.stop_propagation();
-            }))
-            .w(px(440.0))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_4()
-            .bg(color(cx, T::BgElevated))
-            .border_1()
-            .border_color(color(cx, T::Border))
-            .rounded(radius(cx))
-            .shadow_lg()
-            .child(
-                div()
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .child("No upstream branch"),
-            )
-            .child(div().text_color(color(cx, T::FgMuted)).child(format!(
-                "{} is not tracking a remote branch. Push it to {remote}/{} and track it?",
-                prompt.branch, prompt.branch
-            )))
-            .when(prompt.remotes.len() > 1, |d| {
-                d.child(div().flex().flex_wrap().gap_1().children(remotes))
-            })
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(button("up-cancel", "Cancel", cx).on_click(
-                        cx.listener(|v, _, window, cx| v.cancel_upstream_prompt(window, cx)),
-                    ))
-                    .child(
-                        primary_button("up-push", "Push and set upstream", cx).on_click(
-                            cx.listener(|v, _, window, cx| v.push_set_upstream(window, cx)),
-                        ),
-                    ),
-            );
-        Some(modal(dialog, cx))
     }
 
     /// The dialog confirming a destructive menu action.
@@ -2333,10 +2100,41 @@ impl RepoView {
             .into_any_element()
     }
 
+    /// The details pane: the staging panel for the uncommitted changes,
+    /// else the repo actions above the selected commit or stash.
     fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.wip_selected {
-            return crate::staging::render(self, cx);
+            return staging::render(self, cx);
         }
+        let branch = staging::small(button("r-branch", "Branch", cx))
+            .on_click(cx.listener(|v, _, window, cx| {
+                let form = match v.name_form {
+                    Some(_) => None,
+                    None => Some(NameForm::Branch(None)),
+                };
+                v.open_name_form(form, window, cx);
+            }))
+            .into_any_element();
+        let actions = staging::render_actions(self, Some(branch), cx);
+        let selection = self.render_selection(cx);
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(color(cx, T::BorderSubtle))
+                    .child(actions),
+            )
+            .child(selection)
+            .into_any_element()
+    }
+
+    /// Details of the selected commit or stash.
+    fn render_selection(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some((oid, doc)) = &self.details else {
             return div()
                 .p_3()
@@ -3000,16 +2798,20 @@ fn render_changed_file(
 }
 
 impl Staging for RepoView {
+    fn core(&self) -> &Arc<Core> {
+        &self.core
+    }
+
+    fn repo_path(&self) -> &RepoPath {
+        &self.path
+    }
+
     fn changes(&self) -> &[FileChange] {
         &self.changes
     }
 
-    fn message(&self) -> &Entity<InputState> {
-        &self.message
-    }
-
-    fn commit_state(&mut self) -> (&mut bool, &mut Option<String>) {
-        (&mut self.amend, &mut self.armed_discard)
+    fn panel(&mut self) -> &mut staging::Panel {
+        &mut self.staging
     }
 
     fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: staging::Job) {
@@ -3041,11 +2843,6 @@ impl Staging for RepoView {
             self.focus.focus(window, cx);
             self.open_worktree_file(file, side, cx);
         }
-    }
-
-    /// Asks first, in the confirmation dialog.
-    fn discard_all(&mut self, files: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.choose(MenuAction::Discard(files), window, cx);
     }
 }
 
@@ -3095,7 +2892,6 @@ impl Render for RepoView {
                     .flex_col()
                     .child(details),
             );
-        let prompt = self.render_upstream_prompt(cx);
         let confirm = self.render_confirm(cx);
         let menu = self.render_menu(cx);
         let name_form = self.render_name_form(cx);
@@ -3125,7 +2921,6 @@ impl Render for RepoView {
                     }))
                     .child(condense_status(s))
             }))
-            .children(prompt)
             .children(confirm)
             .children(menu)
     }
@@ -3296,10 +3091,5 @@ mod menu_tests {
                 .is_some()
         );
         assert!(MenuAction::DeleteTag("v1".into()).confirmation().is_none());
-        assert!(
-            MenuAction::Discard(vec!["a".into()])
-                .confirmation()
-                .is_some()
-        );
     }
 }

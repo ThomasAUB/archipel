@@ -1159,35 +1159,6 @@ impl Workspace {
                 this.dispatch(Command::ToggleFilter(id.clone()), cx);
             }))
         });
-        let batch =
-            div()
-                .flex()
-                .gap_2()
-                .child(
-                    button("b-fetch", "Fetch", cx).on_click(cx.listener(|this, _, _, cx| {
-                        let t = this.selected_or_all();
-                        this.dispatch(Command::Fetch(t), cx);
-                    })),
-                )
-                .child(
-                    button("b-pull", "Pull", cx).on_click(cx.listener(|this, _, _, cx| {
-                        let t = this.selected_or_all();
-                        this.dispatch(Command::Pull(t), cx);
-                    })),
-                )
-                .child(button("b-checkout", "Checkout…", cx).on_click(
-                    cx.listener(|this, _, w, cx| this.open_palette(PaletteKind::Checkout, w, cx)),
-                ))
-                .child(button("b-branch", "Branch…", cx).on_click(
-                    cx.listener(|this, _, w, cx| this.open_palette(PaletteKind::Branch, w, cx)),
-                ))
-                .child(button("b-tag", "Tag…", cx).on_click(
-                    cx.listener(|this, _, w, cx| this.open_palette(PaletteKind::Tag, w, cx)),
-                ))
-                .child(
-                    primary_button("b-commit", "Commit…", cx)
-                        .on_click(cx.listener(|this, _, w, cx| this.open_commit(w, cx))),
-                );
         div()
             .flex()
             .flex_wrap()
@@ -1207,9 +1178,6 @@ impl Workspace {
                     .child(view_chips)
                     .children(scan),
             )
-            // The quick edit pane has its own actions; showing these too
-            // would wrap them under the filters in the narrowed list.
-            .when(self.quick_edit.is_none(), |d| d.child(batch))
             .into_any_element()
     }
 
@@ -1302,6 +1270,7 @@ impl Workspace {
         let diff = pane
             .as_ref()
             .and_then(|p| p.update(cx, QuickEdit::render_diff));
+        let diff_shown = diff.is_some();
         let main = match diff {
             Some(diff) => diff,
             None => div()
@@ -1322,9 +1291,24 @@ impl Workspace {
                 .into_any_element(),
         };
         let width = ui.quick_edit_width;
+        // The pane lies over the rows' right edge instead of narrowing them,
+        // so toggling it leaves the list in place. A diff (only shown with
+        // the pane open) is kept clear of it, splitter included.
+        let main = if diff_shown {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .pr(px(width + 5.0))
+                .child(main)
+                .into_any_element()
+        } else {
+            main
+        };
         div()
             .flex_1()
             .flex()
+            .relative()
             .overflow_hidden()
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PaneDrag>, _, cx| {
                 // Every row listening for `PaneDrag` sees every splitter's
@@ -1340,13 +1324,17 @@ impl Workspace {
             }))
             .child(main)
             .when_some(pane, |d, pane| {
-                d.child(splitter(Pane::QuickEdit, cx)).child(
+                d.child(
                     div()
-                        .w(px(width))
-                        .flex_none()
+                        .id("quick-edit-overlay")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
                         .flex()
-                        .flex_col()
-                        .child(pane),
+                        .occlude()
+                        .child(splitter(Pane::QuickEdit, cx).bg(color(cx, T::BgPanel)))
+                        .child(div().w(px(width)).h_full().flex().flex_col().child(pane)),
                 )
             })
             .into_any_element()

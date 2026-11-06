@@ -5,32 +5,20 @@
 
 use std::sync::Arc;
 
+use archipel_app::App as Core;
 use archipel_app::dashboard::DashboardRow;
-use archipel_app::{App as Core, Command};
 use archipel_model::changes::FileChange;
 use archipel_model::ports::DiffSide;
-use archipel_model::requests::{
-    CheckoutTarget, FetchRequest, PullMode, SequenceAction, StashApplyMode, StashRequest,
-};
-use archipel_model::{CancelToken, HeadState, NoProgress, RepoId, RepoOp, RepoPath, RepoSummary};
-use archipel_ops::{OpError, RepoActions};
+use archipel_model::{HeadState, RepoId, RepoPath, RepoSummary};
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    AnyElement, Context, Div, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString,
-    Stateful, Subscription, Window, div, px,
-};
+use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Window, div};
 
 use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Job, Staging};
-use crate::theme::{color, row_height};
-use crate::widgets::{button, icon_button, section};
-
-/// Height of the branch switcher list before it scrolls.
-const BRANCH_LIST_HEIGHT: f32 = 160.0;
+use crate::theme::color;
+use crate::widgets::{button, icon_button};
 
 /// What the pane reports to the workspace.
 pub enum QuickEditEvent {
@@ -46,22 +34,14 @@ pub struct QuickEdit {
     id: RepoId,
     path: RepoPath,
     name: String,
-    summary: Option<RepoSummary>,
     changes: Vec<FileChange>,
-    /// Local branches other than the current one, while the switcher is
-    /// open (`None`: closed).
-    branches: Option<Vec<String>>,
-    branch_input: Entity<InputState>,
-    message: Entity<InputState>,
-    amend: bool,
-    /// The Discard button clicked once (see [`crate::staging`]).
-    armed_discard: Option<String>,
+    /// Actions, branch, files and commit box, as in the repo tab.
+    staging: staging::Panel,
     status: Option<String>,
     /// The working-copy file whose diff is open, in place of the
     /// dashboard rows; its diff is `None` while it loads.
     open_diff: Option<(String, DiffSide, Option<Arc<DiffDoc>>)>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 2],
 }
 
 impl EventEmitter<QuickEditEvent> for QuickEdit {}
@@ -74,40 +54,17 @@ impl QuickEdit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let branch_input = cx.new(|cx| InputState::new(window, cx).placeholder("New branch name"));
-        let message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
-        let subscriptions = [
-            cx.subscribe_in(
-                &branch_input,
-                window,
-                |v, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        v.create_branch(window, cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(&message, window, |v, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    staging::commit(v, false, window, cx);
-                }
-            }),
-        ];
+        let staging = staging::Panel::new(row.summary().cloned(), window, cx);
         let mut pane = Self {
             core,
             id: row.id,
             path: row.path.clone(),
             name: row.name.clone(),
-            summary: row.summary().cloned(),
             changes: Vec::new(),
-            branches: None,
-            branch_input,
-            message,
-            amend: false,
-            armed_discard: None,
+            staging,
             status: None,
             open_diff: None,
             focus: cx.focus_handle(),
-            _subscriptions: subscriptions,
         };
         pane.load_changes(cx);
         pane
@@ -120,13 +77,8 @@ impl QuickEdit {
 
     /// The repo was refreshed (file watcher, focus, F5).
     pub fn on_summary(&mut self, summary: Option<&RepoSummary>, cx: &mut Context<Self>) {
-        if let Some(s) = summary {
-            self.summary = Some(s.clone());
-        }
+        staging::on_summary(self, summary, cx);
         self.load_changes(cx);
-        if self.branches.is_some() {
-            self.load_branches(cx);
-        }
     }
 
     fn load_changes(&mut self, cx: &mut Context<Self>) {
@@ -238,50 +190,7 @@ impl QuickEdit {
         true
     }
 
-    /// Reads the local branches into the switcher (opening it).
-    fn load_branches(&mut self, cx: &mut Context<Self>) {
-        let refs = self.core.repo_actions().ports().refs.clone();
-        let path = self.path.clone();
-        let task = cx.background_spawn(async move {
-            let branches = refs.branches(&path).map_err(|e| e.to_string())?;
-            Ok::<_, String>(
-                branches
-                    .into_iter()
-                    .filter(|b| !b.is_remote && !b.is_head)
-                    .map(|b| b.name)
-                    .collect::<Vec<_>>(),
-            )
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                match result {
-                    Ok(b) => v.branches = Some(b),
-                    Err(e) => v.status = Some(e),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn toggle_switcher(&mut self, cx: &mut Context<Self>) {
-        if self.branches.take().is_none() {
-            self.load_branches(cx);
-        }
-        cx.notify();
-    }
-
     /// Runs a write on a background thread, then refreshes the repo.
-    fn run(
-        &mut self,
-        label: impl Into<String>,
-        cx: &mut Context<Self>,
-        job: impl FnOnce(&RepoActions, &RepoPath) -> Result<(), OpError> + Send + 'static,
-    ) {
-        self.run_boxed(label.into(), cx, Box::new(job));
-    }
-
     fn run_boxed(&mut self, label: String, cx: &mut Context<Self>, job: Job) {
         let actions = self.core.repo_actions().clone();
         let path = self.path.clone();
@@ -302,43 +211,11 @@ impl QuickEdit {
         cx.notify();
     }
 
-    /// Undo or redo through the app (it owns the journal), reporting a
-    /// refusal in the pane.
-    fn history(&mut self, command: Command, cx: &mut Context<Self>) {
-        if let Err(e) = self.core.dispatch(command) {
-            self.status = Some(e.to_string());
-            cx.notify();
-        }
-    }
-
-    /// Creates the branch of the name field on `HEAD` and checks it out.
-    fn create_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.branch_input.read(cx).value().trim().to_owned();
-        if name.is_empty() {
-            self.status = Some("Write a branch name first".into());
-            cx.notify();
-            return;
-        }
-        self.branch_input
-            .update(cx, |b, cx| b.set_value("", window, cx));
-        self.run(format!("Create branch {name}"), cx, move |a, p| {
-            a.create_branch(p, &name, None, None)?;
-            a.checkout(p, &CheckoutTarget::Branch(name), None)
-        });
-    }
-
-    fn switch_to(&mut self, branch: String, cx: &mut Context<Self>) {
-        self.branches = None;
-        self.run(format!("Checkout {branch}"), cx, move |a, p| {
-            a.checkout(p, &CheckoutTarget::Branch(branch), None)
-        });
-    }
-
     // ----- rendering ----------------------------------------------------
 
     fn render_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let id = self.id;
-        let (head, sync) = self.summary.as_ref().map_or_else(Default::default, |s| {
+        let (head, sync) = self.staging.summary().map_or_else(Default::default, |s| {
             let head = match &s.head {
                 HeadState::Branch(b) | HeadState::Unborn(b) => b.clone(),
                 HeadState::Detached(oid) => format!("detached at {}", oid.short(8)),
@@ -396,166 +273,6 @@ impl QuickEdit {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(QuickEditEvent::Closed))),
             )
     }
-
-    /// Fetch, pull, push, stash, pop, undo, redo.
-    fn render_actions(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let id = self.id;
-        let stashes = self.summary.as_ref().map_or(0, |s| s.stash_count);
-        let job = |eid: &'static str,
-                   label: &'static str,
-                   cx: &mut Context<Self>,
-                   job: fn(&RepoActions, &RepoPath) -> Result<(), OpError>| {
-            small(button(eid, label, cx))
-                .on_click(cx.listener(move |v, _, _, cx| v.run(label, cx, job)))
-        };
-        div()
-            .flex()
-            .flex_wrap()
-            .gap_1()
-            .child(job("qe-fetch", "Fetch", cx, |a, p| {
-                a.fetch(
-                    p,
-                    &FetchRequest::default(),
-                    &NoProgress,
-                    &CancelToken::new(),
-                )
-            }))
-            .child(job("qe-pull", "Pull", cx, |a, p| {
-                a.pull(
-                    p,
-                    PullMode::FastForwardOnly,
-                    &NoProgress,
-                    &CancelToken::new(),
-                    None,
-                )
-            }))
-            .child(job("qe-push", "Push", cx, staging::push_current))
-            .child(job("qe-stash", "Stash", cx, |a, p| {
-                a.stash_push(p, &StashRequest::default()).map(drop)
-            }))
-            .when(stashes > 0, |d| {
-                d.child(job("qe-pop", "Pop", cx, |a, p| {
-                    a.stash_apply(p, 0, StashApplyMode::Pop)
-                }))
-            })
-            .child(
-                small(button("qe-undo", "Undo", cx))
-                    .on_click(cx.listener(move |v, _, _, cx| v.history(Command::Undo(id), cx))),
-            )
-            .child(
-                small(button("qe-redo", "Redo", cx))
-                    .on_click(cx.listener(move |v, _, _, cx| v.history(Command::Redo(id), cx))),
-            )
-    }
-
-    /// The merge / rebase / … in progress, with Continue and Abort.
-    fn render_in_progress(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let op = self.summary.as_ref()?.in_progress?;
-        let what = match op {
-            RepoOp::Merge => "Merge",
-            RepoOp::Rebase => "Rebase",
-            RepoOp::CherryPick => "Cherry-pick",
-            RepoOp::Revert => "Revert",
-            // Not continued from here: the full tab or a terminal.
-            RepoOp::Bisect | RepoOp::ApplyMailbox => return None,
-        };
-        let sequence = |eid: &'static str, label: &'static str, action, cx: &mut Context<Self>| {
-            small(button(eid, label, cx)).on_click(cx.listener(move |v, _, _, cx| {
-                v.run(
-                    format!("{label} {}", what.to_lowercase()),
-                    cx,
-                    move |a, p| a.sequence(p, action),
-                );
-            }))
-        };
-        Some(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(color(cx, T::StatusConflict))
-                .text_color(color(cx, T::StatusConflict))
-                .child(format!("{what} in progress"))
-                .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child(sequence(
-                            "qe-continue",
-                            "Continue",
-                            SequenceAction::Continue,
-                            cx,
-                        ))
-                        .child(sequence("qe-abort", "Abort", SequenceAction::Abort, cx)),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_branch(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let hover = color(cx, T::BgHover);
-        let open = self.branches.is_some();
-        let list = self.branches.clone().map(|branches| {
-            let rows: Vec<AnyElement> = if branches.is_empty() {
-                vec![
-                    div()
-                        .px_2()
-                        .text_xs()
-                        .text_color(color(cx, T::FgSubtle))
-                        .child("No other local branch")
-                        .into_any_element(),
-                ]
-            } else {
-                branches
-                    .into_iter()
-                    .map(|b| {
-                        let name = b.clone();
-                        div()
-                            .id(SharedString::from(format!("qe-br-{b}")))
-                            .px_2()
-                            .h(row_height(cx))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .on_click(cx.listener(move |v, _, _, cx| v.switch_to(name.clone(), cx)))
-                            .child(div().truncate().child(b))
-                            .into_any_element()
-                    })
-                    .collect()
-            };
-            div()
-                .id("qe-branches")
-                .max_h(px(BRANCH_LIST_HEIGHT))
-                .overflow_y_scrollbar()
-                .border_1()
-                .border_color(color(cx, T::BorderSubtle))
-                .children(rows)
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().flex_1().child(Input::new(&self.branch_input)))
-                    .child(
-                        button("qe-branch", "Create", cx)
-                            .on_click(cx.listener(|v, _, w, cx| v.create_branch(w, cx))),
-                    )
-                    .child(
-                        button("qe-switch", if open { "Switch ▴" } else { "Switch ▾" }, cx)
-                            .on_click(cx.listener(|v, _, _, cx| v.toggle_switcher(cx))),
-                    ),
-            )
-            .children(list)
-    }
 }
 
 impl Render for QuickEdit {
@@ -565,8 +282,6 @@ impl Render for QuickEdit {
             .size_full()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_2()
             .bg(color(cx, T::BgPanel))
             .track_focus(&self.focus)
             // Only Esc from here: ↑ / ↓ belong to the inputs.
@@ -575,14 +290,13 @@ impl Render for QuickEdit {
                     cx.stop_propagation();
                 }
             }))
-            .child(self.render_header(cx))
-            .child(self.render_actions(cx))
-            .children(self.render_in_progress(cx))
-            .child(section("BRANCH", cx))
-            .child(self.render_branch(cx))
+            .child(div().px_2().pt_2().child(self.render_header(cx)))
+            // The same panel as the repo tab's uncommitted changes.
             .child(staging::render(self, cx))
             .children(self.status.clone().map(|s| {
                 div()
+                    .px_2()
+                    .pb_1()
                     .text_xs()
                     .truncate()
                     .text_color(color(cx, T::FgMuted))
@@ -591,22 +305,21 @@ impl Render for QuickEdit {
     }
 }
 
-/// A compact button for the pane's action rows.
-fn small(b: Stateful<Div>) -> Stateful<Div> {
-    b.py_0().text_xs()
-}
-
 impl Staging for QuickEdit {
+    fn core(&self) -> &Arc<Core> {
+        &self.core
+    }
+
+    fn repo_path(&self) -> &RepoPath {
+        &self.path
+    }
+
     fn changes(&self) -> &[FileChange] {
         &self.changes
     }
 
-    fn message(&self) -> &Entity<InputState> {
-        &self.message
-    }
-
-    fn commit_state(&mut self) -> (&mut bool, &mut Option<String>) {
-        (&mut self.amend, &mut self.armed_discard)
+    fn panel(&mut self) -> &mut staging::Panel {
+        &mut self.staging
     }
 
     fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: Job) {

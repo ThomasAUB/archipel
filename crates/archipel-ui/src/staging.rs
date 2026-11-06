@@ -1,24 +1,36 @@
 //! The staging panel shared by the repo tab and the dashboard's quick edit
-//! pane: unstaged files, staged files (the "ready to commit" half, in the
-//! accent color), then the commit box.
+//! pane: the repo actions (fetch, pull, push, stash, undo, …), the branch
+//! section, unstaged files, staged files (the "ready to commit" half, in
+//! the accent color), then the commit box. Its state ([`Panel`]) and
+//! behavior live here, so both places show and do exactly the same.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use archipel_app::forge::pick_remote;
+use archipel_app::{App as Core, Command};
 use archipel_model::changes::{FileChange, FileState};
 use archipel_model::ports::DiffSide;
-use archipel_model::requests::{CommitMode, CommitRequest, PushRequest};
-use archipel_model::{CancelToken, NoProgress, RepoPath};
+use archipel_model::requests::{
+    CheckoutTarget, CommitMode, CommitRequest, FetchRequest, PullMode, PushRequest, SequenceAction,
+    StashApplyMode, StashRequest,
+};
+use archipel_model::{CancelToken, NoProgress, RepoOp, RepoPath, RepoSummary};
 use archipel_ops::{OpError, RepoActions};
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, SharedString, Window, div, px};
+use gpui_kit::{
+    AnyElement, Context, Div, Entity, SharedString, Stateful, Subscription, Window, div, px,
+};
 
 use crate::theme::{color, row_height};
 use crate::widgets::{button, icon_button, primary_button, section};
+
+/// Height of the branch switcher list before it scrolls.
+const BRANCH_LIST_HEIGHT: f32 = 160.0;
 
 /// How long a Discard button waits for the confirming second click.
 const DISCARD_ARM_TIME: Duration = Duration::from_secs(3);
@@ -29,15 +41,89 @@ const ALL_FILES: &str = "\0all";
 /// A write on the repo, run on a background thread.
 pub type Job = Box<dyn FnOnce(&RepoActions, &RepoPath) -> Result<(), OpError> + Send>;
 
+/// The panel's own state, held by each view showing it.
+pub struct Panel {
+    /// The commit message; Enter commits.
+    message: Entity<InputState>,
+    /// Whether the next commit amends.
+    amend: bool,
+    /// The Discard button clicked once ([`ALL_FILES`] for "Discard all").
+    armed: Option<String>,
+    /// The last summary of the repo (head, upstream, stashes, …).
+    summary: Option<RepoSummary>,
+    /// The new branch name; Enter creates it.
+    branch_input: Entity<InputState>,
+    /// Local branches other than the current one, while the switcher is
+    /// open (`None`: closed).
+    branches: Option<Vec<String>>,
+    _subscriptions: [Subscription; 2],
+}
+
+impl Panel {
+    pub fn new<V: Staging>(
+        summary: Option<RepoSummary>,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) -> Self {
+        let message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
+        let branch_input = cx.new(|cx| InputState::new(window, cx).placeholder("New branch name"));
+        let subscriptions = [
+            cx.subscribe_in(
+                &message,
+                window,
+                |v: &mut V, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        commit(v, false, window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &branch_input,
+                window,
+                |v: &mut V, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        create_branch(v, window, cx);
+                    }
+                },
+            ),
+        ];
+        Self {
+            message,
+            amend: false,
+            armed: None,
+            summary,
+            branch_input,
+            branches: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// The last summary of the repo.
+    pub fn summary(&self) -> Option<&RepoSummary> {
+        self.summary.as_ref()
+    }
+}
+
+/// The repo was refreshed: keeps its summary, reloads the open switcher.
+pub fn on_summary<V: Staging>(v: &mut V, summary: Option<&RepoSummary>, cx: &mut Context<V>) {
+    if let Some(s) = summary {
+        v.panel().summary = Some(s.clone());
+    }
+    if v.panel().branches.is_some() {
+        load_branches(v, cx);
+    }
+}
+
 /// A view showing the staging panel.
 pub trait Staging: Sized + 'static {
+    /// The app (undo / redo journal, ports).
+    fn core(&self) -> &Arc<Core>;
+    /// The repo shown.
+    fn repo_path(&self) -> &RepoPath;
     /// The working copy changes.
     fn changes(&self) -> &[FileChange];
-    /// The commit message input.
-    fn message(&self) -> &Entity<InputState>;
-    /// Whether the next commit amends, and the file whose Discard button
-    /// was clicked once.
-    fn commit_state(&mut self) -> (&mut bool, &mut Option<String>);
+    /// The panel's state.
+    fn panel(&mut self) -> &mut Panel;
     /// Runs a write on the repo, then reloads.
     fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: Job);
     /// Reports a refusal (nothing written).
@@ -52,13 +138,6 @@ pub trait Staging: Sized + 'static {
         window: &mut Window,
         cx: &mut Context<Self>,
     );
-    /// The "Discard all" button: by default, a second click within
-    /// [`DISCARD_ARM_TIME`] discards.
-    fn discard_all(&mut self, files: Vec<String>, _window: &mut Window, cx: &mut Context<Self>) {
-        arm_discard(self, ALL_FILES.to_owned(), cx, move |a, p| {
-            a.discard(p, &files)
-        });
-    }
 }
 
 /// A file's Discard button: the first click arms it, a second one before
@@ -74,7 +153,7 @@ fn arm_discard<V: Staging>(
     cx: &mut Context<V>,
     job: impl FnOnce(&RepoActions, &RepoPath) -> Result<(), OpError> + Send + 'static,
 ) {
-    let armed = v.commit_state().1;
+    let armed = &mut v.panel().armed;
     if armed.as_ref() == Some(&key) {
         *armed = None;
         v.run_job("Discard".into(), cx, Box::new(job));
@@ -84,7 +163,7 @@ fn arm_discard<V: Staging>(
     cx.spawn(async move |this, cx| {
         cx.background_executor().timer(DISCARD_ARM_TIME).await;
         let _ = this.update(cx, |v, cx| {
-            let armed = v.commit_state().1;
+            let armed = &mut v.panel().armed;
             if armed.as_ref() == Some(&key) {
                 *armed = None;
                 cx.notify();
@@ -97,13 +176,13 @@ fn arm_discard<V: Staging>(
 
 /// Commits the staged files (or amends), then pushes when `push`.
 pub fn commit<V: Staging>(v: &mut V, push: bool, window: &mut Window, cx: &mut Context<V>) {
-    let message = v.message().read(cx).value().to_string();
+    let message = v.panel().message.read(cx).value().to_string();
     if message.trim().is_empty() {
         v.report("Write a commit message first".into(), cx);
         return;
     }
     let staged = v.changes().iter().any(FileChange::is_staged);
-    let amend = std::mem::take(v.commit_state().0);
+    let amend = std::mem::take(&mut v.panel().amend);
     if !amend && !staged {
         v.report("Stage files first".into(), cx);
         return;
@@ -113,7 +192,8 @@ pub fn commit<V: Staging>(v: &mut V, push: bool, window: &mut Window, cx: &mut C
     } else {
         CommitMode::New
     };
-    v.message()
+    v.panel()
+        .message
         .clone()
         .update(cx, |m, cx| m.set_value("", window, cx));
     let label = if push { "Commit and push" } else { "Commit" };
@@ -148,8 +228,282 @@ pub fn push_current(a: &RepoActions, p: &RepoPath) -> Result<(), OpError> {
     a.push(p, &request, &NoProgress, &CancelToken::new(), None)
 }
 
-/// The panel: unstaged files, staged files, commit box.
+/// Reads the local branches into the switcher (opening it).
+fn load_branches<V: Staging>(v: &mut V, cx: &mut Context<V>) {
+    let refs = v.core().repo_actions().ports().refs.clone();
+    let path = v.repo_path().clone();
+    let task = cx.background_spawn(async move {
+        let branches = refs.branches(&path).map_err(|e| e.to_string())?;
+        Ok::<_, String>(
+            branches
+                .into_iter()
+                .filter(|b| !b.is_remote && !b.is_head)
+                .map(|b| b.name)
+                .collect::<Vec<_>>(),
+        )
+    });
+    cx.spawn(async move |this, cx| {
+        let result = task.await;
+        let _ = this.update(cx, |v, cx| match result {
+            Ok(b) => {
+                v.panel().branches = Some(b);
+                cx.notify();
+            }
+            Err(e) => v.report(e, cx),
+        });
+    })
+    .detach();
+}
+
+fn toggle_switcher<V: Staging>(v: &mut V, cx: &mut Context<V>) {
+    if v.panel().branches.take().is_none() {
+        load_branches(v, cx);
+    }
+    cx.notify();
+}
+
+/// Creates the branch of the name field on `HEAD` and checks it out.
+fn create_branch<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
+    let input = v.panel().branch_input.clone();
+    let name = input.read(cx).value().trim().to_owned();
+    if name.is_empty() {
+        v.report("Write a branch name first".into(), cx);
+        return;
+    }
+    input.update(cx, |b, cx| b.set_value("", window, cx));
+    v.run_job(
+        format!("Create branch {name}"),
+        cx,
+        Box::new(move |a, p| {
+            a.create_branch(p, &name, None, None)?;
+            a.checkout(p, &CheckoutTarget::Branch(name), None)
+        }),
+    );
+}
+
+fn switch_to<V: Staging>(v: &mut V, branch: String, cx: &mut Context<V>) {
+    v.panel().branches = None;
+    v.run_job(
+        format!("Checkout {branch}"),
+        cx,
+        Box::new(move |a, p| a.checkout(p, &CheckoutTarget::Branch(branch), None)),
+    );
+}
+
+/// Undo or redo through the app (it owns the journal), reporting a
+/// refusal.
+fn history<V: Staging>(v: &mut V, command: Command, cx: &mut Context<V>) {
+    let id = v.repo_path().id();
+    match v.core().dispatch(command) {
+        Ok(()) => v.core().refresh_repo(id),
+        Err(e) => v.report(e.to_string(), cx),
+    }
+}
+
+/// A compact button for the action rows.
+pub fn small(b: Stateful<Div>) -> Stateful<Div> {
+    b.py_0().text_xs()
+}
+
+/// Fetch, pull, push, stash, pop, undo, redo, after `lead` (a button of
+/// the view's own).
+pub fn render_actions<V: Staging>(
+    v: &mut V,
+    lead: Option<AnyElement>,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let id = v.repo_path().id();
+    let stashes = v.panel().summary.as_ref().map_or(0, |s| s.stash_count);
+    let job = |eid: &'static str,
+               label: &'static str,
+               cx: &mut Context<V>,
+               job: fn(&RepoActions, &RepoPath) -> Result<(), OpError>| {
+        small(button(eid, label, cx)).on_click(
+            cx.listener(move |v: &mut V, _, _, cx| v.run_job(label.into(), cx, Box::new(job))),
+        )
+    };
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .children(lead)
+        .child(job("st-fetch", "Fetch", cx, |a, p| {
+            a.fetch(
+                p,
+                &FetchRequest::default(),
+                &NoProgress,
+                &CancelToken::new(),
+            )
+        }))
+        .child(job("st-pull", "Pull", cx, |a, p| {
+            a.pull(
+                p,
+                PullMode::FastForwardOnly,
+                &NoProgress,
+                &CancelToken::new(),
+                None,
+            )
+        }))
+        .child(job("st-push", "Push", cx, push_current))
+        .child(job("st-stash", "Stash", cx, |a, p| {
+            a.stash_push(p, &StashRequest::default()).map(drop)
+        }))
+        .when(stashes > 0, |d| {
+            d.child(job("st-pop", "Pop", cx, |a, p| {
+                a.stash_apply(p, 0, StashApplyMode::Pop)
+            }))
+        })
+        .child(
+            small(button("st-undo", "Undo", cx)).on_click(
+                cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Undo(id), cx)),
+            ),
+        )
+        .child(
+            small(button("st-redo", "Redo", cx)).on_click(
+                cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Redo(id), cx)),
+            ),
+        )
+        .into_any_element()
+}
+
+/// The merge / rebase / … in progress, with Continue and Abort.
+fn render_in_progress<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
+    let op = v.panel().summary.as_ref()?.in_progress?;
+    let what = match op {
+        RepoOp::Merge => "Merge",
+        RepoOp::Rebase => "Rebase",
+        RepoOp::CherryPick => "Cherry-pick",
+        RepoOp::Revert => "Revert",
+        // Not continued from here: a terminal.
+        RepoOp::Bisect | RepoOp::ApplyMailbox => return None,
+    };
+    let sequence = |eid: &'static str, label: &'static str, action, cx: &mut Context<V>| {
+        small(button(eid, label, cx)).on_click(cx.listener(move |v: &mut V, _, _, cx| {
+            v.run_job(
+                format!("{label} {}", what.to_lowercase()),
+                cx,
+                Box::new(move |a, p| a.sequence(p, action)),
+            );
+        }))
+    };
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_1()
+            .border_color(color(cx, T::StatusConflict))
+            .text_color(color(cx, T::StatusConflict))
+            .child(format!("{what} in progress"))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(sequence(
+                        "st-continue",
+                        "Continue",
+                        SequenceAction::Continue,
+                        cx,
+                    ))
+                    .child(sequence("st-abort", "Abort", SequenceAction::Abort, cx)),
+            )
+            .into_any_element(),
+    )
+}
+
+/// The new branch field with Create, and the branch switcher.
+fn render_branch<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
+    let hover = color(cx, T::BgHover);
+    let open = v.panel().branches.is_some();
+    let list = v.panel().branches.clone().map(|branches| {
+        let rows: Vec<AnyElement> = if branches.is_empty() {
+            vec![
+                div()
+                    .px_2()
+                    .text_xs()
+                    .text_color(color(cx, T::FgSubtle))
+                    .child("No other local branch")
+                    .into_any_element(),
+            ]
+        } else {
+            branches
+                .into_iter()
+                .map(|b| {
+                    let name = b.clone();
+                    div()
+                        .id(SharedString::from(format!("st-br-{b}")))
+                        .px_2()
+                        .h(row_height(cx))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |v: &mut V, _, _, cx| {
+                            switch_to(v, name.clone(), cx);
+                        }))
+                        .child(div().truncate().child(b))
+                        .into_any_element()
+                })
+                .collect()
+        };
+        div()
+            .id("st-branches")
+            .max_h(px(BRANCH_LIST_HEIGHT))
+            .overflow_y_scrollbar()
+            .border_1()
+            .border_color(color(cx, T::BorderSubtle))
+            .children(rows)
+    });
+    let input = v.panel().branch_input.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().child(Input::new(&input)))
+                .child(
+                    button("st-branch", "Create", cx)
+                        .on_click(cx.listener(|v: &mut V, _, w, cx| create_branch(v, w, cx))),
+                )
+                .child(
+                    button("st-switch", if open { "Switch ▴" } else { "Switch ▾" }, cx)
+                        .on_click(cx.listener(|v: &mut V, _, _, cx| toggle_switcher(v, cx))),
+                ),
+        )
+        .children(list)
+        .into_any_element()
+}
+
+/// The panel: actions, branch, unstaged files, staged files, commit box.
 pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
+    let top = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_2()
+        .child(render_actions(v, None, cx))
+        .children(render_in_progress(v, cx))
+        .child(section("BRANCH", cx))
+        .child(render_branch(v, cx));
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(top)
+        .child(render_files(v, cx))
+        .into_any_element()
+}
+
+/// Unstaged files, staged files, commit box.
+fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     for c in v.changes() {
@@ -161,8 +515,7 @@ pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
         }
     }
     let open = v.open_file().map(|(f, s)| (f.to_owned(), s));
-    let (amend, armed) = v.commit_state();
-    let (amend, armed) = (*amend, armed.clone());
+    let (amend, armed) = (v.panel().amend, v.panel().armed.clone());
     let staged_rows: Vec<_> = staged
         .iter()
         .map(|c| file_row(c, DiffSide::Staged, open.as_ref(), armed.as_deref(), cx))
@@ -194,11 +547,12 @@ pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
                     .flex()
                     .gap_1()
                     .pt_2()
-                    .child(
-                        discard.on_click(cx.listener(move |v: &mut V, _, window, cx| {
-                            v.discard_all(discard_paths.clone(), window, cx);
-                        })),
-                    )
+                    .child(discard.on_click(cx.listener(move |v: &mut V, _, _, cx| {
+                        let files = discard_paths.clone();
+                        arm_discard(v, ALL_FILES.to_owned(), cx, move |a, p| {
+                            a.discard(p, &files)
+                        });
+                    })))
                     .child(button("stage-all", "Stage all", cx).on_click(cx.listener(
                         move |v: &mut V, _, _, cx| {
                             let files = unstaged_paths.clone();
@@ -263,7 +617,7 @@ pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
                 .border_color(color(cx, T::Accent))
                 .children(staged_rows),
         )
-        .child(commit_box(v.message(), amend, cx))
+        .child(commit_box(&v.panel().message.clone(), amend, cx))
         .into_any_element()
 }
 
@@ -375,7 +729,7 @@ fn commit_box<V: Staging>(
                         .cursor_pointer()
                         .text_color(color(cx, if amend { T::Accent } else { T::FgMuted }))
                         .on_click(cx.listener(|v: &mut V, _, _, cx| {
-                            let amend = v.commit_state().0;
+                            let amend = &mut v.panel().amend;
                             *amend = !*amend;
                             cx.notify();
                         }))
