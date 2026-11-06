@@ -299,6 +299,15 @@ impl HistoryReader for FakeGit {
                 .collect()
         })
     }
+    fn commit_message(&self, repo: &RepoPath, commit: Oid) -> Result<String, GitError> {
+        self.read(repo, "commit_message", |r| {
+            r.history
+                .iter()
+                .find(|(n, _)| n.oid == commit)
+                .map(|(_, m)| m.summary.clone())
+                .unwrap_or_default()
+        })
+    }
     fn is_ancestor(
         &self,
         repo: &RepoPath,

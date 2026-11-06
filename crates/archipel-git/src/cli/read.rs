@@ -384,6 +384,18 @@ impl HistoryReader for GitCli {
             .collect()
     }
 
+    fn commit_message(&self, repo: &RepoPath, commit: Oid) -> Result<String, GitError> {
+        let out = self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &["show", "-s", "--format=%B"],
+            )
+            .arg(commit.to_hex()),
+        )?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_owned())
+    }
+
     fn is_ancestor(
         &self,
         repo: &RepoPath,

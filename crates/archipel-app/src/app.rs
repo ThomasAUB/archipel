@@ -635,6 +635,12 @@ impl App {
         }
     }
 
+    /// History reads (run them off the UI thread).
+    #[must_use]
+    pub fn history_reader(&self) -> Arc<dyn archipel_model::ports::HistoryReader> {
+        self.services.git.history.clone()
+    }
+
     /// Diff reads (run them off the UI thread).
     #[must_use]
     pub fn diff_reader(&self) -> Arc<dyn archipel_model::ports::DiffReader> {

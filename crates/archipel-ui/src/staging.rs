@@ -587,7 +587,9 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
         .border_t_1()
         .border_color(color(cx, T::Border))
         .bg(color(cx, T::AccentSubtle))
-        .child(section(format!("STAGED ({})", staged.len()), cx).text_color(color(cx, T::Accent)))
+        .child(
+            section(format!("STAGED ({})", staged.len()), cx).text_color(color(cx, T::AccentText)),
+        )
         .when(!staged_paths.is_empty(), |d| {
             d.child(
                 div().pt_2().child(

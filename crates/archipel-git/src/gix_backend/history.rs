@@ -97,6 +97,13 @@ impl HistoryReader for GixReader {
             .collect()
     }
 
+    fn commit_message(&self, path: &RepoPath, commit: Oid) -> Result<String, GitError> {
+        let repo = self.open(path)?;
+        let commit = repo.find_commit(to_gix(commit)?).map_err(backend)?;
+        let decoded = commit.decode().map_err(backend)?;
+        Ok(decoded.message.to_str_lossy().trim_end().to_owned())
+    }
+
     fn is_ancestor(
         &self,
         path: &RepoPath,

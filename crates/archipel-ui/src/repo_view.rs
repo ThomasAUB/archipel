@@ -27,6 +27,7 @@ use archipel_model::{
 };
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, DragMoveEvent, Entity,
@@ -53,6 +54,8 @@ const HEAD_SCAN_ROWS: u32 = 512;
 const META_KEEP: usize = 4000;
 /// Rows moved by Page Up / Page Down in the graph.
 const PAGE_ROWS: i64 = 20;
+/// Height of the commit message body in the details pane before it scrolls.
+const MESSAGE_BODY_HEIGHT: f32 = 160.0;
 
 /// A diff open in the centre pane, in place of the graph.
 enum OpenDiff {
@@ -503,6 +506,8 @@ pub struct RepoView {
     stash_selected: Option<Oid>,
     /// Diff of the selected commit or stash, listed in the details pane.
     details: Option<(Oid, Arc<DiffDoc>)>,
+    /// Full message of the selected commit, shown above its files.
+    message: Option<(Oid, SharedString)>,
     changes: Vec<FileChange>,
     /// Diff shown in place of the graph.
     open_diff: Option<OpenDiff>,
@@ -570,6 +575,7 @@ impl RepoView {
             stashes: Vec::new(),
             stash_selected: None,
             details: None,
+            message: None,
             changes: Vec::new(),
             open_diff: None,
             staging,
@@ -1015,11 +1021,13 @@ impl RepoView {
         self.stash_selected = None;
         self.open_diff = None;
         let diffs = self.core.diff_reader();
+        let history = self.core.history_reader();
         let path = self.path.clone();
         let task = cx.background_spawn(async move {
+            let message = history.commit_message(&path, oid).ok();
             diffs
                 .commit_diff(&path, oid)
-                .map(|d| Arc::new(DiffDoc::new(d)))
+                .map(|d| (Arc::new(DiffDoc::new(d)), message))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -1028,7 +1036,10 @@ impl RepoView {
                     return; // another row was selected meanwhile
                 }
                 match result {
-                    Ok(d) => v.details = Some((oid, d)),
+                    Ok((d, message)) => {
+                        v.details = Some((oid, d));
+                        v.message = message.map(|m| (oid, m.into()));
+                    }
                     Err(e) => v.status = Some(e.to_string()),
                 }
                 cx.notify();
@@ -2105,7 +2116,7 @@ impl RepoView {
                                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                         } else {
                             d.bg(color(cx, T::AccentSubtle))
-                                .text_color(color(cx, T::Accent))
+                                .text_color(color(cx, T::AccentText))
                         }
                     })
                     // A single click bubbles to the row (select); a double click
@@ -2385,20 +2396,42 @@ impl RepoView {
             }
         }
         let meta = self.selected.and_then(|(r, _)| self.meta.get(&r).cloned());
+        let message = self
+            .message
+            .as_ref()
+            .filter(|(o, _)| *o == oid)
+            .map(|(_, m)| m.clone());
         let mut el = div().p_2().flex().flex_col().gap_1();
         if let Some(m) = meta {
-            el = el
-                .child(
+            let (title, body) = match &message {
+                Some(msg) => match msg.split_once('\n') {
+                    Some((t, b)) => (SharedString::from(t.to_owned()), b.trim()),
+                    None => (msg.clone(), ""),
+                },
+                None => (m.summary.clone().into(), ""),
+            };
+            el = el.child(
+                div()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(title),
+            );
+            if !body.is_empty() {
+                el = el.child(
                     div()
-                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                        .child(m.summary.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
+                        .id("details-message")
+                        .max_h(px(MESSAGE_BODY_HEIGHT))
+                        .overflow_y_scrollbar()
+                        .text_sm()
                         .text_color(color(cx, T::FgMuted))
-                        .child(format!("{} <{}>", m.author_name, m.author_email)),
+                        .child(body.to_owned()),
                 );
+            }
+            el = el.child(
+                div()
+                    .text_xs()
+                    .text_color(color(cx, T::FgMuted))
+                    .child(format!("{} <{}>", m.author_name, m.author_email)),
+            );
         }
         el = el.child(
             div()
@@ -2657,7 +2690,7 @@ fn render_ref_row(
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .when(*current, |d| {
-                    d.text_color(color(cx, T::Accent))
+                    d.text_color(color(cx, T::AccentText))
                         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 })
                 .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {

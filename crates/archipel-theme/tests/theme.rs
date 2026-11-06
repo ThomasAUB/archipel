@@ -258,6 +258,22 @@ fn status_colors_lean_towards_the_accent_but_keep_their_meaning() {
 // ---------------------------------------------------------------- built-ins
 
 #[test]
+fn quiet_cyber_parses_cleanly_and_keeps_its_look() {
+    let (file, warnings) = ThemeFile::parse(builtin::QUIET_CYBER_TOML).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let theme = builtin::quiet_cyber();
+    assert_eq!(theme.id, builtin::QUIET_CYBER_ID);
+    assert_eq!(theme.name, "Quiet Cyber");
+    assert_eq!(theme.appearance(), Appearance::Dark);
+    assert!(theme.radius.abs() < f32::EPSILON);
+    assert_eq!(theme.typography.ui_font, "Jura");
+    for (&token, &color) in &file.tokens {
+        assert_eq!(theme.color(token), color, "{token:?}");
+    }
+    assert!(builtin::is_builtin(builtin::QUIET_CYBER_ID));
+}
+
+#[test]
 fn every_builtin_passes_aa_on_all_checked_pairs() {
     for theme in builtin::all() {
         let c = theme.colors();
@@ -511,6 +527,7 @@ fn registry_loads_directory_with_chains_cycles_and_broken_files() {
             "light",
             "dark",
             "high-contrast",
+            "quiet-cyber",
             "base-blue",
             "broken",
             "child",
@@ -620,7 +637,7 @@ fn registry_missing_dir_and_import() {
     let dir = tempfile::tempdir().unwrap();
     let mut reg = ThemeRegistry::new();
     reg.load_dir(&dir.path().join("themes")).unwrap();
-    assert_eq!(reg.themes().count(), 3);
+    assert_eq!(reg.themes().count(), 4);
 
     let exported = export_theme(
         &editor::duplicate(&builtin::light(), "x", "Shared"),

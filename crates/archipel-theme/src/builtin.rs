@@ -1,9 +1,10 @@
-//! Built-in themes: light, dark and high-contrast (dark).
+//! Built-in themes: light, dark, high-contrast (dark) and Quiet Cyber (dark).
 
 use std::collections::BTreeMap;
 
 use crate::color::Color;
 use crate::derive::BaseColors;
+use crate::file::ThemeFile;
 use crate::theme::Theme;
 use crate::token::ColorToken;
 
@@ -13,10 +14,12 @@ pub const LIGHT_ID: &str = "light";
 pub const DARK_ID: &str = "dark";
 /// Id of the built-in high-contrast (dark) theme.
 pub const HIGH_CONTRAST_ID: &str = "high-contrast";
+/// Id of the built-in Quiet Cyber theme.
+pub const QUIET_CYBER_ID: &str = "quiet-cyber";
 /// Theme used when nothing else is available (unknown id, broken parent…).
 pub const DEFAULT_ID: &str = DARK_ID;
 /// Ids of all built-in themes.
-pub const IDS: [&str; 3] = [LIGHT_ID, DARK_ID, HIGH_CONTRAST_ID];
+pub const IDS: [&str; 4] = [LIGHT_ID, DARK_ID, HIGH_CONTRAST_ID, QUIET_CYBER_ID];
 
 /// The built-in light theme.
 #[must_use]
@@ -73,10 +76,25 @@ pub fn high_contrast() -> Theme {
     theme
 }
 
+/// Source of the Quiet Cyber theme, in the user theme file format.
+pub const QUIET_CYBER_TOML: &str = include_str!("../themes/quiet-cyber.toml");
+
+/// The built-in Quiet Cyber theme: matte charcoal with desaturated teal,
+/// mauve and amber, square corners. Defined as a theme file on top of
+/// [`dark`]; falls back to plain dark should the embedded file not parse
+/// (the tests make sure it does).
+#[must_use]
+pub fn quiet_cyber() -> Theme {
+    let mut theme = ThemeFile::parse(QUIET_CYBER_TOML)
+        .map_or_else(|_| dark(), |(file, _)| file.apply(QUIET_CYBER_ID, &dark()));
+    theme.extends = None;
+    theme
+}
+
 /// All built-in themes.
 #[must_use]
 pub fn all() -> Vec<Theme> {
-    vec![light(), dark(), high_contrast()]
+    vec![light(), dark(), high_contrast(), quiet_cyber()]
 }
 
 /// A built-in theme by id.
@@ -86,6 +104,7 @@ pub fn get(id: &str) -> Option<Theme> {
         LIGHT_ID => Some(light()),
         DARK_ID => Some(dark()),
         HIGH_CONTRAST_ID => Some(high_contrast()),
+        QUIET_CYBER_ID => Some(quiet_cyber()),
         _ => None,
     }
 }

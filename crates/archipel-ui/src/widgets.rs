@@ -124,7 +124,7 @@ pub fn chip(
     cx: &App,
 ) -> Stateful<Div> {
     let (bg, fg) = if active {
-        (color(cx, T::AccentSubtle), color(cx, T::Accent))
+        (color(cx, T::AccentSubtle), color(cx, T::AccentText))
     } else {
         (color(cx, T::BgPanel), color(cx, T::FgMuted))
     };

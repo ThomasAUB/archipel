@@ -78,6 +78,8 @@ pub trait HistoryReader: Send + Sync {
     ) -> Result<(), GitError>;
     /// Loads display metadata for the given commits (in the same order).
     fn commit_meta(&self, repo: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitMeta>, GitError>;
+    /// Full message of a commit, trailing newlines trimmed.
+    fn commit_message(&self, repo: &RepoPath, commit: Oid) -> Result<String, GitError>;
     /// Whether `ancestor` is reachable from `descendant`.
     fn is_ancestor(
         &self,

@@ -131,6 +131,7 @@ color_tokens! {
     AccentHover => "accent.hover", Accent, "Accent (hovered)";
     AccentFg => "accent.fg", Accent, "Text on accent";
     AccentSubtle => "accent.subtle", Accent, "Subtle accent background";
+    AccentText => "accent.text", Accent, "Accent as text";
     Border => "border.default", Border, "Border";
     BorderSubtle => "border.subtle", Border, "Subtle border (separators)";
     BorderFocus => "border.focus", Border, "Focus ring";

@@ -40,6 +40,8 @@ pub const CONTRAST_PAIRS: &[ContrastPair] = {
         pair(T::FgSubtle, T::BgPanel, LARGE),
         pair(T::AccentFg, T::Accent, NORMAL),
         pair(T::Accent, T::BgApp, LARGE),
+        pair(T::AccentText, T::BgApp, NORMAL),
+        pair(T::AccentText, T::AccentSubtle, NORMAL),
         pair(T::BorderFocus, T::BgApp, LARGE),
         pair(T::StatusDirty, T::BgApp, NORMAL),
         pair(T::StatusAhead, T::BgApp, NORMAL),

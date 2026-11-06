@@ -214,7 +214,7 @@ pub fn derive_colors(base: &BaseColors) -> ColorSet {
     let d = Deriver::new(base);
     let mut set = ColorSet::filled(d.bg);
     let fg = d.surfaces_and_text(base.text, &mut set);
-    d.accent_and_borders(fg, &mut set);
+    d.accent_and_borders(&mut set);
     d.status_and_syntax(fg, &mut set);
     d.diff(&mut set);
     d.lanes(&mut set);
@@ -330,7 +330,7 @@ impl Deriver {
         fg
     }
 
-    fn accent_and_borders(&self, fg: Color, set: &mut ColorSet) {
+    fn accent_and_borders(&self, set: &mut ColorSet) {
         let accent = self.accent;
         set.set(ColorToken::Accent, accent);
         set.set(
@@ -341,10 +341,22 @@ impl Deriver {
             }
             .to_color(),
         );
-        set.set(ColorToken::AccentFg, text_on(accent, &[self.bg, fg]));
+        set.set(ColorToken::AccentFg, text_on(accent));
+        let subtle = self.tinted(ACCENT_SUBTLE_STEP, self.accent_tint, self.accent_lch.h);
+        set.set(ColorToken::AccentSubtle, subtle);
+        // The accent as text (current branch, active chips, menu checks):
+        // readable on every surface it is drawn on, whatever accent is chosen.
+        let surfaces = [
+            self.bg,
+            self.bg_panel,
+            set[ColorToken::BgElevated],
+            set[ColorToken::BgHover],
+            set[ColorToken::BgSelected],
+            subtle,
+        ];
         set.set(
-            ColorToken::AccentSubtle,
-            self.tinted(ACCENT_SUBTLE_STEP, self.accent_tint, self.accent_lch.h),
+            ColorToken::AccentText,
+            ensure_contrast_all(accent, &surfaces, WCAG_AA_NORMAL_TEXT),
         );
         set.set(ColorToken::BorderSubtle, self.surface(BORDER_SUBTLE_STEP));
         set.set(ColorToken::Border, self.surface(BORDER_STEP));
@@ -477,20 +489,15 @@ pub fn lane_hue(center: f64, turn: f64) -> f64 {
     if below { u } else { u + width }
 }
 
-/// Picks a readable text color on `fill`: the first candidate reaching AA,
-/// otherwise black or white, whichever contrasts more.
-fn text_on(fill: Color, candidates: &[Color]) -> Color {
-    candidates
-        .iter()
-        .copied()
-        .find(|c| c.contrast_ratio(fill) >= WCAG_AA_NORMAL_TEXT)
-        .unwrap_or_else(|| {
-            if fill.contrast_ratio(Color::WHITE) >= fill.contrast_ratio(Color::BLACK) {
-                Color::WHITE
-            } else {
-                Color::BLACK
-            }
-        })
+/// The text color on `fill`: white or black, whichever contrasts more (at
+/// least 4.58:1 for any opaque fill). The theme's own text and background
+/// are not used: tinted greys read poorly on mid-tone fills.
+fn text_on(fill: Color) -> Color {
+    if fill.contrast_ratio(Color::WHITE) >= fill.contrast_ratio(Color::BLACK) {
+        Color::WHITE
+    } else {
+        Color::BLACK
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +512,14 @@ mod tests {
         assert!(out.contrast_ratio(bg) >= WCAG_AA_NORMAL_TEXT);
         // Already fine: unchanged.
         assert_eq!(ensure_contrast(Color::WHITE, bg, 4.5), Color::WHITE);
+    }
+
+    #[test]
+    fn text_on_is_black_or_white() {
+        assert_eq!(text_on(Color::rgb(0x1e, 0x3a, 0x8a)), Color::WHITE);
+        assert_eq!(text_on(Color::rgb(0xfa, 0xcc, 0x15)), Color::BLACK);
+        for fill in [Color::rgb(0x80, 0x80, 0x80), Color::rgb(0xe1, 0x1d, 0x48)] {
+            assert!(text_on(fill).contrast_ratio(fill) >= WCAG_AA_NORMAL_TEXT);
+        }
     }
 }

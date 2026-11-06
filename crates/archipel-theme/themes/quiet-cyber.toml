@@ -1,0 +1,80 @@
+# Quiet Cyber: matte charcoal, desaturated teal / mauve / amber.
+# Every token is set explicitly so the theme matches the mockups exactly;
+# delete a line to fall back to the color derived from [base].
+name = "Quiet Cyber"
+extends = "dark"
+radius = 0.0
+
+[base]
+background = "#111317"
+text = "#eef1f4"
+accent = "#7fb3b8"
+
+[typography]
+ui_font = "Jura"
+mono_font = "Hack"
+
+[tokens]
+# Surfaces
+"bg.app" = "#111317"
+"bg.panel" = "#15171c"
+"bg.elevated" = "#1a1d23"
+"bg.input" = "#0f1114"
+"bg.hover" = "#1d2128"
+"bg.selected" = "#1a2429"
+
+# Text
+"fg.default" = "#eef1f4"
+"fg.muted" = "#c0c6cf"
+"fg.subtle" = "#a1a8b2"
+"fg.disabled" = "#727882"
+
+# Accent
+"accent" = "#7fb3b8"
+"accent.hover" = "#93c3c7"
+"accent.fg" = "#111317"
+"accent.subtle" = "#1a2a2d"
+
+# Borders
+"border.default" = "#262a32"
+"border.subtle" = "#1c1f25"
+"border.focus" = "#6a9a9f"
+
+# Status
+"status.dirty" = "#c9a66b"
+"status.ahead" = "#7fb3b8"
+"status.behind" = "#b98aa9"
+"status.conflict" = "#c98f6b"
+"status.success" = "#8fb89a"
+"status.error" = "#c97a80"
+"status.warning" = "#c9966b"
+
+# Diff
+"diff.add.bg" = "#171d1b"
+"diff.del.bg" = "#1e1719"
+"diff.add.word.bg" = "#21302a"
+"diff.del.word.bg" = "#33222a"
+"diff.add.fg" = "#9ec4a7"
+"diff.del.fg" = "#d4979c"
+
+# Graph lanes: ordered so neighbours contrast (alternating hue families)
+"graph.lane.0" = "#7fb3b8"
+"graph.lane.1" = "#c17b9f"
+"graph.lane.2" = "#70b18f"
+"graph.lane.3" = "#bd91bf"
+"graph.lane.4" = "#a5b56f"
+"graph.lane.5" = "#81a6d2"
+"graph.lane.6" = "#caa66b"
+"graph.lane.7" = "#9690c4"
+"graph.lane.8" = "#8fc1a0"
+"graph.lane.9" = "#cd836b"
+
+# Syntax
+"syntax.keyword" = "#b98aa9"
+"syntax.string" = "#c9a66b"
+"syntax.comment" = "#a1a8b2"
+"syntax.function" = "#9fb9cc"
+"syntax.type" = "#7fb3b8"
+"syntax.number" = "#9a93bf"
+"syntax.constant" = "#9a93bf"
+"syntax.operator" = "#c0c6cf"

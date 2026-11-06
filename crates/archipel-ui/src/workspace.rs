@@ -1090,7 +1090,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_color(color(cx, T::Accent))
+                            .text_color(color(cx, T::AccentText))
                             .children(identity.icon.map(|icon| project_icon(icon, cx)))
                             .child(div().truncate().child(identity.name)),
                     }),
@@ -1148,11 +1148,9 @@ impl Workspace {
                 } else {
                     color(cx, T::BgApp)
                 })
-                .text_color(if active {
-                    color(cx, T::FgDefault)
-                } else {
-                    color(cx, T::FgMuted)
-                })
+                // Inactive labels stay at full text color: the accent underline
+                // alone marks the active tab.
+                .text_color(color(cx, T::FgDefault))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let () = this.core.update_ui_state(|u| u.active_tab = i);
                     cx.notify();
@@ -1186,7 +1184,7 @@ impl Workspace {
                 el = el.child(
                     div()
                         .id(SharedString::from(format!("tab-close-{i}")))
-                        .text_color(color(cx, T::FgSubtle))
+                        .text_color(color(cx, T::FgMuted))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             // Stop the click bubbling to the tab itself, whose handler
                             // would otherwise activate index `i` — now the next tab.
@@ -1817,7 +1815,7 @@ impl Workspace {
         );
         let menu = self.category_filter_menu.map(|position| {
             let hover = color(cx, T::BgHover);
-            let accent = color(cx, T::Accent);
+            let accent = color(cx, T::AccentText);
             let items = keys.iter().map(|key| {
                 let checked = ui.category_filters.contains(key);
                 let k = key.clone();
@@ -2245,7 +2243,7 @@ impl Workspace {
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(format!("{name} ▾"));
         let menu = self.theme_menu.map(|position| {
-            let accent = color(cx, T::Accent);
+            let accent = color(cx, T::AccentText);
             let items = themes.into_iter().map(|(id, name)| {
                 let checked = id == current;
                 div()
