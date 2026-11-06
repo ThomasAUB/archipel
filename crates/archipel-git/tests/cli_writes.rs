@@ -487,3 +487,59 @@ fn branch_upstream_configuration() {
     cli.set_upstream(&path, "main", None).unwrap();
     assert!(cli.summary(&path).unwrap().upstream.is_none());
 }
+
+#[test]
+fn push_without_remote_follows_the_upstream() {
+    let (repo, path, cli) = setup();
+    let remote_dir = tempfile::tempdir().unwrap();
+    let remote = remote_dir.path().join("fork.git");
+    git(
+        remote_dir.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    // No `origin`: only a remote named `fork`.
+    repo.git(&["remote", "add", "fork", remote.to_str().unwrap()])
+        .unwrap();
+    repo.git(&["push", "-q", "-u", "fork", "main"]).unwrap();
+    repo.write("b.txt", "b\n").unwrap();
+    let tip: Oid = repo.commit_all("second").unwrap().trim().parse().unwrap();
+    cli.push(
+        &path,
+        &PushRequest::default(),
+        &NoProgress,
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        cli.resolve(&path, "refs/remotes/fork/main").unwrap(),
+        Some(tip)
+    );
+}
+
+#[test]
+fn arguments_starting_with_a_dash_are_not_options() {
+    let (repo, path, cli) = setup();
+    let marker = repo.path().join("pwned");
+    let request = FetchRequest {
+        remote: Some(format!("--upload-pack=touch {}", marker.display())),
+        ..Default::default()
+    };
+    assert!(
+        cli.fetch(&path, &request, &NoProgress, &CancelToken::new())
+            .is_err()
+    );
+    assert!(!marker.exists());
+    assert!(cli.reset(&path, "--hard", ResetMode::Keep).is_err());
+    assert!(
+        cli.checkout(&path, &CheckoutTarget::Branch("--orphan=x".into()))
+            .is_err()
+    );
+}

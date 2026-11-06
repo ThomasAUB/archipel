@@ -5,10 +5,11 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use archipel_model::{CancelToken, GitError, ProgressSink};
+use archipel_model::{CancelToken, GitError, Progress, ProgressSink};
 
 use crate::parse::progress::{parse_progress, split_progress_lines};
 
@@ -131,7 +132,19 @@ impl Runner {
         c.env("GIT_TERMINAL_PROMPT", "0")
             // Never open an interactive editor; hooks still run.
             .env("GIT_EDITOR", "true")
-            .args(["-c", "color.ui=false", "-c", "core.quotepath=false"]);
+            // Output is parsed: git must not translate it (`ahead 1` in
+            // `%(upstream:track)`, progress phases…).
+            .env("LC_ALL", "C")
+            .env("LANGUAGE", "C")
+            .args([
+                "-c",
+                "color.ui=false",
+                "-c",
+                "core.quotepath=false",
+                // Signature checks would interleave gpg output with logs.
+                "-c",
+                "log.showSignature=false",
+            ]);
         if cmd.kind == CmdKind::Read {
             c.arg("--no-optional-locks");
         }
@@ -190,19 +203,31 @@ impl Runner {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let progress = cmd.progress;
-        let deadline = started + self.timeout(cmd.kind);
-        let result = thread::scope(|s| {
-            let out = s.spawn(move || read_all(stdout));
-            let err = s.spawn(move || read_stderr(stderr, progress));
-            let status = supervise(&mut child, cmd.cancel, deadline, self.timeout(cmd.kind));
-            let stdout = out.join().unwrap_or_default();
-            let stderr = err.join().unwrap_or_default();
-            status.map(|code| CmdOutput {
-                code,
-                stdout,
-                stderr,
-            })
+        let timeout = self.timeout(cmd.kind);
+        // Detached readers: when git is killed, a child it started (ssh, a
+        // hook) may keep the pipes open; the result must not wait for it.
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let progress_tx = progress.is_some().then_some(progress_tx);
+        let out = thread::spawn(move || read_all(stdout));
+        let err = thread::spawn(move || read_stderr(stderr, progress_tx.as_ref()));
+        let forward = || {
+            if let Some(sink) = progress {
+                for p in progress_rx.try_iter() {
+                    sink.report(p);
+                }
+            }
+        };
+        let status = supervise(&mut child, cmd.cancel, timeout, &forward);
+        if let Err(GitError::TimedOut { .. }) = &status {
+            let command_line = display.as_str();
+            tracing::warn!(command = command_line, "git command timed out");
+        }
+        let result = status.map(|code| CmdOutput {
+            code,
+            stdout: out.join().unwrap_or_default(),
+            stderr: err.join().unwrap_or_default(),
         });
+        forward();
         let output = result?;
         log_command(&display, started, output.code);
         if output.code.is_some_and(|c| cmd.ok_codes.contains(&c)) {
@@ -232,7 +257,8 @@ impl Runner {
         let err_thread = thread::spawn(move || read_stderr(stderr, None));
         let outcome = pump(stdout, delimiter, cmd.cancel, sink);
         if !matches!(outcome, Ok(ControlFlow::Continue(()))) {
-            // Early stop or failure: no need to let git finish.
+            // Early stop or failure: no need to let git finish (a kill error
+            // means it already exited).
             let _ = child.kill();
         }
         let status = child.wait().map_err(|e| GitError::Backend(e.to_string()))?;
@@ -281,13 +307,15 @@ fn pump(
     }
 }
 
-/// Waits for the child, killing it on cancellation or timeout.
+/// Waits for the child, killing it on cancellation or once `timeout`
+/// passes; `tick` runs at every poll (progress forwarding).
 fn supervise(
     child: &mut Child,
     cancel: Option<&CancelToken>,
-    deadline: Instant,
     timeout: Duration,
+    tick: &dyn Fn(),
 ) -> Result<Option<i32>, GitError> {
+    let deadline = Instant::now() + timeout;
     let mut delay = Duration::from_micros(500);
     loop {
         match child.try_wait() {
@@ -295,17 +323,21 @@ fn supervise(
             Ok(None) => {}
             Err(e) => return Err(GitError::Backend(e.to_string())),
         }
-        if cancel.is_some_and(CancelToken::is_cancelled) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(GitError::Cancelled);
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(GitError::TimedOut {
+        tick();
+        let stop = if cancel.is_some_and(CancelToken::is_cancelled) {
+            Some(GitError::Cancelled)
+        } else if Instant::now() >= deadline {
+            Some(GitError::TimedOut {
                 seconds: timeout.as_secs(),
-            });
+            })
+        } else {
+            None
+        };
+        if let Some(error) = stop {
+            // Kill or wait errors mean the child already exited.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
         }
         thread::sleep(delay);
         delay = (delay * 2).min(Duration::from_millis(20));
@@ -323,7 +355,7 @@ fn read_all(stdout: Option<ChildStdout>) -> Vec<u8> {
 
 fn read_stderr(
     stderr: Option<std::process::ChildStderr>,
-    progress: Option<&dyn ProgressSink>,
+    progress: Option<&mpsc::Sender<Progress>>,
 ) -> String {
     let Some(mut stderr) = stderr else {
         return String::new();
@@ -340,8 +372,9 @@ fn read_stderr(
             pending.push_str(&String::from_utf8_lossy(&chunk[..n]));
             if let Some(cut) = pending.rfind(['\r', '\n']) {
                 for line in split_progress_lines(&pending[..cut]) {
+                    // The receiver is gone once the command ended.
                     if let Some(p) = parse_progress(line) {
-                        sink.report(p);
+                        let _ = sink.send(p);
                     }
                 }
                 pending.drain(..=cut);
@@ -370,3 +403,80 @@ fn hide_console(cmd: &mut Command) {
 
 #[cfg(not(windows))]
 fn hide_console(_cmd: &mut Command) {}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A runner whose `git` is a shell script.
+    fn runner_with(dir: &Path, script: &str, timeout: Duration) -> Runner {
+        let program = dir.join("fake-git");
+        std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Runner {
+            program,
+            local_timeout: timeout,
+            network_timeout: timeout,
+            askpass: None,
+            credential_helper: None,
+        }
+    }
+
+    #[test]
+    fn git_runs_untranslated() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner_with(
+            dir.path(),
+            r#"echo "$LC_ALL $LANGUAGE""#,
+            Duration::from_secs(10),
+        );
+        let out = runner
+            .run(Cmd::new(dir.path(), CmdKind::Read, &["status"]))
+            .unwrap();
+        assert_eq!(out.stdout_text(), "C C");
+    }
+
+    #[test]
+    fn timeout_does_not_wait_for_children_holding_the_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        // Like ssh started by git: outlives it with stdout/stderr inherited.
+        let runner = runner_with(
+            dir.path(),
+            "sleep 30 &\nsleep 30",
+            Duration::from_millis(300),
+        );
+        let started = Instant::now();
+        let result = runner.run(Cmd::new(dir.path(), CmdKind::Read, &["fetch"]));
+        assert!(
+            matches!(result, Err(GitError::TimedOut { .. })),
+            "{:?}",
+            result.err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn progress_is_forwarded() {
+        struct Sink(std::sync::Mutex<Vec<Progress>>);
+        impl ProgressSink for Sink {
+            fn report(&self, progress: Progress) {
+                self.0.lock().unwrap().push(progress);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner_with(
+            dir.path(),
+            r"printf 'Receiving objects:  50%% (1/2)\r' >&2",
+            Duration::from_secs(10),
+        );
+        let sink = Sink(std::sync::Mutex::default());
+        runner
+            .run(Cmd::new(dir.path(), CmdKind::Network, &["fetch"]).progress(&sink))
+            .unwrap();
+        assert_eq!(sink.0.lock().unwrap().len(), 1);
+    }
+}

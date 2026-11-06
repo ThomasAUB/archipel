@@ -15,7 +15,7 @@ use archipel_model::journal::{
 use archipel_model::requests::{CheckoutTarget, ForceMode, PushRequest, ResetMode, StashApplyMode};
 use archipel_model::{CancelToken, Oid, ProgressSink, RepoId, RepoPath};
 
-use crate::actions::GitPorts;
+use crate::actions::{GitPorts, split_remote_ref};
 use crate::batch::{BatchReport, Outcome};
 use crate::error::OpError;
 use crate::journal::Journal;
@@ -264,7 +264,9 @@ impl UndoService {
             ));
         }
         let rest = name.trim_start_matches("refs/remotes/");
-        let (remote, branch) = rest.split_once('/').unwrap_or(("origin", rest));
+        let remotes = self.git.remotes.remotes(repo)?;
+        let names: Vec<&str> = remotes.iter().map(|r| r.name.as_str()).collect();
+        let (remote, branch) = split_remote_ref(rest, &names);
         let mut options = Vec::new();
         if let Some(before) = before
             && let Some(commits) = self.first_parent_chain(repo, after, before)?

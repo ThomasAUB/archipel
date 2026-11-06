@@ -13,7 +13,7 @@ use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
     PullMode, PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, TagRequest,
 };
-use archipel_model::{CancelToken, GitError, HeadState, Oid, ProgressSink, RepoPath};
+use archipel_model::{CancelToken, GitError, Oid, ProgressSink, RepoPath};
 
 use crate::error::OpError;
 use crate::journal::{Journal, Recording};
@@ -107,6 +107,29 @@ impl GitPorts {
 
 fn branch_ref(name: &str) -> String {
     format!("refs/heads/{name}")
+}
+
+/// The branch a refspec pushes to: `+src:refs/heads/dst` → `dst`.
+fn push_destination(refspec: &str) -> &str {
+    let spec = refspec.trim_start_matches('+');
+    let dst = spec.rsplit(':').next().unwrap_or(spec);
+    dst.trim_start_matches("refs/heads/")
+}
+
+/// Splits `origin/feature/x` into the remote and branch, matching the
+/// longest known remote name (remote names may contain `/`).
+#[must_use]
+pub fn split_remote_ref<'a>(short: &'a str, remotes: &[&str]) -> (&'a str, &'a str) {
+    remotes
+        .iter()
+        .filter(|r| {
+            short.len() > r.len() && short.starts_with(**r) && short.as_bytes()[r.len()] == b'/'
+        })
+        .max_by_key(|r| r.len())
+        .map_or_else(
+            || short.split_once('/').unwrap_or(("origin", short)),
+            |r| (&short[..r.len()], &short[r.len() + 1..]),
+        )
 }
 
 fn tag_ref(name: &str) -> String {
@@ -437,29 +460,42 @@ impl RepoActions {
         cancel: &CancelToken,
         batch: Option<BatchId>,
     ) -> Result<(), OpError> {
-        let remote = request.remote.clone().unwrap_or_else(|| "origin".into());
-        let branch = match &request.refspec {
-            Some(spec) => spec
-                .rsplit(':')
-                .next()
-                .unwrap_or(spec)
-                .trim_start_matches("refs/heads/")
-                .to_owned(),
-            None => match self.git.status.summary(repo)?.head {
-                HeadState::Branch(b) => b,
-                _ => {
-                    return Err(OpError::Refused(
-                        "cannot push a detached HEAD without a refspec".into(),
-                    ));
-                }
-            },
-        };
+        let (remote, branch) = self.push_target(repo, request)?;
         let rec = Recording::new(OperationKind::Push, format!("Push {branch} to {remote}"))
             .with_refs([format!("refs/remotes/{remote}/{branch}")])
             .in_batch(batch);
         self.journal.record(repo, rec, || {
             self.git.remote.push(repo, request, progress, cancel)
         })
+    }
+
+    /// Where a push goes: the remote and the remote branch, whose tracking
+    /// ref is recorded for compensating actions. A push without remote nor
+    /// refspec follows the branch's upstream, as `git push` does.
+    fn push_target(
+        &self,
+        repo: &RepoPath,
+        request: &PushRequest,
+    ) -> Result<(String, String), OpError> {
+        let summary = self.git.status.summary(repo)?;
+        let current = summary.head.branch().map(str::to_owned);
+        if request.remote.is_none()
+            && request.refspec.is_none()
+            && let Some(upstream) = &summary.upstream
+        {
+            let remotes = self.git.remotes.remotes(repo)?;
+            let names: Vec<&str> = remotes.iter().map(|r| r.name.as_str()).collect();
+            let (remote, branch) = split_remote_ref(&upstream.name, &names);
+            return Ok((remote.to_owned(), branch.to_owned()));
+        }
+        let remote = request.remote.clone().unwrap_or_else(|| "origin".into());
+        let branch = match request.refspec.as_deref().map(push_destination) {
+            Some(dst) if dst != "HEAD" => dst.to_owned(),
+            _ => current.ok_or_else(|| {
+                OpError::Refused("cannot push a detached HEAD without a refspec".into())
+            })?,
+        };
+        Ok((remote, branch))
     }
 
     /// Resets `HEAD` (hard resets snapshot the worktree first).
@@ -550,5 +586,31 @@ impl RepoActions {
                 GitError::CommandFailed { .. } => OpError::Git(e),
                 other => other.into(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_names_with_slashes_are_matched_whole() {
+        let remotes = ["origin", "team/fork"];
+        assert_eq!(
+            split_remote_ref("origin/feat/x", &remotes),
+            ("origin", "feat/x")
+        );
+        assert_eq!(
+            split_remote_ref("team/fork/main", &remotes),
+            ("team/fork", "main")
+        );
+        assert_eq!(split_remote_ref("other/main", &remotes), ("other", "main"));
+    }
+
+    #[test]
+    fn push_destination_of_refspecs() {
+        assert_eq!(push_destination("feat"), "feat");
+        assert_eq!(push_destination("+feat:refs/heads/main"), "main");
+        assert_eq!(push_destination("HEAD"), "HEAD");
     }
 }
