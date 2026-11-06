@@ -218,6 +218,15 @@ impl Api<'_> {
             })?;
         match response.status {
             200..=299 => Ok(response),
+            429 => Err(ForgeError::RateLimited {
+                host: self.host.to_owned(),
+            }),
+            // GitHub answers 403 when the rate limit is used up.
+            403 if response.header("x-ratelimit-remaining") == Some("0") => {
+                Err(ForgeError::RateLimited {
+                    host: self.host.to_owned(),
+                })
+            }
             401 | 403 => Err(ForgeError::Unauthorized {
                 host: self.host.to_owned(),
                 status: response.status,
@@ -273,9 +282,31 @@ impl Api<'_> {
             let Some(current) = url.take() else { break };
             let response = self.send(Method::Get, current, None, what)?;
             out.extend(self.decode::<Vec<T>>(&response)?);
-            url = response.header("link").and_then(next_link);
+            // The token goes with every page: only follow the API itself.
+            url = response
+                .header("link")
+                .and_then(next_link)
+                .filter(|next| next.starts_with(&format!("{}/", self.base)));
+        }
+        if url.is_some() {
+            tracing::warn!(
+                host = self.host,
+                what,
+                "list truncated after {MAX_PAGES} pages"
+            );
         }
         Ok(out)
+    }
+}
+
+/// `Ok(None)` for answers that mean "not available to this token" (a
+/// missing scope, a hidden object) when the caller can do without; other
+/// errors (network, server, rate limit) still fail.
+pub fn optional<T>(result: Result<T, ForgeError>) -> Result<Option<T>, ForgeError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(ForgeError::Unauthorized { .. } | ForgeError::NotFound { .. }) => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

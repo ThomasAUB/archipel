@@ -588,3 +588,101 @@ fn gitlab_branch_ci_lists_pipeline_jobs() {
     http.on(Method::Get, &format!("{base}?ref=other"), 200, json!([]));
     assert_eq!(c.ci_for_branch(&gitlab_repo(), "other").unwrap(), None);
 }
+
+#[test]
+fn github_pull_request_ci_matches_the_branch_ci() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls?state=open",
+        200,
+        json!([{
+            "number": 7, "title": "t", "html_url": "u", "base": {"ref": "dev", "sha": "b"},
+            "head": {"ref": "f", "sha": "s1"}
+        }]),
+    );
+    http.on(
+        Method::Get,
+        "/branches/f",
+        200,
+        json!({"commit": {"sha": "s1"}}),
+    );
+    // A stale run is skipped, not failed, in both columns.
+    http.on(
+        Method::Get,
+        "/check-runs",
+        200,
+        json!({"check_runs": [
+            {"name": "build", "status": "completed", "conclusion": "success"},
+            {"name": "old", "status": "completed", "conclusion": "stale"}
+        ]}),
+    );
+    let c = client(&http, &["github.com"]);
+    let pr = c
+        .pull_request_for_branch(&github_repo(), "f")
+        .unwrap()
+        .unwrap();
+    let ci = c.ci_for_branch(&github_repo(), "f").unwrap().unwrap();
+    assert_eq!(pr.ci, Some(ci.state));
+    assert_eq!(ci.state, CiState::Success);
+}
+
+#[test]
+fn github_server_errors_are_not_hidden_as_missing_scopes() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls?state=open",
+        200,
+        json!([{
+            "number": 7, "title": "t", "html_url": "u", "base": {"ref": "dev", "sha": "b"},
+            "head": {"ref": "f", "sha": "s1"}
+        }]),
+    );
+    http.on(
+        Method::Get,
+        "/check-runs",
+        502,
+        json!({"message": "bad gateway"}),
+    );
+    let c = client(&http, &["github.com"]);
+    assert!(matches!(
+        c.pull_request_for_branch(&github_repo(), "f"),
+        Err(ForgeError::Http { status: 502, .. })
+    ));
+}
+
+#[test]
+fn github_rate_limit_is_not_a_bad_token() {
+    let http = Arc::new(FakeHttp::default());
+    http.on_with(
+        Method::Get,
+        "/pulls",
+        403,
+        json!({"message": "API rate limit exceeded"}),
+        &[("x-ratelimit-remaining", "0")],
+    );
+    let c = client(&http, &["github.com"]);
+    assert!(matches!(
+        c.pull_request_for_branch(&github_repo(), "f"),
+        Err(ForgeError::RateLimited { .. })
+    ));
+}
+
+#[test]
+fn pages_on_another_host_are_not_followed() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(Method::Get, "/user/orgs", 200, json!([]));
+    http.on_with(
+        Method::Get,
+        "/user/repos",
+        200,
+        json!([]),
+        &[("link", "<https://evil.example/steal?page=2>; rel=\"next\"")],
+    );
+    let c = client(&http, &["github.com"]);
+    let acct = github_repo().account;
+    let ns = c.namespaces(&acct).unwrap();
+    c.repositories(&acct, &ns[0]).unwrap();
+    assert!(http.seen().iter().all(|r| !r.url.contains("evil.example")));
+}
