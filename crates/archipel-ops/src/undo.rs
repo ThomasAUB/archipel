@@ -427,7 +427,7 @@ impl UndoService {
                     .stash_store(repo, *oid, "archipel: restored by undo")?;
                 g.stash_writer.stash_apply(repo, 0, StashApplyMode::Pop)?;
             }
-            UndoStep::RestorePaths(oid) => g.stash_writer.restore_paths(repo, *oid)?,
+            UndoStep::RestorePaths(oid) => g.snapshots.restore_paths(repo, *oid)?,
         }
         Ok(())
     }

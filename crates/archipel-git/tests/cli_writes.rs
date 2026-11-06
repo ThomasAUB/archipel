@@ -12,7 +12,7 @@ use archipel_model::changes::ChangeKind;
 use archipel_model::ports::{
     BranchWriter, ChurnReader, CommitWriter, DiffReader, DiffSide, HistoryRewriter, IndexWriter,
     RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    TagWriter,
+    TagWriter, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,

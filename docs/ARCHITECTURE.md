@@ -78,6 +78,7 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `IndexWriter` | `stage`, `unstage`, `apply_patch_cached`, `discard` | working copy view |
 | `RefWriter` | `checkout`, `create/rename/delete branch`, `tag`, `reset`, `update_ref` | repo actions, undo |
 | `StashWriter` | `push`, `apply`, `pop`, `drop`, `store` | repo actions, undo |
+| `WorktreeSnapshots` | `snapshot_worktree`, `snapshot_paths`, `restore_paths` | undo journal |
 | `RemoteOps` | `fetch`, `pull`, `push`, `clone` | batch ops |
 | `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `continue/abort` | drag & drop, repo actions |
 | `SubmoduleReader` | `submodules` (one level: initialized, pinned and checked-out commits) | dependency tree |

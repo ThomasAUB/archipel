@@ -224,7 +224,7 @@ impl App {
         let journal = Journal::new(
             services.journal.clone(),
             services.git.refs.clone(),
-            services.git.stash_writer.clone(),
+            services.git.snapshots.clone(),
             settings.journal_limit,
         );
         let actions = RepoActions::new(services.git.clone(), journal.clone());

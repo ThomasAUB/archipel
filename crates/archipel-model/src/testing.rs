@@ -22,7 +22,7 @@ use crate::ports::{
     MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps,
     RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
     SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, UiStateStore, WatchHandle,
-    WorktreeFiles,
+    WorktreeFiles, WorktreeSnapshots,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -611,6 +611,9 @@ impl StashWriter for FakeGit {
         });
         Ok(())
     }
+}
+
+impl WorktreeSnapshots for FakeGit {
     fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError> {
         self.record("stash_snapshot", repo, "")?;
         Ok(Some(self.fresh_oid()))

@@ -7,7 +7,7 @@ use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeToolLauncher,
     RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    SubmoduleReader, SubmoduleWriter, TagWriter, WorktreeFiles,
+    SubmoduleReader, SubmoduleWriter, TagWriter, WorktreeFiles, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -42,8 +42,10 @@ pub struct GitPorts {
     pub tags: Arc<dyn TagWriter>,
     /// Raw ref moves.
     pub ref_writer: Arc<dyn RefWriter>,
-    /// Stash writes and worktree snapshots.
+    /// Stash writes.
     pub stash_writer: Arc<dyn StashWriter>,
+    /// Worktree snapshots (undo of destructive operations).
+    pub snapshots: Arc<dyn WorktreeSnapshots>,
     /// Network.
     pub remote: Arc<dyn RemoteOps>,
     /// Merge, rebase, cherry-pick, revert.
@@ -74,6 +76,7 @@ impl GitPorts {
             + TagWriter
             + RefWriter
             + StashWriter
+            + WorktreeSnapshots
             + RemoteOps
             + HistoryRewriter
             + MergeToolLauncher
@@ -94,6 +97,7 @@ impl GitPorts {
             tags: backend.clone(),
             ref_writer: backend.clone(),
             stash_writer: backend.clone(),
+            snapshots: backend.clone(),
             remote: backend.clone(),
             rewriter: backend.clone(),
             merge_tool: backend.clone(),

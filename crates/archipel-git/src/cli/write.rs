@@ -4,7 +4,7 @@ use std::path::Path;
 
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolLauncher, RefReader,
-    RefWriter, RemoteOps, StashWriter, TagWriter,
+    RefWriter, RemoteOps, StashWriter, TagWriter, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -365,7 +365,9 @@ impl StashWriter for GitCli {
         self.write(repo, &["stash", "store", "-m", message, &oid.to_hex()])
             .map(drop)
     }
+}
 
+impl WorktreeSnapshots for GitCli {
     fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError> {
         let text = self.write(repo, &["stash", "create"])?;
         if text.is_empty() {
@@ -495,7 +497,7 @@ impl StashWriter for GitCli {
 }
 
 impl GitCli {
-    /// The paths a [`StashWriter::snapshot_paths`] snapshot holds.
+    /// The paths a [`WorktreeSnapshots::snapshot_paths`] snapshot holds.
     fn snapshot_changes(&self, repo: &RepoPath, snapshot: Oid) -> Result<Vec<String>, GitError> {
         let hex = snapshot.to_hex();
         let out = self.runner.run(Cmd::new(

@@ -241,6 +241,12 @@ pub trait StashWriter: Send + Sync {
     fn drop_stash(&self, repo: &RepoPath, index: u32) -> Result<(), GitError>;
     /// Stores a stash commit back into the stash list (undo of drop).
     fn stash_store(&self, repo: &RepoPath, oid: Oid, message: &str) -> Result<(), GitError>;
+}
+
+/// Worktree snapshots taken before destructive operations, so undo can
+/// bring the files back. Snapshots are dangling commits: they never show in
+/// the stash list or any ref.
+pub trait WorktreeSnapshots: Send + Sync {
     /// Snapshots the worktree into a dangling stash commit without touching
     /// the stash list (`git stash create`); `None` when there is nothing to save.
     fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError>;

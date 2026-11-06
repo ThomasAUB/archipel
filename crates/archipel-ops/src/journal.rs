@@ -9,7 +9,7 @@ use std::sync::Arc;
 use archipel_model::journal::{
     BatchId, EntryState, HeadRef, JournalEntry, JournalId, OperationKind, RefSnapshot, StashRecord,
 };
-use archipel_model::ports::{JournalStore, RefReader, StashWriter};
+use archipel_model::ports::{JournalStore, RefReader, WorktreeSnapshots};
 use archipel_model::{GitError, RepoPath, Timestamp};
 
 use crate::error::OpError;
@@ -90,7 +90,7 @@ impl Recording {
 pub struct Journal {
     store: Arc<dyn JournalStore>,
     refs: Arc<dyn RefReader>,
-    snapshots: Arc<dyn StashWriter>,
+    snapshots: Arc<dyn WorktreeSnapshots>,
     limit: usize,
 }
 
@@ -100,7 +100,7 @@ impl Journal {
     pub fn new(
         store: Arc<dyn JournalStore>,
         refs: Arc<dyn RefReader>,
-        snapshots: Arc<dyn StashWriter>,
+        snapshots: Arc<dyn WorktreeSnapshots>,
         limit: usize,
     ) -> Self {
         Self {
