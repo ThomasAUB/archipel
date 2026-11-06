@@ -25,6 +25,8 @@ pub(crate) enum CmdKind {
     Write,
     /// Network operation (longer timeout, progress).
     Network,
+    /// Waits for the user (external merge tool): no timeout.
+    Interactive,
 }
 
 /// The output of a finished command.
@@ -186,11 +188,11 @@ impl Runner {
         Ok(child)
     }
 
-    fn timeout(&self, kind: CmdKind) -> Duration {
-        if kind == CmdKind::Network {
-            self.network_timeout
-        } else {
-            self.local_timeout
+    fn timeout(&self, kind: CmdKind) -> Option<Duration> {
+        match kind {
+            CmdKind::Network => Some(self.network_timeout),
+            CmdKind::Read | CmdKind::Write => Some(self.local_timeout),
+            CmdKind::Interactive => None,
         }
     }
 
@@ -308,14 +310,15 @@ fn pump(
 }
 
 /// Waits for the child, killing it on cancellation or once `timeout`
-/// passes; `tick` runs at every poll (progress forwarding).
+/// passes (never without one); `tick` runs at every poll (progress
+/// forwarding).
 fn supervise(
     child: &mut Child,
     cancel: Option<&CancelToken>,
-    timeout: Duration,
+    timeout: Option<Duration>,
     tick: &dyn Fn(),
 ) -> Result<Option<i32>, GitError> {
-    let deadline = Instant::now() + timeout;
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let mut delay = Duration::from_micros(500);
     loop {
         match child.try_wait() {
@@ -326,9 +329,9 @@ fn supervise(
         tick();
         let stop = if cancel.is_some_and(CancelToken::is_cancelled) {
             Some(GitError::Cancelled)
-        } else if Instant::now() >= deadline {
+        } else if deadline.is_some_and(|d| Instant::now() >= d) {
             Some(GitError::TimedOut {
-                seconds: timeout.as_secs(),
+                seconds: timeout.map_or(0, |t| t.as_secs()),
             })
         } else {
             None
@@ -457,6 +460,15 @@ mod tests {
             result.err()
         );
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn interactive_commands_have_no_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner_with(dir.path(), "sleep 1", Duration::from_millis(100));
+        runner
+            .run(Cmd::new(dir.path(), CmdKind::Interactive, &["mergetool"]))
+            .unwrap();
     }
 
     #[test]

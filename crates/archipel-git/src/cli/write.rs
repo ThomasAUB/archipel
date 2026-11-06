@@ -713,9 +713,10 @@ impl MergeToolLauncher for GitCli {
         path: Option<&str>,
         tool: Option<&str>,
     ) -> Result<(), GitError> {
+        // The user works in the tool for as long as they need.
         let mut cmd = Cmd::new(
             repo.as_path(),
-            CmdKind::Write,
+            CmdKind::Interactive,
             &["mergetool", "--no-prompt"],
         );
         if let Some(tool) = tool {

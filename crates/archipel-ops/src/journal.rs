@@ -127,8 +127,15 @@ impl Journal {
         op: impl FnOnce() -> Result<T, GitError>,
     ) -> Result<T, OpError> {
         let mut names = rec.refs.clone();
-        // `HEAD` may be unborn: then there is nothing to snapshot yet.
-        let first = self.refs.snapshot(repo, &names).ok();
+        // An unborn `HEAD` snapshots fine (symbolic); a failure here means
+        // the refs cannot be read. The operation still runs, unjournaled.
+        let first = match self.refs.snapshot(repo, &names) {
+            Ok(snapshot) => Some(snapshot),
+            Err(e) => {
+                tracing::warn!(error = %e, label = rec.label, "cannot snapshot refs: the operation will not be undoable");
+                None
+            }
+        };
         if let Some(RefSnapshot {
             head: HeadRef::Symbolic(branch),
             ..
@@ -169,7 +176,7 @@ impl Journal {
                     tracing::warn!(error = %e, "could not record journal entry");
                 }
             }
-            (None, _) => tracing::debug!("operation on an unborn HEAD is not journaled"),
+            (None, _) => {}
             (_, Err(e)) => tracing::warn!(error = %e, "could not snapshot refs after operation"),
         }
         Ok(value)

@@ -1752,7 +1752,13 @@ impl App {
     fn run_command(&self, command: Command) -> Result<(), AppError> {
         match command {
             Command::RefreshAll => {
-                self.reload_project()?;
+                // A project file broken by hand must not stop the repos
+                // already listed from refreshing.
+                if let Err(e) = self.reload_project() {
+                    self.emit(AppEvent::Notice(format!(
+                        "cannot reload the project file: {e}"
+                    )));
+                }
                 self.refresh_all();
                 self.load_tree_if_shown();
             }
