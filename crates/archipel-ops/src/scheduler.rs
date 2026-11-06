@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use archipel_model::settings::Settings;
 use archipel_model::{CancelToken, Progress, ProgressSink, RepoId};
-use tokio::sync::{Semaphore, broadcast, oneshot};
+use tokio::sync::{Notify, Semaphore, broadcast, oneshot};
 
 use crate::error::OpError;
 
@@ -111,6 +111,17 @@ impl OpContext {
         self.id
     }
 
+    /// A context sharing this one's identity, kept to report the end of a
+    /// job after the job consumed the original.
+    fn reporter(&self) -> Self {
+        Self {
+            id: self.id,
+            spec: self.spec.clone(),
+            cancel: self.cancel.clone(),
+            events: self.events.clone(),
+        }
+    }
+
     fn emit(&self, kind: OpEventKind) {
         if self.spec.class == OpClass::Background {
             return;
@@ -135,6 +146,9 @@ impl ProgressSink for OpContext {
 pub struct OpHandle<T> {
     id: OpId,
     cancel: CancelToken,
+    /// Wakes the operation while it waits for its resources (`None` when
+    /// it never waits).
+    wake: Option<Arc<Notify>>,
     result: oneshot::Receiver<Result<T, OpError>>,
 }
 
@@ -149,12 +163,9 @@ impl<T> OpHandle<T> {
     /// stop at their next cancellation point).
     pub fn cancel(&self) {
         self.cancel.cancel();
-    }
-
-    /// A clone of the cancellation token.
-    #[must_use]
-    pub fn cancel_token(&self) -> CancelToken {
-        self.cancel.clone()
+        if let Some(wake) = &self.wake {
+            wake.notify_one();
+        }
     }
 
     /// Waits for the result asynchronously.
@@ -187,6 +198,26 @@ impl Drop for BackgroundGuard {
     }
 }
 
+/// Counts a write or network operation as pending on its repository from
+/// submission until it ends, so background operations submitted meanwhile
+/// give way instead of taking the repo lock first.
+struct PendingWrite {
+    repo: RepoId,
+    pending: Arc<Mutex<HashMap<RepoId, usize>>>,
+}
+
+impl Drop for PendingWrite {
+    fn drop(&mut self) {
+        let mut pending = lock(&self.pending);
+        if let Some(n) = pending.get_mut(&self.repo) {
+            *n -= 1;
+            if *n == 0 {
+                pending.remove(&self.repo);
+            }
+        }
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -202,6 +233,8 @@ pub struct Scheduler {
     repo_locks: Mutex<HashMap<RepoId, Arc<tokio::sync::Mutex<()>>>>,
     /// Cancellation of the background operation holding each repo lock.
     background: Arc<Mutex<HashMap<RepoId, CancelToken>>>,
+    /// Write and network operations submitted and not finished, per repo.
+    pending_writes: Arc<Mutex<HashMap<RepoId, usize>>>,
     events: broadcast::Sender<OpEvent>,
     next_id: AtomicU64,
 }
@@ -221,6 +254,7 @@ impl Scheduler {
             network: Arc::new(Semaphore::new(settings.network_concurrency.max(1))),
             repo_locks: Mutex::new(HashMap::new()),
             background: Arc::default(),
+            pending_writes: Arc::default(),
             events: broadcast::channel(EVENT_CAPACITY).0,
             next_id: AtomicU64::new(1),
         }
@@ -261,15 +295,19 @@ impl Scheduler {
         ctx.emit(OpEventKind::Queued);
         // Taken right away for a background operation, waited for otherwise.
         let mut held = None;
+        let mut pending = None;
         let repo_lock = match (spec.class, spec.repo) {
             (OpClass::Read, _) | (_, None) => None,
             (OpClass::Background, Some(repo)) => {
                 let mut running = lock(&self.background);
-                let Ok(guard) = self.repo_lock(repo).try_lock_owned() else {
+                let writes_pending = lock(&self.pending_writes).contains_key(&repo);
+                let guard = self.repo_lock(repo).try_lock_owned();
+                let (false, Ok(guard)) = (writes_pending, guard) else {
                     let _ = tx.send(Err(OpError::Busy));
                     return OpHandle {
                         id,
                         cancel,
+                        wake: None,
                         result: rx,
                     };
                 };
@@ -282,6 +320,13 @@ impl Scheduler {
                 None
             }
             (OpClass::Write | OpClass::Network, Some(repo)) => {
+                // Count the write before cancelling, so a background op
+                // submitted between the two already sees it.
+                *lock(&self.pending_writes).entry(repo).or_default() += 1;
+                pending = Some(PendingWrite {
+                    repo,
+                    pending: self.pending_writes.clone(),
+                });
                 if let Some(running) = lock(&self.background).get(&repo) {
                     running.cancel();
                 }
@@ -293,35 +338,22 @@ impl Scheduler {
             OpClass::Network => Some(self.network.clone()),
             OpClass::Write | OpClass::Background => None,
         };
+        let wake = Arc::new(Notify::new());
+        let woken = wake.clone();
         self.runtime.spawn(async move {
-            let _held = held;
-            // Repo lock first, then the pool permit, so no permit is held idle
-            // while waiting for a busy repository.
-            let _guard = match repo_lock {
-                Some(l) => Some(l.lock_owned().await),
-                None => None,
+            let (_held, _pending) = (held, pending);
+            // Waiting for the repo lock and the pool permit ends early when
+            // the handle is cancelled, so a cancelled op leaves the queue
+            // right away instead of after the op ahead of it.
+            let resources = tokio::select! {
+                r = acquire(repo_lock, pool) => Some(r),
+                () = woken.notified() => None,
             };
-            let _permit = match pool {
-                Some(p) => p.acquire_owned().await.ok(),
-                None => None,
-            };
-            let result = if ctx.cancel.is_cancelled() {
-                Err(OpError::Cancelled)
-            } else {
-                ctx.emit(OpEventKind::Started);
-                let joined = tokio::task::spawn_blocking(move || {
-                    let r = job(&ctx);
-                    (r, ctx)
-                })
-                .await;
-                match joined {
-                    Ok((r, ctx)) => {
-                        ctx.emit(OpEventKind::Finished(
-                            r.as_ref().map(drop).map_err(ToString::to_string),
-                        ));
-                        r
-                    }
-                    Err(e) => Err(OpError::Worker(e.to_string())),
+            let result = match resources {
+                Some(_resources) if !ctx.cancel.is_cancelled() => run(ctx, job).await,
+                _ => {
+                    ctx.emit(OpEventKind::Finished(Err(OpError::Cancelled.to_string())));
+                    Err(OpError::Cancelled)
                 }
             };
             // The receiver may have been dropped: nobody waits for the result.
@@ -330,9 +362,53 @@ impl Scheduler {
         OpHandle {
             id,
             cancel,
+            wake: Some(wake),
             result: rx,
         }
     }
+}
+
+/// The resources an operation holds while it runs.
+type Resources = (
+    Option<tokio::sync::OwnedMutexGuard<()>>,
+    Option<tokio::sync::OwnedSemaphorePermit>,
+);
+
+/// Takes the repo lock first, then the pool permit, so no permit is held
+/// idle while waiting for a busy repository.
+async fn acquire(
+    repo_lock: Option<Arc<tokio::sync::Mutex<()>>>,
+    pool: Option<Arc<Semaphore>>,
+) -> Resources {
+    let guard = match repo_lock {
+        Some(l) => Some(l.lock_owned().await),
+        None => None,
+    };
+    // The pools are never closed, so acquiring only fails if the scheduler
+    // is being torn down; the op then runs without a permit.
+    let permit = match pool {
+        Some(p) => p.acquire_owned().await.ok(),
+        None => None,
+    };
+    (guard, permit)
+}
+
+/// Runs `job` on a blocking worker and reports how it ended, including when
+/// it panicked.
+async fn run<T, F>(ctx: OpContext, job: F) -> Result<T, OpError>
+where
+    T: Send + 'static,
+    F: FnOnce(&OpContext) -> Result<T, OpError> + Send + 'static,
+{
+    ctx.emit(OpEventKind::Started);
+    let reporter = ctx.reporter();
+    let result = tokio::task::spawn_blocking(move || job(&ctx))
+        .await
+        .unwrap_or_else(|e| Err(OpError::Worker(e.to_string())));
+    reporter.emit(OpEventKind::Finished(
+        result.as_ref().map(drop).map_err(ToString::to_string),
+    ));
+    result
 }
 
 #[cfg(test)]
@@ -516,6 +592,90 @@ mod tests {
         assert_eq!(kinds[1], OpEventKind::Started);
         assert!(matches!(kinds[2], OpEventKind::Progress(_)));
         assert_eq!(kinds[3], OpEventKind::Finished(Err("nope".into())));
+    }
+
+    fn finished_events(events: &mut broadcast::Receiver<OpEvent>, label: &str) -> usize {
+        let mut n = 0;
+        while let Ok(e) = events.try_recv() {
+            if e.label == label && matches!(e.kind, OpEventKind::Finished(_)) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn cancelled_queued_operation_leaves_the_queue_and_reports_finished() {
+        let rt = runtime();
+        let s = Scheduler::new(rt.handle().clone(), &settings(6));
+        let mut events = s.subscribe();
+        let release = CancelToken::new();
+        let r = release.clone();
+        let blocker = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Write, "slow"),
+            move |_| {
+                while !r.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            },
+        );
+        let queued = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Write, "queued"),
+            |_| Ok(()),
+        );
+        queued.cancel();
+        // Returns while the blocker still holds the repo lock.
+        assert_eq!(queued.wait_blocking(), Err(OpError::Cancelled));
+        release.cancel();
+        blocker.wait_blocking().unwrap();
+        assert_eq!(finished_events(&mut events, "queued"), 1);
+    }
+
+    #[test]
+    fn background_operation_gives_way_to_a_queued_write() {
+        let rt = runtime();
+        let s = Scheduler::new(rt.handle().clone(), &settings(6));
+        let release = CancelToken::new();
+        let r = release.clone();
+        let blocker = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Write, "w1"),
+            move |_| {
+                while !r.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            },
+        );
+        let queued = s.submit(OpSpec::new(Some(RepoId(1)), OpClass::Write, "w2"), |_| {
+            Ok(())
+        });
+        let bg = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Background, "fetch"),
+            |_| Ok(()),
+        );
+        assert_eq!(bg.wait_blocking(), Err(OpError::Busy));
+        release.cancel();
+        blocker.wait_blocking().unwrap();
+        queued.wait_blocking().unwrap();
+        let bg = s.submit(
+            OpSpec::new(Some(RepoId(1)), OpClass::Background, "fetch"),
+            |_| Ok(()),
+        );
+        assert_eq!(bg.wait_blocking(), Ok(()));
+    }
+
+    #[test]
+    fn panicking_job_reports_finished() {
+        let rt = runtime();
+        let s = Scheduler::new(rt.handle().clone(), &settings(6));
+        let mut events = s.subscribe();
+        let h = s.submit(
+            OpSpec::new(None, OpClass::Read, "boom"),
+            |_| -> Result<(), OpError> { panic!("boom") },
+        );
+        assert!(h.wait_blocking().is_err());
+        assert_eq!(finished_events(&mut events, "boom"), 1);
     }
 
     #[test]
