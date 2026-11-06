@@ -624,12 +624,6 @@ impl App {
         &self.commit
     }
 
-    /// The undo service (for compensations and plans).
-    #[must_use]
-    pub fn undo_service(&self) -> &UndoService {
-        &self.undo
-    }
-
     /// Batch operations.
     #[must_use]
     pub fn batches(&self) -> &Arc<BatchOps> {
@@ -1177,7 +1171,7 @@ impl App {
     /// become uncategorized) when `new` is `None` or blank. Renaming onto
     /// another existing category (any case) merges into it; a change of
     /// case only is kept as typed. The collapsed state follows the rename.
-    pub fn rename_category(&self, old: &str, new: Option<&str>) -> Result<(), AppError> {
+    fn rename_category(&self, old: &str, new: Option<&str>) -> Result<(), AppError> {
         let new = normalize_category(new);
         let (location, def, ids) = {
             let mut guard = lock(&self.session);
@@ -1478,7 +1472,7 @@ impl App {
     /// project file, edited by hand or by a teammate): name, color, icon and
     /// repo list. Repos that stay keep their status; new ones are added,
     /// removed ones dropped. The UI state is kept.
-    pub fn reload_project(&self) -> Result<(), AppError> {
+    fn reload_project(&self) -> Result<(), AppError> {
         let Some(location) = lock(&self.session).as_ref().map(|s| s.location.clone()) else {
             return Err(AppError::NoProject);
         };

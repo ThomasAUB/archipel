@@ -11,8 +11,7 @@ use archipel_model::ids::RepoPath;
 use archipel_model::ports::project::RepoDiscovery;
 use archipel_model::project::{DiscoveredKind, DiscoveredRepo, ProjectDef, ScanOptions};
 use archipel_project::{
-    FsRepoDiscovery, RepoPresence, ScanStrategy, classify_repos, outermost_repo_root,
-    repo_presence, submodule_paths,
+    FsRepoDiscovery, RepoPresence, ScanStrategy, classify_repos, outermost_repo_root, repo_presence,
 };
 
 const STRATEGIES: [ScanStrategy; 2] = [ScanStrategy::Sequential, ScanStrategy::Parallel];
@@ -304,31 +303,6 @@ fn presence_of_repositories() {
 }
 
 #[test]
-fn submodules_from_gitmodules_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    write_file(
-        root,
-        ".gitmodules",
-        "[submodule \"foo\"]\n\tpath = libs/foo\n\turl = ../foo.git\n\
-         [submodule \"bar\"]\n\tpath = \"./vendor/../bar\"\n\turl = x\n\
-         [submodule \"dup\"]\n\tpath = libs/foo\n",
-    )
-    .unwrap();
-    let expected: Vec<RepoPath> = [root.join("libs").join("foo"), root.join("bar")]
-        .into_iter()
-        .map(RepoPath::new)
-        .collect();
-    assert_eq!(submodule_paths(root).unwrap(), expected);
-}
-
-#[test]
-fn no_gitmodules_means_no_submodules() {
-    let tmp = tempfile::tempdir().unwrap();
-    assert!(submodule_paths(tmp.path()).unwrap().is_empty());
-}
-
-#[test]
 fn real_submodule_is_detected_and_scanned() {
     let child = TestRepo::new().unwrap();
     child.commit_all("child").unwrap();
@@ -346,8 +320,6 @@ fn real_submodule_is_detected_and_scanned() {
         .unwrap();
 
     let sub: PathBuf = parent.path().join("deps").join("child");
-    let found = submodule_paths(parent.path()).unwrap();
-    assert_eq!(found, [RepoPath::new(sub.clone())]);
     assert_eq!(repo_presence(&sub), RepoPresence::Present);
 
     let options = ScanOptions {
