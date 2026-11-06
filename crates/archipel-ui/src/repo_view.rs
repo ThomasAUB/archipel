@@ -621,6 +621,7 @@ impl RepoView {
                         let graph = Arc::new(Mutex::new(graph));
                         pending = completion.map(|c| (c, Arc::clone(&graph)));
                         v.graph = Some(graph);
+                        v.graph_error = None;
                         v.row_count = rows;
                         v.lanes = lanes.clamp(1, MAX_LANES_SHOWN);
                         v.meta.clear();
@@ -995,13 +996,16 @@ impl RepoView {
             return;
         }
         self.pending = Some(range.clone());
+        let source = Arc::clone(&graph);
         let task = cx
             .background_spawn(async move { lock(&graph).meta(range.clone()).map(|m| (range, m)) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
                 v.pending = None;
-                if let Ok((range, metas)) = result {
+                // Rows of a graph reloaded meanwhile no longer match.
+                let current = v.graph.as_ref().is_some_and(|g| Arc::ptr_eq(g, &source));
+                if let (true, Ok((range, metas))) = (current, result) {
                     if v.meta.len() > META_KEEP {
                         v.meta.clear();
                     }

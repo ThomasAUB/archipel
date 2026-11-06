@@ -1051,6 +1051,18 @@ impl App {
             .map(|s| (s.id.clone(), s.def.clone()))
     }
 
+    /// Adds a folder to the open project: the folder itself when it is a
+    /// repository, else every repository found below it. Blocking (scans);
+    /// run it off the UI thread.
+    pub fn add_folder(&self, dir: &Path) -> Result<(), AppError> {
+        let paths: Vec<RepoPath> = if dir.join(".git").exists() {
+            vec![RepoPath::new(dir)]
+        } else {
+            self.scan(dir)?.into_iter().map(|r| r.path).collect()
+        };
+        self.add_repos(&paths)
+    }
+
     /// Adds repositories to the open project and saves the file.
     pub fn add_repos(&self, paths: &[RepoPath]) -> Result<(), AppError> {
         let (location, def) = {

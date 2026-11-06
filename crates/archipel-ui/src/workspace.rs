@@ -307,6 +307,9 @@ impl Workspace {
             }
             AppEvent::ProjectOpened(_) => {
                 self.repo_views.clear();
+                self.overlay = None;
+                self.category_targets.clear();
+                self.renaming_category = None;
                 self.quick_edit = None;
                 self.row_menu = None;
                 self.category_menu = None;
@@ -335,13 +338,23 @@ impl Workspace {
                     }
                 }
             }
-            AppEvent::UiStateChanged
-            | AppEvent::ProjectsChanged
+            AppEvent::UiStateChanged => self.drop_closed_repo_views(),
+            AppEvent::ProjectsChanged
             | AppEvent::TreeChanged
             | AppEvent::ForgeAccountsChanged
             | AppEvent::UpdateAvailable(_) => {}
         }
         cx.notify();
+    }
+
+    /// Frees the views of repo tabs that were closed: each holds a graph
+    /// and reloads on every refresh of its repo.
+    fn drop_closed_repo_views(&mut self) {
+        let Some(ui) = self.core.ui_state() else {
+            return;
+        };
+        self.repo_views
+            .retain(|id, _| ui.tabs.contains(&TabState::Repo(*id)));
     }
 
     fn dispatch(&mut self, command: Command, cx: &mut Context<Self>) {
@@ -875,43 +888,48 @@ impl Workspace {
         });
     }
 
+    /// Runs blocking core work (scans, project files) off the UI thread and
+    /// shows its error, if any.
+    fn run_core(
+        &mut self,
+        cx: &mut Context<Self>,
+        job: impl FnOnce(&Core) -> Result<(), archipel_app::AppError> + Send + 'static,
+    ) {
+        let core = self.core.clone();
+        let task = cx.background_spawn(async move { job(&core) });
+        cx.spawn(async move |this, cx| {
+            if let Err(e) = task.await {
+                // The workspace may have been closed meanwhile.
+                let _ = this.update(cx, |w, cx| {
+                    w.notice = Some(e.to_string());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     #[allow(clippy::unused_self)] // called like every other view action
     fn new_project_from_folder(&mut self, cx: &mut Context<Self>) {
         Self::pick(true, cx, |w, dir, cx| {
-            if let Err(e) = w.core.new_project_from_folder(&dir) {
-                w.notice = Some(e.to_string());
-            }
-            cx.notify();
+            w.run_core(cx, move |core| core.new_project_from_folder(&dir).map(drop));
         });
     }
 
     #[allow(clippy::unused_self)] // called like every other view action
     fn open_project_file(&mut self, cx: &mut Context<Self>) {
         Self::pick(false, cx, |w, file, cx| {
-            let result = w
-                .core
-                .import_project_file(&file)
-                .and_then(|id| w.core.open_project(&id));
-            if let Err(e) = result {
-                w.notice = Some(e.to_string());
-            }
-            cx.notify();
+            w.run_core(cx, move |core| {
+                let id = core.import_project_file(&file)?;
+                core.open_project(&id)
+            });
         });
     }
 
     #[allow(clippy::unused_self)] // called like every other view action
     fn add_repos(&mut self, cx: &mut Context<Self>) {
         Self::pick(true, cx, |w, dir, cx| {
-            let found = w.core.scan(&dir).unwrap_or_default();
-            let paths: Vec<RepoPath> = if dir.join(".git").exists() {
-                vec![RepoPath::new(dir)]
-            } else {
-                found.into_iter().map(|r| r.path).collect()
-            };
-            if let Err(e) = w.core.add_repos(&paths) {
-                w.notice = Some(e.to_string());
-            }
-            cx.notify();
+            w.run_core(cx, move |core| core.add_folder(&dir));
         });
     }
 
