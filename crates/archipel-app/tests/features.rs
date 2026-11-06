@@ -112,6 +112,7 @@ fn env_with(extra: &[&str], projects: Arc<dyn ProjectSource>) -> Env {
         caches: Arc::new(archipel_cache::CacheRegistry::new()),
         cache_dir: dir.path().join("cache"),
         forge: archipel_app::forge::ForgePorts::disabled(),
+        updates: None,
     };
     let app = App::new(
         services,

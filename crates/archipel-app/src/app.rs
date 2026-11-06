@@ -42,6 +42,7 @@ use crate::groups::{
 
 mod auto_fetch;
 mod forge_flow;
+mod update_check;
 
 use crate::keymap::Keymap;
 pub use forge_flow::{
@@ -105,6 +106,8 @@ pub enum AppEvent {
     TreeChanged,
     /// Forge accounts changed (sign in, sign out).
     ForgeAccountsChanged,
+    /// The update check found a release newer than the running version.
+    UpdateAvailable(archipel_model::forge::Release),
 }
 
 /// What opening a directory leads to (spec §1 "Launch from a directory").
@@ -308,6 +311,9 @@ pub struct Services {
     pub cache_dir: std::path::PathBuf,
     /// Forge integration (spec §8).
     pub forge: ForgePorts,
+    /// Where Archipel's releases are published; `None` disables the update
+    /// check (builds updated by a package manager, tests).
+    pub updates: Option<Arc<dyn archipel_model::ports::ReleaseFeed>>,
 }
 
 /// Registries a fork may extend before building the app.
@@ -383,6 +389,8 @@ pub struct App {
     events: broadcast::Sender<AppEvent>,
     /// Background fetch plan (per window, like the session).
     auto_fetch: Mutex<auto_fetch::AutoFetch>,
+    /// Update check (shared by the sibling cores).
+    updates: Arc<update_check::UpdateCheck>,
 }
 
 /// Event channel capacity; slow subscribers miss old events and re-read state.
@@ -500,8 +508,10 @@ impl App {
             auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
                 settings_auto_fetch,
             ))),
+            updates: update_check::UpdateCheck::new(),
         });
         app.forward_op_events();
+        app.forward_updates();
         app
     }
 
@@ -549,8 +559,10 @@ impl App {
             auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
                 settings_auto_fetch,
             ))),
+            updates: self.updates.clone(),
         });
         app.forward_op_events();
+        app.forward_updates();
         app
     }
 

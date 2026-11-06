@@ -11,7 +11,7 @@
 use crate::error::ForgeError;
 use crate::forge::{
     CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo,
+    PullRequestRef, PullRequestStatus, Release, RemoteRepo,
 };
 
 /// Reads the open pull / merge request of a branch (dashboard column).
@@ -93,4 +93,11 @@ pub trait ForgeAccountStore: Send + Sync {
     fn accounts(&self) -> Result<Vec<ForgeAccount>, ForgeError>;
     /// Replaces the list.
     fn save_accounts(&self, accounts: &[ForgeAccount]) -> Result<(), ForgeError>;
+}
+
+/// Where Archipel's own releases are published (update check). Unlike the
+/// other forge ports, it needs no account.
+pub trait ReleaseFeed: Send + Sync {
+    /// The latest stable release; `None` when nothing is published yet.
+    fn latest_release(&self) -> Result<Option<Release>, ForgeError>;
 }

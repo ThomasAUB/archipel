@@ -16,11 +16,12 @@ use archipel_app::settings::load_settings;
 use archipel_app::{App, Extensions, Services};
 use archipel_cache::{CacheRegistry, SqliteStore};
 use archipel_forge::{
-    FileAccountStore, ForgeClient, KeychainCredentials, UreqTransport, git_credential,
+    FileAccountStore, ForgeClient, GitHubReleases, KeychainCredentials, UreqTransport,
+    git_credential,
 };
 use archipel_git::{CliConfig, GitCli, GixReader, check_git_version};
 use archipel_model::ForgeError;
-use archipel_model::ports::{HistoryReader, RefReader, StashReader, StatusReader};
+use archipel_model::ports::{HistoryReader, RefReader, ReleaseFeed, StashReader, StatusReader};
 use archipel_model::settings::{ReadBackend, Settings};
 use archipel_ops::GitPorts;
 use archipel_project::{FileProjectSource, FsRepoDiscovery};
@@ -237,6 +238,22 @@ pub fn git_ports(settings: &Settings, cli: &Arc<GitCli>) -> GitPorts {
     ports
 }
 
+/// Where the update check looks for releases: the GitHub releases of the
+/// workspace's `repository`. Builds updated by a package manager (Homebrew,
+/// winget, Flatpak…) set `ARCHIPEL_NO_UPDATE_CHECK` at compile time: no
+/// check at all.
+#[must_use]
+pub fn release_feed(settings: &Settings) -> Option<Arc<dyn ReleaseFeed>> {
+    if option_env!("ARCHIPEL_NO_UPDATE_CHECK").is_some() {
+        return None;
+    }
+    let http = Arc::new(UreqTransport::new(std::time::Duration::from_secs(
+        settings.forge_timeout_secs,
+    )));
+    let feed = GitHubReleases::from_repository_url(http, env!("CARGO_PKG_REPOSITORY"))?;
+    Some(Arc::new(feed))
+}
+
 /// Builds the application from the user directories.
 pub fn compose(dirs: AppDirs) -> Result<Composition, ComposeError> {
     compose_with(dirs, ComposeOptions::default())
@@ -280,6 +297,7 @@ pub fn compose_with(dirs: AppDirs, options: ComposeOptions) -> Result<Compositio
         caches: Arc::new(CacheRegistry::new()),
         cache_dir: dirs.cache.clone(),
         forge: forge_ports(&settings, &dirs),
+        updates: release_feed(&settings),
     };
     steps.done("adapters");
 

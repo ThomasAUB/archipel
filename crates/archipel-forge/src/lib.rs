@@ -14,6 +14,7 @@
 //!   transport: no network.
 //! * Credentials: [`KeychainCredentials`] (OS keychain, `CredentialStore`)
 //!   and [`FileAccountStore`] (non-secret account list, `ForgeAccountStore`).
+//! * [`GitHubReleases`]: Archipel's own releases (update check).
 //! * [`git_credential`]: the same tokens served to `git` as a credential
 //!   helper, for HTTPS fetch and push.
 //!
@@ -30,7 +31,9 @@ pub mod github;
 pub mod gitlab;
 pub mod http;
 pub mod provider;
+pub mod releases;
 
 pub use client::ForgeClient;
 pub use credentials::{FileAccountStore, KeychainCredentials};
 pub use http::UreqTransport;
+pub use releases::GitHubReleases;

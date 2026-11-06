@@ -108,6 +108,7 @@ fn env() -> Env {
         caches: Arc::new(archipel_cache::CacheRegistry::new()),
         cache_dir: dir.path().join("cache"),
         forge: ForgePorts::from_backend(forge.clone(), creds.clone()),
+        updates: None,
     };
     let app = App::new(
         services,

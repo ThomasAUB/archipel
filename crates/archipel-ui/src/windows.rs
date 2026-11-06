@@ -25,6 +25,9 @@ const WINDOW_HEIGHT: f32 = 800.0;
 /// so desktops group the windows under the Archipel icon.
 const APP_ID: &str = "archipel";
 
+/// The first update check waits this long, off the startup path.
+const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The open windows and the core sessions behind them.
 pub struct Windows {
     /// Session factory: the first window's core (kept alive even if that
@@ -112,6 +115,7 @@ fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
         ..WindowOptions::default()
     };
     core.start_auto_fetch();
+    core.start_update_check(UPDATE_CHECK_DELAY);
     let window_core = core.clone();
     match gpui_kit::open_window(options, cx, move |window, cx| {
         cx.new(|cx| Workspace::new(window_core, warnings, window, cx))

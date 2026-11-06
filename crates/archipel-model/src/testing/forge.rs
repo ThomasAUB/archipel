@@ -8,11 +8,11 @@ use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
     CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo, ReviewState,
 };
 use crate::ports::{
     CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
-    PullRequestWriter,
+    PullRequestWriter, ReleaseFeed,
 };
 
 /// A pull request created through the fake.
@@ -283,5 +283,24 @@ impl ForgeAccountStore for InMemoryCredentials {
     fn save_accounts(&self, accounts: &[ForgeAccount]) -> Result<(), ForgeError> {
         *lock(&self.accounts) = accounts.to_vec();
         Ok(())
+    }
+}
+
+/// A release feed answering with whatever release is set.
+#[derive(Default)]
+pub struct FakeReleaseFeed {
+    latest: Mutex<Option<Release>>,
+}
+
+impl FakeReleaseFeed {
+    /// Publishes `release` as the latest one.
+    pub fn publish(&self, release: Release) {
+        *lock(&self.latest) = Some(release);
+    }
+}
+
+impl ReleaseFeed for FakeReleaseFeed {
+    fn latest_release(&self) -> Result<Option<Release>, ForgeError> {
+        Ok(lock(&self.latest).clone())
     }
 }

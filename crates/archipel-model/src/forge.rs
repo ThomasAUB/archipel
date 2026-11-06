@@ -244,6 +244,15 @@ pub struct PullRequestRef {
     pub url: String,
 }
 
+/// A published release of Archipel (update check).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    /// Version, without the tag's `v` prefix (`0.2.0`).
+    pub version: String,
+    /// Release page.
+    pub url: String,
+}
+
 /// Kind of an account namespace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NamespaceKind {

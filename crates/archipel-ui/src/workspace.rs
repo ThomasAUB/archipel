@@ -170,6 +170,8 @@ pub struct Workspace {
     opening: Option<RepoPath>,
     /// Window title last set.
     title: String,
+    /// Release whose status bar badge the user dismissed.
+    dismissed_update: Option<String>,
 }
 
 impl Workspace {
@@ -226,6 +228,7 @@ impl Workspace {
             scan: None,
             opening: None,
             title: String::new(),
+            dismissed_update: None,
         }
     }
 
@@ -326,7 +329,8 @@ impl Workspace {
             AppEvent::UiStateChanged
             | AppEvent::ProjectsChanged
             | AppEvent::TreeChanged
-            | AppEvent::ForgeAccountsChanged => {}
+            | AppEvent::ForgeAccountsChanged
+            | AppEvent::UpdateAvailable(_) => {}
         }
         cx.notify();
     }
@@ -2167,8 +2171,60 @@ impl Workspace {
                 cx.notify();
             }))
             .child(div().flex_1().min_w_0().truncate().child(text))
+            .children(self.render_update_badge(cx))
             .children(self.render_accent_picker(window, cx))
             .child(self.render_theme_picker(cx))
+    }
+
+    /// The status bar's "update available" badge: opens the release page,
+    /// × hides it until a newer release. None when up to date.
+    fn render_update_badge(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let release = self.core.available_update()?;
+        if self.dismissed_update.as_ref() == Some(&release.version) {
+            return None;
+        }
+        let fg = color(cx, T::FgDefault);
+        let tip = vec![
+            format!("Archipel {} is available", release.version),
+            "Click to open the release page".to_owned(),
+        ];
+        let url = release.url;
+        let version = release.version;
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .ml_2()
+                .text_color(color(cx, T::AccentText))
+                .child(
+                    div()
+                        .id("update-badge")
+                        .px_1()
+                        .rounded(radius(cx))
+                        .whitespace_nowrap()
+                        .hover(move |s| s.text_color(fg))
+                        .tooltip(move |_, cx| TextTooltip::view(&tip, cx))
+                        .on_click(move |_, _, cx| {
+                            cx.open_url(&url);
+                            cx.stop_propagation();
+                        })
+                        .child(format!("↑ Update {version}")),
+                )
+                .child(
+                    div()
+                        .id("update-dismiss")
+                        .px_1()
+                        .rounded(radius(cx))
+                        .hover(move |s| s.text_color(fg))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dismissed_update = Some(version.clone());
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                        .child("×"),
+                ),
+        )
     }
 
     /// The status bar's project color button: a swatch of the window's

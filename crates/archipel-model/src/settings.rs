@@ -64,6 +64,9 @@ pub struct Settings {
     /// Repos are fetched one at a time, spread over the interval; a repo
     /// whose fetches bring nothing is fetched less and less often. Default 600.
     pub auto_fetch_secs: u64,
+    /// Interval between two checks for a new Archipel release, in hours;
+    /// 0 disables the check. Default 24.
+    pub update_check_hours: u64,
 }
 
 impl Default for Settings {
@@ -88,6 +91,7 @@ impl Default for Settings {
             forge_timeout_secs: 20,
             forge_refresh_secs: 300,
             auto_fetch_secs: 600,
+            update_check_hours: 24,
         }
     }
 }

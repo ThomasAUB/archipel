@@ -12,7 +12,8 @@ use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
 use archipel_model::requests::{CommitMode, CommitRequest};
 use archipel_model::settings::Settings;
 use archipel_model::testing::{
-    FakeChangeSource, FakeDiscovery, FakeGit, FakeProjectSource, InMemoryStore, oid,
+    FakeChangeSource, FakeDiscovery, FakeGit, FakeProjectSource, FakeReleaseFeed, InMemoryStore,
+    oid,
 };
 use archipel_model::ui_state::TabState;
 use archipel_model::{HeadState, ProjectId, RepoPath, RepoSummary};
@@ -32,6 +33,7 @@ struct Env {
     store: Arc<InMemoryStore>,
     watcher: Arc<FakeChangeSource>,
     app: Arc<App>,
+    releases: Arc<FakeReleaseFeed>,
     repos: Vec<RepoPath>,
     dir: tempfile::TempDir,
 }
@@ -47,6 +49,7 @@ fn env() -> Env {
     let store = Arc::new(InMemoryStore::new());
     let watcher = Arc::new(FakeChangeSource::default());
     let projects = Arc::new(FakeProjectSource::default());
+    let releases = Arc::new(FakeReleaseFeed::default());
     let repos: Vec<RepoPath> = (0..3)
         .map(|i| {
             let p = dir.path().join(format!("r{i}"));
@@ -74,6 +77,7 @@ fn env() -> Env {
         caches: Arc::new(archipel_cache::CacheRegistry::new()),
         cache_dir: dir.path().join("cache"),
         forge: archipel_app::forge::ForgePorts::disabled(),
+        updates: Some(releases.clone()),
     };
     let app = App::new(
         services,
@@ -106,6 +110,7 @@ fn env() -> Env {
         store,
         watcher,
         app,
+        releases,
         repos,
         dir,
     }
@@ -433,4 +438,47 @@ fn closing_unloads_watchers_and_keeps_summaries() {
     e.app.close_project();
     assert!(e.app.rows().is_empty());
     assert_eq!(e.store.load_summaries(&id).unwrap().len(), 3);
+}
+
+fn release(version: &str) -> archipel_model::forge::Release {
+    archipel_model::forge::Release {
+        version: version.into(),
+        url: format!("https://example.com/{version}"),
+    }
+}
+
+#[test]
+fn update_check_reports_a_newer_release_to_every_window() {
+    let e = env();
+    let sibling = e.app.sibling();
+    let mut events = sibling.subscribe();
+    e.releases.publish(release("999.0.0"));
+    e.app.start_update_check(Duration::ZERO);
+    // One check loop per process, whichever window starts it.
+    sibling.start_update_check(Duration::ZERO);
+    wait_until(&sibling, "the update", |a| a.available_update().is_some());
+    assert_eq!(e.app.available_update(), Some(release("999.0.0")));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match events.try_recv() {
+            Ok(AppEvent::UpdateAvailable(r)) => {
+                assert_eq!(r, release("999.0.0"));
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "no UpdateAvailable event");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+#[test]
+fn update_check_ignores_older_releases() {
+    let e = env();
+    e.releases.publish(release("0.0.1"));
+    e.app.start_update_check(Duration::ZERO);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(e.app.available_update(), None);
 }
