@@ -302,11 +302,39 @@ pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixel
     } = width;
 }
 
+/// Shortens a status message to a few lines: git errors can list thousands
+/// of files, which would push the whole view out of the window. Keeps the
+/// first lines and the last two (git's hint, "Aborting"), and counts the
+/// lines left out.
+pub fn condense_status(text: &str) -> String {
+    const HEAD: usize = 3;
+    const TAIL: usize = 2;
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= HEAD + TAIL + 1 {
+        return text.to_owned();
+    }
+    let hidden = lines.len() - HEAD - TAIL;
+    let mut out = lines[..HEAD].join("\n");
+    out.push_str(&format!("\n… {hidden} more lines\n"));
+    out.push_str(&lines[lines.len() - TAIL..].join("\n"));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use gpui_kit::{point, size};
 
     use super::*;
+
+    #[test]
+    fn condense_status_keeps_short_text_and_shortens_long_lists() {
+        assert_eq!(condense_status("one\ntwo"), "one\ntwo");
+        let long: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+        assert_eq!(
+            condense_status(&long.join("\n")),
+            "line 0\nline 1\nline 2\n… 95 more lines\nline 98\nline 99"
+        );
+    }
 
     fn row() -> Bounds<Pixels> {
         Bounds::new(point(px(100.0), px(0.0)), size(px(1000.0), px(600.0)))

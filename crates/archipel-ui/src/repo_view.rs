@@ -40,8 +40,8 @@ use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Staging};
 use crate::theme::{color, lane, mono_font, radius, row_height};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, chip, context_menu, menu_item, menu_separator,
-    primary_button, resize_pane, scroll_list, section, splitter,
+    Pane, PaneDrag, TextTooltip, button, chip, condense_status, context_menu, menu_item,
+    menu_separator, primary_button, resize_pane, scroll_list, section, splitter,
 };
 
 /// Width of one graph lane.
@@ -3107,13 +3107,23 @@ impl Render for RepoView {
             .child(self.render_toolbar(cx))
             .children(name_form)
             .child(body)
-            .children(self.status.clone().map(|s| {
+            .children(self.status.as_deref().map(|s| {
                 div()
+                    .id("status")
+                    .flex_none()
                     .px_3()
                     .py_1()
+                    .max_h(px(120.0))
+                    .overflow_hidden()
                     .text_xs()
                     .text_color(color(cx, T::FgMuted))
-                    .child(s)
+                    .cursor_pointer()
+                    .tooltip(|_, cx| TextTooltip::view(&["Click to dismiss".into()], cx))
+                    .on_click(cx.listener(|v, _, _, cx| {
+                        v.status = None;
+                        cx.notify();
+                    }))
+                    .child(condense_status(s))
             }))
             .children(prompt)
             .children(confirm)
