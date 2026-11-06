@@ -85,11 +85,7 @@ pub(crate) fn open<V: Staging>(
                             .default_value(text)
                     });
                     editor.update(cx, |e, cx| {
-                        e.set_cursor_position(
-                            Position::new(line.saturating_sub(1), 0),
-                            window,
-                            cx,
-                        );
+                        e.set_cursor_position(Position::new(line.saturating_sub(1), 0), window, cx);
                     });
                     if let Some(edit) = &mut v.panel().edit {
                         edit.editor = Some(editor);
@@ -116,7 +112,9 @@ fn editable_text(file: &str, bytes: Vec<u8>) -> Result<(Vec<u8>, String, bool), 
         return Err(format!("{file} is too large to edit here"));
     }
     let Ok(text) = std::str::from_utf8(&bytes) else {
-        return Err(format!("{file} is not UTF-8 text: it cannot be edited here"));
+        return Err(format!(
+            "{file} is not UTF-8 text: it cannot be edited here"
+        ));
     };
     let lf = text.matches('\n').count();
     let crlf_count = text.matches("\r\n").count();
@@ -151,9 +149,9 @@ fn language_of(file: &str) -> String {
 
 /// Whether the editor holds changes not saved yet.
 fn is_dirty(edit: &FileEdit, cx: &gpui_kit::App) -> bool {
-    edit.editor.as_ref().is_some_and(|e| {
-        file_bytes(&e.read(cx).value(), edit.crlf) != edit.original
-    })
+    edit.editor
+        .as_ref()
+        .is_some_and(|e| file_bytes(&e.read(cx).value(), edit.crlf) != edit.original)
 }
 
 /// Writes the editor's text over the file, refused when the file changed
@@ -201,7 +199,12 @@ fn settle_save<V: Staging>(v: &mut V, cx: &gpui_kit::App) {
     let Some(edit) = &mut v.panel().edit else {
         return;
     };
-    let Some(saved) = edit.saved.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+    let Some(saved) = edit
+        .saved
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+    else {
         return;
     };
     edit.original = saved;
@@ -246,7 +249,11 @@ pub(crate) fn render_bar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<A
                 div()
                     .text_color(color(
                         cx,
-                        if edit.armed_close { T::StatusWarning } else { T::FgMuted },
+                        if edit.armed_close {
+                            T::StatusWarning
+                        } else {
+                            T::FgMuted
+                        },
                     ))
                     .child(note),
             )

@@ -1374,9 +1374,10 @@ impl RepoView {
         let actions = self.core.repo_actions().clone();
         let path = self.path.clone();
         let branch = name.clone();
-        let task = cx.background_spawn(async move {
-            actions.delete_branch(&path, &branch, DeleteMode::Safe)
-        });
+        let task =
+            cx.background_spawn(
+                async move { actions.delete_branch(&path, &branch, DeleteMode::Safe) },
+            );
         self.status = Some(format!("{label}…"));
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -1385,7 +1386,11 @@ impl RepoView {
                     Ok(()) => v.status = Some(format!("{label}: done")),
                     Err(e) if is_not_merged(&e) => {
                         v.status = None;
-                        v.choose(MenuAction::DeleteBranch(name, DeleteMode::Force), window, cx);
+                        v.choose(
+                            MenuAction::DeleteBranch(name, DeleteMode::Force),
+                            window,
+                            cx,
+                        );
                     }
                     Err(e) => v.status = Some(format!("{label} failed: {e}")),
                 }

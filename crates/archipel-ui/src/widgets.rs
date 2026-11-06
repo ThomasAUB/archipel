@@ -1,5 +1,7 @@
 //! Small styled building blocks, all colored through theme tokens.
 
+use std::fmt::Write as _;
+
 use archipel_model::ui_state::UiState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
@@ -311,7 +313,7 @@ pub fn condense_status(text: &str) -> String {
     }
     let hidden = lines.len() - HEAD - TAIL;
     let mut out = lines[..HEAD].join("\n");
-    out.push_str(&format!("\n… {hidden} more lines\n"));
+    let _ = write!(out, "\n… {hidden} more lines\n");
     out.push_str(&lines[lines.len() - TAIL..].join("\n"));
     out
 }

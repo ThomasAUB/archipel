@@ -405,7 +405,7 @@ fn render_diff_row<V: Staging>(
             }
             let doc = doc.clone();
             row.id(SharedString::from(format!("diff-line-{index}")))
-                .when(selectable, |row| row.cursor_pointer())
+                .when(selectable, Styled::cursor_pointer)
                 .on_click(cx.listener(move |v: &mut V, e: &ClickEvent, window, cx| {
                     if editable && e.click_count() >= 2 {
                         // The first click of the two selected the line.
