@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/archipel.svg" alt="Archipel logo" width="128">
+</p>
+
 # Archipel
 
 [![CI](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml)
