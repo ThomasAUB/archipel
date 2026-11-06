@@ -175,6 +175,76 @@ fn lane_palette_is_distinguishable_and_readable() {
     }
 }
 
+/// Every theme re-derived with accents all around the wheel, muted to vivid.
+fn accent_sweep() -> impl Iterator<Item = (Theme, f64)> {
+    builtin::all().into_iter().flat_map(|theme| {
+        (0..120).flat_map(move |step| {
+            let hue = f64::from(step) * 3.0;
+            let theme = theme.clone();
+            [(0.68, 0.05), (0.68, 0.12), (0.6, 0.2), (0.85, 0.15)]
+                .into_iter()
+                .map(move |(l, c)| {
+                    let accent = Oklch::new(l, c, hue).to_color();
+                    let themed = archipel_theme::with_project_accent(&theme, accent);
+                    (themed, accent.to_oklch().h)
+                })
+        })
+    })
+}
+
+#[test]
+fn lane_palette_follows_any_accent_and_stays_distinguishable() {
+    for (theme, accent_hue) in accent_sweep() {
+        let c = theme.colors();
+        let bg = c[ColorToken::BgApp];
+        // The main lane carries the accent's hue (outside the muddy band).
+        if !(95.0..135.0).contains(&accent_hue) {
+            let h = c.lane(0).to_oklch().h;
+            let d = (h - accent_hue + 180.0).rem_euclid(360.0) - 180.0;
+            assert!(d.abs() < 6.0, "{} lane 0 hue {h:.0} vs {accent_hue:.0}", theme.id);
+        }
+        for i in 0..LANE_COUNT {
+            assert!(c.lane(i).contrast_ratio(bg) >= WCAG_AA_LARGE_TEXT);
+            assert!(c.lane(i).delta_e(c.lane(i + 1)) >= 0.15, "{} adjacent {i}", theme.id);
+            for j in (i + 1)..LANE_COUNT {
+                let d = c.lane(i).delta_e(c.lane(j));
+                assert!(d >= 0.05, "{} accent {accent_hue:.0}: lanes {i}/{j}", theme.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn status_colors_lean_towards_the_accent_but_keep_their_meaning() {
+    let hue = |t: &Theme, tok| t.color(tok).to_oklch().h;
+    for (theme, _) in accent_sweep() {
+        // Green stays green, red stays red, yellow stays yellow.
+        for (tok, lo, hi) in [
+            (ColorToken::StatusSuccess, 135.0, 165.0),
+            (ColorToken::DiffAddFg, 135.0, 165.0),
+            (ColorToken::StatusWarning, 45.0, 75.0),
+            (ColorToken::StatusDirty, 65.0, 95.0),
+        ] {
+            let h = hue(&theme, tok);
+            assert!((lo..=hi).contains(&h), "{} {tok:?}: {h:.0}", theme.id);
+        }
+        for tok in [ColorToken::StatusError, ColorToken::DiffDelFg] {
+            let h = (hue(&theme, tok) + 180.0).rem_euclid(360.0) - 180.0;
+            assert!((10.0..=40.0).contains(&h), "{} {tok:?}: {h:.0}", theme.id);
+        }
+    }
+    // A warm accent warms the green, a cool one cools it.
+    let dark = builtin::dark();
+    let with = |h| {
+        archipel_theme::with_project_accent(&dark, Oklch::new(0.7, 0.12, h).to_color())
+    };
+    let success = |t: &Theme| hue(t, ColorToken::StatusSuccess);
+    assert!(success(&with(60.0)) < success(&with(230.0)));
+    // Syntax colors follow the same way.
+    let string = |t: &Theme| hue(t, ColorToken::SyntaxString);
+    assert!(string(&with(60.0)) < string(&with(230.0)));
+}
+
 // ---------------------------------------------------------------- built-ins
 
 #[test]

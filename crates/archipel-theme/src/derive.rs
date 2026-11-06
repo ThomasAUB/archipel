@@ -75,33 +75,58 @@ pub const DIFF_WORD_STEP: f64 = 0.13;
 /// Chroma of the word-level diff highlights.
 pub const DIFF_WORD_CHROMA: f64 = 0.07;
 
-/// Hues (OKLCH degrees) of the graph lanes, in lane order.
+/// Graph lane palette, derived from the accent: lanes alternate between the
+/// accent's hue family and its complementary family (a split-complementary
+/// scheme), so the graph reads as one harmonious set built around the
+/// window color. Each entry is (hue step from the family's center, in
+/// [`LANE_HUE_STEP`] units; lightness tier, in [`LANE_TIER_STEP`] units);
+/// lane `2k` takes entry `k` in the accent family, lane `2k + 1` the same
+/// entry in the complementary one.
 ///
-/// A curated set rather than an even spread around the wheel: the
-/// yellow-green band (~90–140°), which turns muddy at moderate chroma, is
-/// skipped, and only two warm hues are used so the graph stays cool and
-/// calm. The order keeps consecutive lanes (and the last and first) far
-/// apart in hue, and gives hues that are close on the wheel (240/265,
-/// 290/320…) opposite lightness steps. The first lane (usually the main
-/// line) is the theme-neutral blue.
-pub const LANE_HUES: [f64; 10] = [
-    240.0, 70.0, 290.0, 185.0, 320.0, 215.0, 25.0, 265.0, 150.0, 355.0,
-];
-// `LANE_HUES` has one hue per lane.
-const _: () = assert!(LANE_COUNT == LANE_HUES.len());
-/// Chroma of graph lane colors.
-pub const LANE_CHROMA: f64 = 0.125;
-/// Lightness of graph lanes on light themes: a little lighter than hued
-/// text, so thin lines do not turn brownish (lanes need only 3:1).
+/// The order keeps every pair of consecutive lanes (and the last and first)
+/// at least 120 degrees apart, and gives hues that are close within a family
+/// opposite lightness tiers. The first lane (usually the main line) has the
+/// accent's own hue.
+pub const LANE_FAMILY: [(f64, f64); LANE_COUNT / 2] =
+    [(0.0, 0.0), (2.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (-2.0, 1.0)];
+// Two families of `LANE_FAMILY.len()` lanes cover the palette.
+const _: () = assert!(LANE_COUNT == 2 * LANE_FAMILY.len());
+/// Hue distance (OKLCH degrees, on the full wheel) between neighbors of a
+/// lane family.
+pub const LANE_HUE_STEP: f64 = 30.0;
+/// Lightness distance between lane tiers.
+pub const LANE_TIER_STEP: f64 = 0.06;
+/// Lower bound of the lane chroma, which follows the accent's (a muted
+/// accent gives a softer graph, a vivid one a livelier one).
+pub const LANE_CHROMA_MIN: f64 = 0.11;
+/// Upper bound of the lane chroma.
+pub const LANE_CHROMA_MAX: f64 = 0.14;
+/// Lightness of graph lanes on dark themes (middle tier).
+pub const LANE_LIGHTNESS_DARK: f64 = 0.76;
+/// Lightness of graph lanes on light themes (middle tier): a little lighter
+/// than hued text, so thin lines do not turn brownish (lanes need only 3:1).
 pub const LANE_LIGHTNESS_LIGHT: f64 = 0.58;
-/// Lightness offset alternated between consecutive lanes so neighbors also
-/// differ in lightness.
-pub const LANE_LIGHTNESS_ALTERNATION: f64 = 0.05;
+/// Below this chroma the accent is a gray: its hue means nothing, and lanes
+/// are built around [`NEUTRAL_LANE_HUE`] instead.
+pub const ACHROMATIC_ACCENT_CHROMA: f64 = 0.03;
+/// Center hue of the lanes for a gray accent (a calm blue).
+pub const NEUTRAL_LANE_HUE: f64 = 240.0;
+/// The yellow-green band (OKLCH degrees, start and end) lanes skip: at lane
+/// lightness and chroma it turns muddy olive. Lane hues are laid out on the
+/// wheel with this band cut out, so it never shows and no two lanes collide.
+pub const MUDDY_HUES: (f64, f64) = (95.0, 135.0);
+
+/// Fraction of the hue distance to the accent that semantic colors (status,
+/// diff, syntax) move towards it, so they share the accent's temperature.
+pub const HARMONIZE_FACTOR: f64 = 0.25;
+/// Upper bound (degrees) of that move: green stays green, red stays red.
+pub const HARMONIZE_MAX_SHIFT: f64 = 12.0;
 
 /// Lightness increment used when searching for a color meeting a contrast target.
 pub const CONTRAST_SEARCH_STEP: f64 = 0.005;
 
-/// Hues (OKLCH degrees) of semantic colors.
+/// Hues (OKLCH degrees) of semantic colors; status, diff and syntax hues are
+/// nudged towards the accent ([`harmonize`]).
 mod hue {
     pub const ADD: f64 = 150.0;
     pub const DEL: f64 = 25.0;
@@ -278,8 +303,8 @@ impl Deriver {
 
         // The default text must be readable on every surface it is drawn on.
         let text_surfaces = [bg, self.bg_panel, bg_hover, bg_selected];
-        let (add, add_word) = self.diff_bgs(hue::ADD);
-        let (del, del_word) = self.diff_bgs(hue::DEL);
+        let (add, add_word) = self.diff_bgs(self.semantic(hue::ADD));
+        let (del, del_word) = self.diff_bgs(self.semantic(hue::DEL));
         let mut all_surfaces = vec![bg_elevated, bg_input, add, add_word, del, del_word];
         all_surfaces.extend(text_surfaces);
         let fg = ensure_contrast_all(text.with_alpha(255), &all_surfaces, WCAG_AA_NORMAL_TEXT);
@@ -327,19 +352,19 @@ impl Deriver {
     /// Status colors (also used as text: counts, labels) and syntax colors.
     fn status_and_syntax(&self, fg: Color, set: &mut ColorSet) {
         for (t, h) in [
-            (ColorToken::StatusDirty, hue::DIRTY),
-            (ColorToken::StatusAhead, hue::AHEAD),
-            (ColorToken::StatusBehind, hue::BEHIND),
-            (ColorToken::StatusConflict, hue::CONFLICT),
-            (ColorToken::StatusSuccess, hue::SUCCESS),
-            (ColorToken::StatusError, hue::ERROR),
-            (ColorToken::StatusWarning, hue::WARNING),
-            (ColorToken::SyntaxKeyword, hue::KEYWORD),
-            (ColorToken::SyntaxString, hue::STRING),
-            (ColorToken::SyntaxFunction, hue::FUNCTION),
-            (ColorToken::SyntaxType, hue::TYPE),
-            (ColorToken::SyntaxNumber, hue::NUMBER),
-            (ColorToken::SyntaxConstant, hue::CONSTANT),
+            (ColorToken::StatusDirty, self.semantic(hue::DIRTY)),
+            (ColorToken::StatusAhead, self.semantic(hue::AHEAD)),
+            (ColorToken::StatusBehind, self.semantic(hue::BEHIND)),
+            (ColorToken::StatusConflict, self.semantic(hue::CONFLICT)),
+            (ColorToken::StatusSuccess, self.semantic(hue::SUCCESS)),
+            (ColorToken::StatusError, self.semantic(hue::ERROR)),
+            (ColorToken::StatusWarning, self.semantic(hue::WARNING)),
+            (ColorToken::SyntaxKeyword, self.semantic(hue::KEYWORD)),
+            (ColorToken::SyntaxString, self.semantic(hue::STRING)),
+            (ColorToken::SyntaxFunction, self.semantic(hue::FUNCTION)),
+            (ColorToken::SyntaxType, self.semantic(hue::TYPE)),
+            (ColorToken::SyntaxNumber, self.semantic(hue::NUMBER)),
+            (ColorToken::SyntaxConstant, self.semantic(hue::CONSTANT)),
         ] {
             set.set(t, self.on_surfaces(self.hued(h)));
         }
@@ -359,13 +384,13 @@ impl Deriver {
                 ColorToken::DiffAddBg,
                 ColorToken::DiffAddWordBg,
                 ColorToken::DiffAddFg,
-                hue::ADD,
+                self.semantic(hue::ADD),
             ),
             (
                 ColorToken::DiffDelBg,
                 ColorToken::DiffDelWordBg,
                 ColorToken::DiffDelFg,
-                hue::DEL,
+                self.semantic(hue::DEL),
             ),
         ] {
             let (line_bg, word_bg) = self.diff_bgs(h);
@@ -382,26 +407,72 @@ impl Deriver {
         }
     }
 
-    /// Graph lanes: curated hues ([`LANE_HUES`]), alternating lightness, readable as
-    /// graphical objects (3:1) on app and panel backgrounds.
+    /// Graph lanes: two hue families around the accent ([`LANE_FAMILY`]),
+    /// readable as graphical objects (3:1) on app and panel backgrounds.
     fn lanes(&self, set: &mut ColorSet) {
         let lane_l = if self.toward_text > 0.0 {
-            self.hue_l
+            LANE_LIGHTNESS_DARK
         } else {
             LANE_LIGHTNESS_LIGHT
         };
+        let chroma = self.accent_lch.c.clamp(LANE_CHROMA_MIN, LANE_CHROMA_MAX);
+        let center = self.accent_hue().unwrap_or(NEUTRAL_LANE_HUE);
         for (i, &t) in ColorToken::LANES.iter().enumerate() {
-            let offset = if i % 2 == 0 {
-                LANE_LIGHTNESS_ALTERNATION / 2.0
-            } else {
-                -LANE_LIGHTNESS_ALTERNATION / 2.0
-            };
-            let c = Oklch::new(lane_l + offset, LANE_CHROMA, LANE_HUES[i]).to_color();
+            let (step, tier) = LANE_FAMILY[i / 2];
+            let family = if i % 2 == 0 { 0.0 } else { 180.0 };
+            let hue = lane_hue(center, family + step * LANE_HUE_STEP);
+            let c = Oklch::new(lane_l + tier * LANE_TIER_STEP, chroma, hue).to_color();
             set.set(
                 t,
                 ensure_contrast_all(c, &[self.bg, self.bg_panel], WCAG_AA_LARGE_TEXT),
             );
         }
+    }
+
+    /// The accent's hue, unless the accent is a gray.
+    fn accent_hue(&self) -> Option<f64> {
+        (self.accent_lch.c >= ACHROMATIC_ACCENT_CHROMA).then_some(self.accent_lch.h)
+    }
+
+    /// Semantic `hue` nudged towards the accent's hue (see [`harmonize`]).
+    fn semantic(&self, hue: f64) -> f64 {
+        self.accent_hue().map_or(hue, |a| harmonize(hue, a))
+    }
+}
+
+/// `hue` moved towards `target` by [`HARMONIZE_FACTOR`] of their distance,
+/// at most [`HARMONIZE_MAX_SHIFT`] degrees, along the shorter way round.
+#[must_use]
+pub fn harmonize(hue: f64, target: f64) -> f64 {
+    let diff = (target - hue + 180.0).rem_euclid(360.0) - 180.0;
+    let shift = (diff * HARMONIZE_FACTOR).clamp(-HARMONIZE_MAX_SHIFT, HARMONIZE_MAX_SHIFT);
+    (hue + shift).rem_euclid(360.0)
+}
+
+/// The hue `turn` degrees from `center` on the wheel with [`MUDDY_HUES`] cut
+/// out: angles are measured on the shortened wheel (scaled so a full turn
+/// stays a full turn), then mapped back to real hues. A center inside the
+/// band snaps to its nearest edge.
+#[must_use]
+pub fn lane_hue(center: f64, turn: f64) -> f64 {
+    let (start, end) = MUDDY_HUES;
+    let width = end - start;
+    let span = 360.0 - width;
+    let center = center.rem_euclid(360.0);
+    let (u_center, upper_edge) = if center < start {
+        (center, false)
+    } else if center < end {
+        (start, center >= f64::midpoint(start, end))
+    } else {
+        (center - width, false)
+    };
+    let u = (u_center + turn * span / 360.0).rem_euclid(span);
+    // `u` at `start` is the band itself: either of its edges.
+    let below = if upper_edge { u < start } else { u <= start };
+    if below {
+        u
+    } else {
+        u + width
     }
 }
 
