@@ -282,13 +282,17 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Opens the quick edit pane on a repo (kept when it already shows it).
-    fn open_quick_edit(&mut self, id: RepoId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the quick edit pane on a repo, or closes it when it already
+    /// shows that repo.
+    fn toggle_quick_edit(&mut self, id: RepoId, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .quick_edit
             .as_ref()
             .is_some_and(|(p, _)| p.read(cx).repo() == id)
         {
+            self.quick_edit = None;
+            self.focus.focus(window, cx);
+            cx.notify();
             return;
         }
         let Some(row) = self.core.rows().into_iter().find(|r| r.id == id) else {
@@ -1203,7 +1207,9 @@ impl Workspace {
                     .child(view_chips)
                     .children(scan),
             )
-            .child(batch)
+            // The quick edit pane has its own actions; showing these too
+            // would wrap them under the filters in the narrowed list.
+            .when(self.quick_edit.is_none(), |d| d.child(batch))
             .into_any_element()
     }
 
@@ -1374,7 +1380,7 @@ impl Workspace {
                 let plain = command == Command::Select(Some(id));
                 this.dispatch(command, cx);
                 if plain {
-                    this.open_quick_edit(id, window, cx);
+                    this.toggle_quick_edit(id, window, cx);
                 }
             }))
             .on_mouse_down(
