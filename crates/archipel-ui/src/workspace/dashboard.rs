@@ -171,6 +171,7 @@ impl Workspace {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // declarative element tree
     pub(super) fn render_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.core.project().is_none() {
             return div()
@@ -372,6 +373,7 @@ impl Workspace {
 
     /// The category filter: one dropdown button whatever the number of
     /// categories, its menu a checklist (several can be selected).
+    #[allow(clippy::too_many_lines)] // declarative element tree
     fn render_category_filter(
         &mut self,
         ui: &UiState,

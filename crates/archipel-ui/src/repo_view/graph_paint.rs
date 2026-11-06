@@ -213,6 +213,7 @@ impl RepoView {
     /// A commit row. `stash_lane`: the lane of the stashes drawn above it,
     /// which joins its node; `wip_lane`: the uncommitted lane, passing by or
     /// joining the HEAD commit.
+    #[allow(clippy::too_many_lines)] // declarative element tree
     fn render_row(
         &mut self,
         row: &GraphRow,

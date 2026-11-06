@@ -19,6 +19,7 @@ use super::dashboard::row_click;
 use super::overlays::PaletteKind;
 
 impl Workspace {
+    #[allow(clippy::too_many_lines)] // declarative element tree
     pub(super) fn render_sidebar(
         &mut self,
         window: &Window,

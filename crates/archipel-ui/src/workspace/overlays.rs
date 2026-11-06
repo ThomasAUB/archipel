@@ -5,7 +5,7 @@ use archipel_app::Command;
 use archipel_model::project::ProjectLocation;
 use archipel_model::{ProjectId, RepoId};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, MouseDownEvent, SharedString, Window, div};
+use gpui_kit::{AnyElement, App, Context, Entity, MouseDownEvent, SharedString, Window, div};
 
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
 use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
@@ -61,6 +61,69 @@ impl Workspace {
         })
     }
 
+    /// Items of the project switcher: new and open, then every project,
+    /// noting the ones shown by a window.
+    fn project_items(&self, window: &Window, cx: &App) -> Vec<PaletteItem> {
+        let mut items = vec![
+            PaletteItem {
+                id: "+folder".into(),
+                label: "New project from a folder…".into(),
+                detail: "scan for repositories".into(),
+            },
+            PaletteItem {
+                id: "+file".into(),
+                label: "Open an archipel.toml…".into(),
+                detail: "shared project file".into(),
+            },
+        ];
+        let current = self.core.project().map(|(id, _)| id);
+        for p in self.core.projects().unwrap_or_default() {
+            let ProjectLocation::SharedFile(file) = &p.location;
+            let mut detail = file.display().to_string();
+            if current.as_ref() == Some(&p.id) {
+                detail = format!("this window · {detail}");
+            } else if crate::windows::is_open(window, cx, &p.id) {
+                detail = format!("open in another window · {detail}");
+            }
+            let label = match self
+                .core
+                .project_icon(&p.id)
+                .as_ref()
+                .and_then(|i| i.text())
+            {
+                Some(icon) => format!("{icon}  {}", p.name),
+                None => p.name,
+            };
+            items.push(PaletteItem {
+                id: p.id.0,
+                label,
+                detail,
+            });
+        }
+        items
+    }
+
+    /// Items of the action palette: the actions available, with their keys.
+    fn action_items(&self) -> Vec<PaletteItem> {
+        let ctx = self.core.action_context();
+        let ext = self.core.extensions();
+        ext.actions
+            .available(&ctx)
+            .into_iter()
+            .map(|a| PaletteItem {
+                id: a.id().to_owned(),
+                label: a.label().to_owned(),
+                detail: ext
+                    .keymap
+                    .keys_for(a.id())
+                    .first()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// Opens the palette of `kind`.
     pub(super) fn open_palette(
         &mut self,
         kind: PaletteKind,
@@ -68,65 +131,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let (title, items, prompt) = match kind {
-            PaletteKind::Projects => {
-                let mut items = vec![
-                    PaletteItem {
-                        id: "+folder".into(),
-                        label: "New project from a folder…".into(),
-                        detail: "scan for repositories".into(),
-                    },
-                    PaletteItem {
-                        id: "+file".into(),
-                        label: "Open an archipel.toml…".into(),
-                        detail: "shared project file".into(),
-                    },
-                ];
-                let current = self.core.project().map(|(id, _)| id);
-                for p in self.core.projects().unwrap_or_default() {
-                    let ProjectLocation::SharedFile(file) = &p.location;
-                    let mut detail = file.display().to_string();
-                    if current.as_ref() == Some(&p.id) {
-                        detail = format!("this window · {detail}");
-                    } else if crate::windows::is_open(window, cx, &p.id) {
-                        detail = format!("open in another window · {detail}");
-                    }
-                    let label = match self
-                        .core
-                        .project_icon(&p.id)
-                        .as_ref()
-                        .and_then(|i| i.text())
-                    {
-                        Some(icon) => format!("{icon}  {}", p.name),
-                        None => p.name,
-                    };
-                    items.push(PaletteItem {
-                        id: p.id.0,
-                        label,
-                        detail,
-                    });
-                }
-                ("Switch project", items, false)
-            }
-            PaletteKind::Actions => {
-                let ctx = self.core.action_context();
-                let ext = self.core.extensions();
-                let items = ext
-                    .actions
-                    .available(&ctx)
-                    .into_iter()
-                    .map(|a| PaletteItem {
-                        id: a.id().to_owned(),
-                        label: a.label().to_owned(),
-                        detail: ext
-                            .keymap
-                            .keys_for(a.id())
-                            .first()
-                            .map(ToString::to_string)
-                            .unwrap_or_default(),
-                    })
-                    .collect();
-                ("Actions", items, false)
-            }
+            PaletteKind::Projects => ("Switch project", self.project_items(window, cx), false),
+            PaletteKind::Actions => ("Actions", self.action_items(), false),
             PaletteKind::Checkout => (
                 "Check out branch on selected repos (all when none)",
                 Vec::new(),

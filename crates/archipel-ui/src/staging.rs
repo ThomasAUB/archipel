@@ -538,6 +538,7 @@ pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
 }
 
 /// Unstaged files, staged files, commit box.
+#[allow(clippy::too_many_lines)] // declarative element tree
 fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();

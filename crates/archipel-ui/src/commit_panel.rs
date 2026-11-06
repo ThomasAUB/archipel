@@ -195,6 +195,7 @@ impl CommitPanel {
 }
 
 impl Render for CommitPanel {
+    #[allow(clippy::too_many_lines)] // declarative element tree
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut repos = Vec::new();
         let mut mismatch = false;

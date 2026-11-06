@@ -123,136 +123,155 @@ fn menu_entries(
     current: Option<&str>,
     has_local: impl Fn(&str) -> bool,
 ) -> Vec<MenuEntry> {
+    match target {
+        MenuTarget::Commit(oid, refs) => commit_entries(*oid, refs, current),
+        MenuTarget::Ref(tip) => ref_entries(tip, current, has_local),
+        MenuTarget::Stash(oid) => stash_entries(*oid),
+        MenuTarget::Drop { source, target } => drop_entries(source, target, current),
+        MenuTarget::Submodule(sub) => submodule_entries(sub),
+    }
+}
+
+/// The menu of commit `oid`, which `refs` point at.
+fn commit_entries(oid: Oid, refs: &[RefTip], current: Option<&str>) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    let onto = current.unwrap_or("HEAD");
+    let mut out = vec![
+        item("New branch here…", A::Name(NameForm::Branch(Some(oid)))),
+        item("New tag here…", A::Name(NameForm::Tag(oid))),
+        item(
+            "Checkout (detached)",
+            A::Checkout(CheckoutTarget::Detached(oid)),
+        ),
+        MenuEntry::Separator,
+        item("Cherry-pick", A::CherryPick(oid)),
+        item("Revert", A::Revert(oid)),
+        item(
+            format!("Reset {onto} here (soft)"),
+            A::Reset(oid, ResetMode::Soft),
+        ),
+        item(
+            format!("Reset {onto} here (mixed)"),
+            A::Reset(oid, ResetMode::Mixed),
+        ),
+        danger(
+            format!("Reset {onto} here (hard)…"),
+            A::Reset(oid, ResetMode::Hard),
+        ),
+    ];
+    let deletes: Vec<MenuEntry> = refs
+        .iter()
+        .filter_map(|r| match r.kind {
+            RefKind::LocalBranch if Some(r.name.as_str()) != current => Some(danger(
+                format!("Delete branch {}", r.name),
+                A::DeleteBranch(r.name.clone(), DeleteMode::Safe),
+            )),
+            RefKind::Tag => Some(danger(
+                format!("Delete tag {}", r.name),
+                A::DeleteTag(r.name.clone()),
+            )),
+            _ => None,
+        })
+        .collect();
+    if !deletes.is_empty() {
+        out.push(MenuEntry::Separator);
+        out.extend(deletes);
+    }
+    out.push(MenuEntry::Separator);
+    out.push(item("Copy commit id", A::Copy(oid.to_hex())));
+    out
+}
+
+/// The menu of a branch or tag.
+fn ref_entries(
+    tip: &RefTip,
+    current: Option<&str>,
+    has_local: impl Fn(&str) -> bool,
+) -> Vec<MenuEntry> {
     use MenuAction as A;
     let mut out = Vec::new();
-    match target {
-        MenuTarget::Commit(oid, refs) => {
-            let oid = *oid;
-            out.push(item(
-                "New branch here…",
-                A::Name(NameForm::Branch(Some(oid))),
-            ));
-            out.push(item("New tag here…", A::Name(NameForm::Tag(oid))));
-            out.push(item(
-                "Checkout (detached)",
-                A::Checkout(CheckoutTarget::Detached(oid)),
-            ));
-            out.push(MenuEntry::Separator);
-            out.push(item("Cherry-pick", A::CherryPick(oid)));
-            out.push(item("Revert", A::Revert(oid)));
-            let onto = current.unwrap_or("HEAD");
-            out.push(item(
-                format!("Reset {onto} here (soft)"),
-                A::Reset(oid, ResetMode::Soft),
-            ));
-            out.push(item(
-                format!("Reset {onto} here (mixed)"),
-                A::Reset(oid, ResetMode::Mixed),
-            ));
-            out.push(danger(
-                format!("Reset {onto} here (hard)…"),
-                A::Reset(oid, ResetMode::Hard),
-            ));
-            let deletes: Vec<MenuEntry> = refs
-                .iter()
-                .filter_map(|r| match r.kind {
-                    RefKind::LocalBranch if Some(r.name.as_str()) != current => Some(danger(
-                        format!("Delete branch {}", r.name),
-                        A::DeleteBranch(r.name.clone(), DeleteMode::Safe),
-                    )),
-                    RefKind::Tag => Some(danger(
-                        format!("Delete tag {}", r.name),
-                        A::DeleteTag(r.name.clone()),
-                    )),
-                    _ => None,
-                })
-                .collect();
-            if !deletes.is_empty() {
-                out.push(MenuEntry::Separator);
-                out.extend(deletes);
-            }
-            out.push(MenuEntry::Separator);
-            out.push(item("Copy commit id", A::Copy(oid.to_hex())));
-        }
-        MenuTarget::Ref(tip) => {
-            let name = &tip.name;
-            let is_current = tip.kind == RefKind::LocalBranch && Some(name.as_str()) == current;
-            if !is_current && let Some(t) = CheckoutTarget::for_ref(tip, &has_local) {
-                out.push(item(format!("Checkout {name}"), A::Checkout(t)));
-            }
-            if matches!(tip.kind, RefKind::LocalBranch | RefKind::RemoteBranch) && !is_current {
-                let into = current.unwrap_or("HEAD");
-                out.push(item(
-                    format!("Merge {name} into {into}"),
-                    A::Merge(name.clone()),
-                ));
-                out.push(item(
-                    format!("Rebase {into} onto {name}"),
-                    A::Rebase(name.clone()),
-                ));
-            }
-            out.push(item(
-                format!("New branch from {name}…"),
-                A::Name(NameForm::Branch(Some(tip.target))),
-            ));
-            match tip.kind {
-                RefKind::LocalBranch => {
-                    out.push(item("Rename…", A::Name(NameForm::Rename(name.clone()))));
-                    if !is_current {
-                        out.push(MenuEntry::Separator);
-                        out.push(danger(
-                            format!("Delete {name}"),
-                            A::DeleteBranch(name.clone(), DeleteMode::Safe),
-                        ));
-                        out.push(danger(
-                            format!("Force delete {name}…"),
-                            A::DeleteBranch(name.clone(), DeleteMode::Force),
-                        ));
-                    }
-                }
-                RefKind::RemoteBranch => {
-                    out.push(MenuEntry::Separator);
-                    out.push(danger(
-                        format!("Delete {name} on the remote…"),
-                        A::DeleteRemoteBranch(name.clone()),
-                    ));
-                }
-                RefKind::Tag => {
-                    out.push(item(format!("Push {name}"), A::PushTag(name.clone())));
-                    out.push(MenuEntry::Separator);
-                    out.push(danger(format!("Delete {name}"), A::DeleteTag(name.clone())));
-                }
-                RefKind::Head | RefKind::Stash => {}
-            }
-            out.push(MenuEntry::Separator);
-            out.push(item("Copy name", A::Copy(name.clone())));
-        }
-        MenuTarget::Stash(oid) => {
-            let oid = *oid;
-            out.push(item("Apply", A::Stash(oid, Some(StashApplyMode::Keep))));
-            out.push(item("Pop", A::Stash(oid, Some(StashApplyMode::Pop))));
-            out.push(danger("Drop", A::Stash(oid, None)));
-        }
-        MenuTarget::Drop { source, target } => {
-            out.extend(drop_entries(source, target, current));
-        }
-        MenuTarget::Submodule(sub) => {
-            let name = sub.name.clone();
-            if sub.initialized {
-                out.push(item("Open", A::OpenSubmodule(sub.path.clone())));
-                let label = if sub.is_out_of_sync() {
-                    "Update to the pinned commit"
-                } else {
-                    "Update"
-                };
-                out.push(item(label, A::UpdateSubmodule { name, init: false }));
-            } else {
-                out.push(item("Initialize", A::UpdateSubmodule { name, init: true }));
-            }
-            out.push(MenuEntry::Separator);
-            out.push(item("Copy path", A::Copy(sub.name.clone())));
-        }
+    let name = &tip.name;
+    let is_current = tip.kind == RefKind::LocalBranch && Some(name.as_str()) == current;
+    if !is_current && let Some(t) = CheckoutTarget::for_ref(tip, &has_local) {
+        out.push(item(format!("Checkout {name}"), A::Checkout(t)));
     }
+    if matches!(tip.kind, RefKind::LocalBranch | RefKind::RemoteBranch) && !is_current {
+        let into = current.unwrap_or("HEAD");
+        out.push(item(
+            format!("Merge {name} into {into}"),
+            A::Merge(name.clone()),
+        ));
+        out.push(item(
+            format!("Rebase {into} onto {name}"),
+            A::Rebase(name.clone()),
+        ));
+    }
+    out.push(item(
+        format!("New branch from {name}…"),
+        A::Name(NameForm::Branch(Some(tip.target))),
+    ));
+    match tip.kind {
+        RefKind::LocalBranch => {
+            out.push(item("Rename…", A::Name(NameForm::Rename(name.clone()))));
+            if !is_current {
+                out.push(MenuEntry::Separator);
+                out.push(danger(
+                    format!("Delete {name}"),
+                    A::DeleteBranch(name.clone(), DeleteMode::Safe),
+                ));
+                out.push(danger(
+                    format!("Force delete {name}…"),
+                    A::DeleteBranch(name.clone(), DeleteMode::Force),
+                ));
+            }
+        }
+        RefKind::RemoteBranch => {
+            out.push(MenuEntry::Separator);
+            out.push(danger(
+                format!("Delete {name} on the remote…"),
+                A::DeleteRemoteBranch(name.clone()),
+            ));
+        }
+        RefKind::Tag => {
+            out.push(item(format!("Push {name}"), A::PushTag(name.clone())));
+            out.push(MenuEntry::Separator);
+            out.push(danger(format!("Delete {name}"), A::DeleteTag(name.clone())));
+        }
+        RefKind::Head | RefKind::Stash => {}
+    }
+    out.push(MenuEntry::Separator);
+    out.push(item("Copy name", A::Copy(name.clone())));
+    out
+}
+
+/// The menu of the stash with commit id `oid`.
+fn stash_entries(oid: Oid) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    vec![
+        item("Apply", A::Stash(oid, Some(StashApplyMode::Keep))),
+        item("Pop", A::Stash(oid, Some(StashApplyMode::Pop))),
+        danger("Drop", A::Stash(oid, None)),
+    ]
+}
+
+/// The menu of a submodule.
+fn submodule_entries(sub: &SubmoduleInfo) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    let mut out = Vec::new();
+    let name = sub.name.clone();
+    if sub.initialized {
+        out.push(item("Open", A::OpenSubmodule(sub.path.clone())));
+        let label = if sub.is_out_of_sync() {
+            "Update to the pinned commit"
+        } else {
+            "Update"
+        };
+        out.push(item(label, A::UpdateSubmodule { name, init: false }));
+    } else {
+        out.push(item("Initialize", A::UpdateSubmodule { name, init: true }));
+    }
+    out.push(MenuEntry::Separator);
+    out.push(item("Copy path", A::Copy(sub.name.clone())));
     out
 }
 
@@ -335,6 +354,7 @@ impl RepoView {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per menu action
     pub(super) fn perform(
         &mut self,
         action: MenuAction,

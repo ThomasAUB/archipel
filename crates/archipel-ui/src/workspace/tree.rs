@@ -44,6 +44,7 @@ impl Workspace {
     /// The dependency tree (spec §9): project repos keep their dashboard
     /// columns, with their update buttons on hover when they are
     /// submodules; other submodules show their state and actions.
+    #[allow(clippy::too_many_lines)] // declarative element tree
     pub(super) fn render_tree(
         &self,
         tree: &[TreeRow],

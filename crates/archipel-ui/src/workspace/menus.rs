@@ -163,6 +163,7 @@ impl Workspace {
     }
 
     /// The context menu of a repo row (right click).
+    #[allow(clippy::too_many_lines)] // declarative element tree
     pub(super) fn render_row_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (id, position) = self.row_menu?;
         let ui = self.core.ui_state()?;

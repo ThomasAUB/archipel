@@ -328,6 +328,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
+    #[allow(clippy::too_many_lines)] // declarative element tree
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Window identity (spec §2): this window's project colors for every
         // view drawn below, and the project name first in the title.
