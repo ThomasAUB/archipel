@@ -116,10 +116,10 @@ fn compose_and_open(
         .projects()
         .ok()
         .and_then(|p| p.into_iter().find(|e| e.last_opened.is_some()));
-    if let Some(entry) = recent {
-        if let Err(e) = app.open_project(&entry.id) {
-            tracing::warn!(error = %e, "cannot reopen the last project");
-        }
+    if let Some(entry) = recent
+        && let Err(e) = app.open_project(&entry.id)
+    {
+        tracing::warn!(error = %e, "cannot reopen the last project");
     }
     startup::mark("project reopened");
     Ok((composition, notices))

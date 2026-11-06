@@ -187,10 +187,8 @@ impl RepoClassifier {
             };
             return self.classify_git_area(area, rel);
         }
-        if linked {
-            if let Ok(rel) = path.strip_prefix(&self.layout.common_dir) {
-                return self.classify_git_area(Area::CommonDir, rel);
-            }
+        if linked && let Ok(rel) = path.strip_prefix(&self.layout.common_dir) {
+            return self.classify_git_area(Area::CommonDir, rel);
         }
         let Some(worktree) = &self.layout.worktree else {
             return Scope::NONE;
@@ -219,10 +217,11 @@ impl RepoClassifier {
 
     fn classify_git_area(&mut self, area: Area, rel: &Path) -> Scope {
         let scope = classify(area, rel);
-        if !scope.is_empty() && normal_parts(rel).is_some_and(|p| p.join("/") == INFO_EXCLUDE) {
-            if let Some(worktree) = &self.layout.worktree {
-                self.dirs.remove(worktree);
-            }
+        if !scope.is_empty()
+            && normal_parts(rel).is_some_and(|p| p.join("/") == INFO_EXCLUDE)
+            && let Some(worktree) = &self.layout.worktree
+        {
+            self.dirs.remove(worktree);
         }
         scope
     }
@@ -253,13 +252,13 @@ impl RepoClassifier {
             if !d.starts_with(&worktree) {
                 break;
             }
-            if let Ok(sub) = path.strip_prefix(d) {
-                if let Some(m) = self.matcher(d, &worktree) {
-                    match m.matched_path_or_any_parents(sub, is_dir) {
-                        Match::Ignore(_) => return true,
-                        Match::Whitelist(_) => return false,
-                        Match::None => {}
-                    }
+            if let Ok(sub) = path.strip_prefix(d)
+                && let Some(m) = self.matcher(d, &worktree)
+            {
+                match m.matched_path_or_any_parents(sub, is_dir) {
+                    Match::Ignore(_) => return true,
+                    Match::Whitelist(_) => return false,
+                    Match::None => {}
                 }
             }
             if d == worktree {

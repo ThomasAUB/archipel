@@ -2390,10 +2390,10 @@ impl RepoView {
                 .into_any_element();
         };
         let (oid, doc) = (*oid, doc.clone());
-        if self.stash_selected == Some(oid) {
-            if let Some(k) = self.stash_at(oid) {
-                return self.render_stash_details(k, doc, cx);
-            }
+        if self.stash_selected == Some(oid)
+            && let Some(k) = self.stash_at(oid)
+        {
+            return self.render_stash_details(k, doc, cx);
         }
         let meta = self.selected.and_then(|(r, _)| self.meta.get(&r).cloned());
         let message = self

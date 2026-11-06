@@ -333,7 +333,7 @@ fn bench_100k() {
             v.meta(start..start + SCREEN).unwrap();
         });
         frame_times.push(f);
-        if (start / SCREEN) % 200 == 0 {
+        if (start / SCREEN).is_multiple_of(200) {
             samples.push((start, v.memory_usage()));
         }
         start += SCREEN;

@@ -112,13 +112,10 @@ impl Fnv64 {
             self.mix(u64::from_le_bytes(self.carry));
             self.carry_len = 0;
         }
-        let mut words = bytes.chunks_exact(WORD);
-        for w in &mut words {
-            let mut raw = [0u8; WORD];
-            raw.copy_from_slice(w);
-            self.mix(u64::from_le_bytes(raw));
+        let (words, rest) = bytes.as_chunks::<WORD>();
+        for &w in words {
+            self.mix(u64::from_le_bytes(w));
         }
-        let rest = words.remainder();
         self.carry[..rest.len()].copy_from_slice(rest);
         self.carry_len = rest.len();
     }
@@ -501,7 +498,7 @@ fn build_into(
                 return ControlFlow::Break(());
             }
             observe(builder.rows - 1, &node);
-            if builder.rows % PROGRESS_EVERY_ROWS == 0 {
+            if builder.rows.is_multiple_of(PROGRESS_EVERY_ROWS) {
                 if cancel.is_cancelled() {
                     failure = Some(GitError::Cancelled.into());
                     return ControlFlow::Break(());
@@ -665,7 +662,9 @@ impl TopologyFile {
             self.header.parents_offset() + u64::from(range.start) * PARENT_RECORD_LEN as u64,
         )?;
         Ok(buf
-            .chunks_exact(PARENT_RECORD_LEN)
+            .as_chunks::<PARENT_RECORD_LEN>()
+            .0
+            .iter()
             .map(|r| [le_u32(r, 0), le_u32(r, 4)])
             .collect())
     }
@@ -697,7 +696,9 @@ impl TopologyFile {
         )
         .map_err(|e| format!("cannot read overflow: {e}"))?;
         Ok(buf
-            .chunks_exact(OVERFLOW_ENTRY_LEN)
+            .as_chunks::<OVERFLOW_ENTRY_LEN>()
+            .0
+            .iter()
             .map(|c| le_u32(c, 0))
             .collect())
     }
@@ -745,7 +746,7 @@ impl TopologyFile {
             cancel,
             &mut |chunk| {
                 sum.update(chunk);
-                for r in chunk.chunks_exact(PARENT_RECORD_LEN) {
+                for r in chunk.as_chunks::<PARENT_RECORD_LEN>().0 {
                     if error.is_some() {
                         return;
                     }

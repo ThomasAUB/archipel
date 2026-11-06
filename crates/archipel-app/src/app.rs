@@ -896,10 +896,10 @@ impl App {
         };
         // The scan reports in no particular order; keep each batch tidy.
         new.sort_by(|a, b| a.as_path().cmp(b.as_path()));
-        if !new.is_empty() {
-            if let Err(e) = self.add_repos(&new) {
-                tracing::warn!(error = %e, "cannot add scanned repositories");
-            }
+        if !new.is_empty()
+            && let Err(e) = self.add_repos(&new)
+        {
+            tracing::warn!(error = %e, "cannot add scanned repositories");
         }
         self.emit(AppEvent::ScanProgress {
             found,
@@ -1158,10 +1158,10 @@ impl App {
             let ui = &mut s.ui;
             let was_collapsed = ui.collapsed_categories.iter().any(|k| k == old);
             ui.collapsed_categories.retain(|k| k != old);
-            if let Some(new) = new.clone().filter(|_| was_collapsed) {
-                if !ui.collapsed_categories.contains(&new) {
-                    ui.collapsed_categories.push(new);
-                }
+            if let Some(new) = new.clone().filter(|_| was_collapsed)
+                && !ui.collapsed_categories.contains(&new)
+            {
+                ui.collapsed_categories.push(new);
             }
             // The category filter follows too; a removed category's repos
             // are now uncategorized.
@@ -1677,12 +1677,11 @@ impl App {
             .as_ref()
             .map(|s| (s.id.clone(), s.ui.clone()));
         let result = self.run_command(command);
-        if let Some(s) = lock(&self.session).as_ref() {
-            if before.is_some_and(|(id, ui)| id == s.id && ui != s.ui) {
-                if let Err(e) = self.services.ui_state.save_ui_state(&s.id, &s.ui) {
-                    tracing::warn!(error = %e, "could not save UI state");
-                }
-            }
+        if let Some(s) = lock(&self.session).as_ref()
+            && before.is_some_and(|(id, ui)| id == s.id && ui != s.ui)
+            && let Err(e) = self.services.ui_state.save_ui_state(&s.id, &s.ui)
+        {
+            tracing::warn!(error = %e, "could not save UI state");
         }
         result
     }

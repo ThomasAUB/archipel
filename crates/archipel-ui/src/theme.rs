@@ -163,7 +163,7 @@ impl UiTheme {
 pub fn sync_toolkit_theme(cx: &mut App) {
     let ui = cx.global::<UiTheme>();
     let t = &ui.selected;
-    let c = |token| hsla(t.color(token));
+    let c = |token| to_hsla(t.color(token));
     let dark = t.appearance() == Appearance::Dark;
     let ui_family = ui.ui_family.clone();
     let mono_family = ui.mono_family.clone();
@@ -290,7 +290,7 @@ impl UiTheme {
 }
 
 #[allow(clippy::cast_lossless)] // u8 → f32 is exact
-pub(crate) fn hsla(c: Color) -> Hsla {
+pub(crate) fn to_hsla(c: Color) -> Hsla {
     Rgba {
         r: f32::from(c.r) / 255.0,
         g: f32::from(c.g) / 255.0,
@@ -302,19 +302,19 @@ pub(crate) fn hsla(c: Color) -> Hsla {
 
 /// The color of a token in the active theme.
 pub fn color(cx: &App, token: ColorToken) -> Hsla {
-    hsla(cx.global::<UiTheme>().theme.color(token))
+    to_hsla(cx.global::<UiTheme>().theme.color(token))
 }
 
 /// Fill of the "clean" status dot in the sidebar: a fixed green, not derived
 /// from the theme.
 pub fn clean_dot() -> Hsla {
-    hsla(Color::rgb(0x30, 0x98, 0x5e))
+    to_hsla(Color::rgb(0x30, 0x98, 0x5e))
 }
 
 /// The color of graph lane `index` (wraps around the palette).
 pub fn lane(cx: &App, index: u32) -> Hsla {
     let i = usize::try_from(index).unwrap_or(0);
-    hsla(cx.global::<UiTheme>().theme.colors().lane(i))
+    to_hsla(cx.global::<UiTheme>().theme.colors().lane(i))
 }
 
 /// The color of a dashboard cell tone.
@@ -364,7 +364,7 @@ pub fn text_size(cx: &App) -> Pixels {
 /// use slightly different surfaces so they read apart from each other.
 pub fn surface_between(cx: &App, t: f64) -> Hsla {
     let theme = &cx.global::<UiTheme>().theme;
-    hsla(
+    to_hsla(
         theme
             .color(ColorToken::BgApp)
             .mix(theme.color(ColorToken::BgPanel), t),

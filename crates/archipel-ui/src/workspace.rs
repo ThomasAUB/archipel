@@ -622,10 +622,10 @@ impl Workspace {
                 id => {
                     let id = ProjectId(id.to_owned());
                     // Already shown by another window: focus it, no duplicate.
-                    if !crate::windows::focus_project(cx, &id, Some(window.window_handle())) {
-                        if let Err(e) = self.core.open_project(&id) {
-                            self.notice = Some(e.to_string());
-                        }
+                    if !crate::windows::focus_project(cx, &id, Some(window.window_handle()))
+                        && let Err(e) = self.core.open_project(&id)
+                    {
+                        self.notice = Some(e.to_string());
                     }
                 }
             },
@@ -845,10 +845,10 @@ impl Workspace {
             prompt: None,
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(path) = paths.into_iter().next() {
-                    let _ = this.update(cx, |w, cx| then(w, path, cx));
-                }
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |w, cx| then(w, path, cx));
             }
         })
         .detach();
@@ -2186,7 +2186,7 @@ impl Workspace {
                 .value()
                 .map(|c| gpui_kit::Hsla { a: 1.0, ..c }.to_hex());
             if !state.is_open() && shown.as_deref() != Some(accent.to_hex().as_str()) {
-                state.set_value(crate::theme::hsla(accent), window, cx);
+                state.set_value(crate::theme::to_hsla(accent), window, cx);
             }
         });
         Some(

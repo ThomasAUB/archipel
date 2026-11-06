@@ -266,10 +266,10 @@ impl UndoService {
         let rest = name.trim_start_matches("refs/remotes/");
         let (remote, branch) = rest.split_once('/').unwrap_or(("origin", rest));
         let mut options = Vec::new();
-        if let Some(before) = before {
-            if let Some(commits) = self.first_parent_chain(repo, after, before)? {
-                options.push(Compensation::RevertCommits(commits));
-            }
+        if let Some(before) = before
+            && let Some(commits) = self.first_parent_chain(repo, after, before)?
+        {
+            options.push(Compensation::RevertCommits(commits));
         }
         options.push(Compensation::ForceWithLease {
             remote: remote.to_owned(),
@@ -477,10 +477,10 @@ fn ref_steps(from: &RefSnapshot, to: &RefSnapshot, soft: bool) -> Vec<UndoStep> 
             }),
         }
     }
-    if let (HeadRef::Detached(a), HeadRef::Detached(b)) = (&from.head, &to.head) {
-        if a != b {
-            steps.push(move_head(*b));
-        }
+    if let (HeadRef::Detached(a), HeadRef::Detached(b)) = (&from.head, &to.head)
+        && a != b
+    {
+        steps.push(move_head(*b));
     }
     steps
 }

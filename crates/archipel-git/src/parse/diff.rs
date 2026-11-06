@@ -102,12 +102,12 @@ fn new_file(header: &str) -> FileDiff {
 
 /// Splits `a/x b/y` (paths may be quoted or contain spaces).
 fn split_git_header(rest: &str) -> (Option<String>, Option<String>) {
-    if let Some(quoted) = rest.strip_prefix('"') {
-        if let Some(end) = quoted.find("\" ").map(|i| i + 2) {
-            let a = unquote_path(&rest[..end]);
-            let b = unquote_path(rest[end + 1..].trim());
-            return (strip(&a, "a/"), strip(&b, "b/"));
-        }
+    if let Some(quoted) = rest.strip_prefix('"')
+        && let Some(end) = quoted.find("\" ").map(|i| i + 2)
+    {
+        let a = unquote_path(&rest[..end]);
+        let b = unquote_path(rest[end + 1..].trim());
+        return (strip(&a, "a/"), strip(&b, "b/"));
     }
     // Unquoted: when old and new paths are equal, the header is symmetric.
     let n = rest.len().saturating_sub(1) / 2;

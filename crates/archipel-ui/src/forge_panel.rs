@@ -157,10 +157,10 @@ impl ForgePanel {
             }
             ForgeTab::PullRequests(ids) => self.prepare(ids.clone(), window, cx),
             ForgeTab::Clone => {
-                if self.account.is_none() {
-                    if let Some(first) = self.accounts.first().cloned() {
-                        self.pick_account(first, window, cx);
-                    }
+                if self.account.is_none()
+                    && let Some(first) = self.accounts.first().cloned()
+                {
+                    self.pick_account(first, window, cx);
                 }
             }
         }

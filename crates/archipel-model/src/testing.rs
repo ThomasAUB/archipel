@@ -323,10 +323,10 @@ impl HistoryReader for FakeGit {
                 if cur == ancestor {
                     return true;
                 }
-                if seen.insert(cur) {
-                    if let Some(ps) = parents.get(&cur) {
-                        stack.extend(ps.iter().copied());
-                    }
+                if seen.insert(cur)
+                    && let Some(ps) = parents.get(&cur)
+                {
+                    stack.extend(ps.iter().copied());
                 }
             }
             false

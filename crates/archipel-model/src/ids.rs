@@ -41,9 +41,9 @@ impl Oid {
             return Err(err());
         }
         let mut bytes = [0u8; 32];
-        for (i, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
-            let hi = hex_val(pair[0]).ok_or_else(err)?;
-            let lo = hex_val(pair[1]).ok_or_else(err)?;
+        for (i, &[hi, lo]) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+            let hi = hex_val(hi).ok_or_else(err)?;
+            let lo = hex_val(lo).ok_or_else(err)?;
             bytes[i] = (hi << 4) | lo;
         }
         #[allow(clippy::cast_possible_truncation)] // 20 or 32

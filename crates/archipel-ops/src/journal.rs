@@ -133,10 +133,9 @@ impl Journal {
             head: HeadRef::Symbolic(branch),
             ..
         }) = &first
+            && !names.contains(branch)
         {
-            if !names.contains(branch) {
-                names.push(branch.clone());
-            }
+            names.push(branch.clone());
         }
         let before = match first {
             Some(_) => Some(self.refs.snapshot(repo, &names)?),

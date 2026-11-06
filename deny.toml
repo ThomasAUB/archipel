@@ -6,6 +6,16 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Unmaintained crates are only fatal when the workspace depends on them
+# directly; the transitive ones (gpui, zbus) are up to those crates.
+unmaintained = "workspace"
+ignore = [
+    # quick-xml < 0.41, pinned by zbus_xml under gpui's AT-SPI accessibility
+    # backend. It only parses D-Bus introspection XML from the local session
+    # bus, never untrusted input. Drop once zbus_xml moves to quick-xml 0.41.
+    { id = "RUSTSEC-2026-0194", reason = "transitive via zbus_xml, local D-Bus XML only" },
+    { id = "RUSTSEC-2026-0195", reason = "transitive via zbus_xml, local D-Bus XML only" },
+]
 
 [licenses]
 version = 2
