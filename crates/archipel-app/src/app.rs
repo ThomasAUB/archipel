@@ -2064,27 +2064,33 @@ impl App {
         } else {
             "Redo"
         };
+        let depth = self.settings.journal_limit;
         let spec = OpSpec::new(Some(repo), OpClass::Write, label);
         let _h = self.scheduler.submit(spec, move |_| {
             let entry: Option<JournalEntry> = match direction {
-                Direction::Undo => undo.next_undo(repo, 200)?,
-                Direction::Redo => undo.next_redo(repo, 200)?,
+                Direction::Undo => undo.next_undo(repo, depth)?,
+                Direction::Redo => undo.next_redo(repo, depth)?,
             };
-            let message = match entry {
-                None => format!("nothing to {}", label.to_lowercase()),
-                Some(e) => match undo.execute(&path, &e, direction) {
-                    Ok(note) => note.map_or_else(
+            let outcome = match entry {
+                None => Ok(format!("nothing to {}", label.to_lowercase())),
+                Some(e) => undo.execute(&path, &e, direction).map(|note| {
+                    note.map_or_else(
                         || format!("{label}: {}", e.label),
                         |n| format!("{label}: {} ({n})", e.label),
-                    ),
-                    Err(err) => format!("{label} refused: {err}"),
-                },
+                    )
+                }),
             };
             if let Some(app) = me.upgrade() {
+                let message = match &outcome {
+                    Ok(message) => message.clone(),
+                    Err(err) => format!("{label} refused: {err}"),
+                };
                 app.emit(AppEvent::Notice(message));
                 app.refresh_repo(repo);
             }
-            Ok(())
+            // A refused undo fails the op, so the drawer does not show it
+            // as done.
+            outcome.map(drop)
         });
         Ok(())
     }

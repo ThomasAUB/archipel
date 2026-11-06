@@ -430,6 +430,41 @@ fn undo_through_the_command_bus() {
 }
 
 #[test]
+fn refused_undo_fails_the_operation() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    let repo = &e.repos[0];
+    e.app
+        .repo_actions()
+        .commit(
+            repo,
+            &CommitRequest {
+                message: "x".into(),
+                mode: CommitMode::New,
+            },
+            None,
+        )
+        .unwrap();
+    // The branch moves after the commit: undoing it would lose work.
+    e.git.with_repo(repo, |r| {
+        r.refs.insert("refs/heads/main".into(), oid(99));
+    });
+    let mut events = e.app.subscribe();
+    e.app.dispatch(Command::Undo(repo.id())).unwrap();
+    let finished = e.rt.block_on(async {
+        loop {
+            if let AppEvent::Op(op) = events.recv().await.unwrap()
+                && let archipel_ops::OpEventKind::Finished(result) = op.kind
+            {
+                return result;
+            }
+        }
+    });
+    assert!(finished.is_err(), "{finished:?}");
+}
+
+#[test]
 fn closing_unloads_watchers_and_keeps_summaries() {
     let e = env();
     let id = p1_id();

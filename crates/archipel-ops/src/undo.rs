@@ -320,16 +320,66 @@ impl UndoService {
                 ));
             }
         };
-        for step in &steps {
-            self.run_step(repo, step)?;
-        }
+        self.run_steps(repo, &steps)?;
         let state = if direction == Direction::Undo {
             EntryState::Undone
         } else {
             EntryState::Done
         };
-        self.journal.store().set_state(entry.id, state)?;
+        // The repository already moved: a journal error must not report the
+        // undo as failed, or the user would retry an undo that happened.
+        if let Err(e) = self.journal.store().set_state(entry.id, state) {
+            tracing::warn!(error = %e, entry = ?entry.id, "could not record the undo state");
+        }
         Ok(note)
+    }
+
+    /// Runs `steps` in order. When one fails after others ran, moves `HEAD`
+    /// and the touched refs back to where they were, so a failed undo
+    /// leaves the repository as it found it rather than half moved (stash
+    /// and worktree steps are not reverted; they only come last).
+    fn run_steps(&self, repo: &RepoPath, steps: &[UndoStep]) -> Result<(), OpError> {
+        let mut names = touched_refs(steps);
+        // Resets move the checked-out branch without naming it.
+        if let HeadRef::Symbolic(branch) = self.git.refs.snapshot(repo, &[])?.head
+            && !names.contains(&branch)
+        {
+            names.push(branch);
+        }
+        let start = self.git.refs.snapshot(repo, &names)?;
+        for (i, step) in steps.iter().enumerate() {
+            if let Err(error) = self.run_step(repo, step) {
+                if i == 0 {
+                    return Err(error);
+                }
+                return Err(match self.roll_back(repo, &start) {
+                    Ok(()) => error,
+                    Err(e) => OpError::Refused(format!(
+                        "{error}; restoring the previous state also failed ({e}): check the repository"
+                    )),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn roll_back(&self, repo: &RepoPath, start: &RefSnapshot) -> Result<(), OpError> {
+        let names: Vec<String> = start.refs.iter().map(|(n, _)| n.clone()).collect();
+        let now = self.git.refs.snapshot(repo, &names)?;
+        let mut steps = Vec::new();
+        if now.head != start.head {
+            steps.push(UndoStep::Checkout(start.head.clone()));
+        }
+        // After switching back, the refs move from the state reached so far.
+        let after_checkout = RefSnapshot {
+            head: start.head.clone(),
+            refs: now.refs,
+        };
+        steps.extend(ref_steps(&after_checkout, start, false));
+        for step in &steps {
+            self.run_step(repo, step)?;
+        }
+        Ok(())
     }
 
     fn stash_index(&self, repo: &RepoPath, oid: Oid) -> Result<u32, OpError> {
@@ -450,6 +500,19 @@ impl UndoService {
 
 /// Steps moving every ref from its `from` value to its `to` value; the
 /// branch `HEAD` is on moves with `reset --keep` (or `--soft` when `soft`).
+/// The refs `steps` move, for the snapshot a rollback returns to.
+fn touched_refs(steps: &[UndoStep]) -> Vec<String> {
+    let mut names = Vec::new();
+    for step in steps {
+        if let UndoStep::UpdateRef { name, .. } = step
+            && !names.contains(name)
+        {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
 fn ref_steps(from: &RefSnapshot, to: &RefSnapshot, soft: bool) -> Vec<UndoStep> {
     let move_head = |oid: Oid| {
         if soft {
