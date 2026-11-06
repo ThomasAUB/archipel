@@ -169,7 +169,7 @@ pub(crate) fn save<V: Staging>(v: &mut V, cx: &mut Context<V>) {
     v.run_job(
         format!("Save {file}"),
         cx,
-        Box::new(move |a, repo| {
+        Box::new(move |a, repo, _| {
             a.save_file(repo, &file, &original, &contents)?;
             *saved.lock().unwrap_or_else(PoisonError::into_inner) = Some(contents);
             Ok(())

@@ -26,8 +26,8 @@ use archipel_model::{
 };
 use archipel_ops::batch::BatchTarget;
 use archipel_ops::{
-    BatchOps, BatchReport, Direction, GitPorts, Journal, MultiCommit, OpClass, OpError, OpEvent,
-    OpSpec, RepoActions, Scheduler, UndoService,
+    BatchOps, BatchReport, Direction, GitPorts, Journal, MultiCommit, OpClass, OpContext, OpError,
+    OpEvent, OpHandle, OpSpec, RepoActions, Scheduler, UndoService,
 };
 use tokio::sync::broadcast;
 
@@ -594,6 +594,28 @@ impl App {
     #[must_use]
     pub fn repo_actions(&self) -> &RepoActions {
         &self.actions
+    }
+
+    /// Runs `job` on one repository through the scheduler: it shows in the
+    /// operations drawer, waits for the repo's other writes, and network
+    /// jobs share the network pool. The context reports progress and
+    /// carries the cancellation token.
+    pub fn submit_repo_job<T, F>(
+        &self,
+        repo: &RepoPath,
+        class: OpClass,
+        label: impl Into<String>,
+        job: F,
+    ) -> OpHandle<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<T, OpError> + Send + 'static,
+    {
+        let actions = self.actions.clone();
+        let path = repo.clone();
+        let spec = OpSpec::new(Some(repo.id()), class, label);
+        self.scheduler
+            .submit(spec, move |ctx| job(&actions, &path, ctx))
     }
 
     /// The multi-repo commit use case.

@@ -430,6 +430,35 @@ fn undo_through_the_command_bus() {
 }
 
 #[test]
+fn repo_jobs_run_through_the_scheduler() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    let mut events = e.app.subscribe();
+    let handle = e.app.submit_repo_job(
+        &e.repos[0],
+        archipel_ops::OpClass::Network,
+        "Fetch",
+        |_, path, op| {
+            assert!(!op.cancel().is_cancelled());
+            Ok(path.clone())
+        },
+    );
+    assert_eq!(handle.wait_blocking().unwrap(), e.repos[0]);
+    // The operations drawer saw it end.
+    let finished = e.rt.block_on(async {
+        loop {
+            if let AppEvent::Op(op) = events.recv().await.unwrap()
+                && op.label == "Fetch"
+                && let archipel_ops::OpEventKind::Finished(result) = op.kind
+            {
+                return (op.repo, result);
+            }
+        }
+    });
+    assert_eq!(finished, (Some(e.repos[0].id()), Ok(())));
+}
+
+#[test]
 fn refused_undo_fails_the_operation() {
     let e = env();
     e.app.open_project(&p1_id()).unwrap();

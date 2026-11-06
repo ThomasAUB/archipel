@@ -25,6 +25,7 @@ use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::{
     CancelToken, HeadState, NoProgress, Oid, RepoPath, RepoSummary, Timestamp, Upstream,
 };
+use archipel_ops::{OpClass, OpContext, OpError, RepoActions};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -438,10 +439,10 @@ fn drop_entries(source: &RefTip, target: &RefTip, current: Option<&str>) -> Vec<
 
 /// Whether `git branch -d` failed because the branch is not merged. Git's
 /// message may be translated; its hint names `git branch -D` in any locale.
-fn is_not_merged(e: &archipel_ops::OpError) -> bool {
+fn is_not_merged(e: &OpError) -> bool {
     matches!(
         e,
-        archipel_ops::OpError::Git(archipel_model::GitError::CommandFailed { stderr, .. })
+        OpError::Git(archipel_model::GitError::CommandFailed { stderr, .. })
             if stderr.contains("not fully merged") || stderr.contains("branch -D")
     )
 }
@@ -1096,7 +1097,7 @@ impl RepoView {
             Some(_) => "Apply stash",
             None => "Drop stash",
         };
-        self.run(label, cx, move |a, p| {
+        self.run(label, cx, move |a, p, _| {
             let index = a
                 .ports()
                 .stashes
@@ -1104,7 +1105,7 @@ impl RepoView {
                 .into_iter()
                 .find(|s| s.oid == oid)
                 .map(|s| s.index)
-                .ok_or_else(|| archipel_ops::OpError::Refused("the stash is gone".into()))?;
+                .ok_or_else(|| OpError::Refused("the stash is gone".into()))?;
             match mode {
                 Some(mode) => a.stash_apply(p, index, mode),
                 None => a.stash_drop(p, index),
@@ -1360,7 +1361,7 @@ impl RepoView {
             CheckoutTarget::TrackRemote(r) => format!("Checkout {r}"),
             CheckoutTarget::Detached(oid) => format!("Checkout {} (detached)", oid.short(8)),
         };
-        self.run(label, cx, move |a, p| a.checkout(p, &target, None));
+        self.run(label, cx, move |a, p, _| a.checkout(p, &target, None));
     }
 
     /// Runs a write on a background thread, then reloads.
@@ -1368,27 +1369,33 @@ impl RepoView {
         &mut self,
         label: impl Into<String>,
         cx: &mut Context<Self>,
-        job: impl FnOnce(&archipel_ops::RepoActions, &RepoPath) -> Result<(), archipel_ops::OpError>
-        + Send
-        + 'static,
+        job: impl FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send + 'static,
+    ) {
+        self.run_as(OpClass::Write, label, cx, job);
+    }
+
+    fn run_as(
+        &mut self,
+        class: OpClass,
+        label: impl Into<String>,
+        cx: &mut Context<Self>,
+        job: impl FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send + 'static,
     ) {
         let label = label.into();
-        let actions = self.core.repo_actions().clone();
-        let path = self.path.clone();
-        let task = cx.background_spawn(async move { job(&actions, &path) });
         self.status = Some(format!("{label}…"));
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                v.status = Some(match result {
-                    Ok(()) => format!("{label}: done"),
-                    Err(e) => format!("{label} failed: {e}"),
-                });
+        staging::submit_job(
+            &self.core,
+            &self.path,
+            class,
+            label,
+            Box::new(job),
+            cx,
+            |v, status, cx| {
+                v.status = Some(status);
                 v.reload(cx);
                 cx.notify();
-            });
-        })
-        .detach();
+            },
+        );
         cx.notify();
     }
 
@@ -1469,7 +1476,7 @@ impl RepoView {
         match form {
             NameForm::Branch(start) => {
                 let start = start.or(selected).map(|oid| oid.to_hex());
-                self.run(format!("Create branch {name}"), cx, move |a, p| {
+                self.run(format!("Create branch {name}"), cx, move |a, p, _| {
                     a.create_branch(p, &name, start.as_deref(), None)?;
                     a.checkout(p, &CheckoutTarget::Branch(name), None)
                 });
@@ -1480,13 +1487,13 @@ impl RepoView {
                     target: Some(oid.to_hex()),
                     message: None,
                 };
-                self.run(format!("Create tag {name}"), cx, move |a, p| {
+                self.run(format!("Create tag {name}"), cx, move |a, p, _| {
                     a.create_tag(p, &request, None)
                 });
             }
             NameForm::Rename(old) if old == name => {}
             NameForm::Rename(old) => {
-                self.run(format!("Rename {old} → {name}"), cx, move |a, p| {
+                self.run(format!("Rename {old} → {name}"), cx, move |a, p, _| {
                     a.rename_branch(p, &old, &name)
                 });
             }
@@ -1535,47 +1542,53 @@ impl RepoView {
             MenuAction::Name(form) => self.open_name_form(Some(form), window, cx),
             MenuAction::Checkout(target) => self.checkout(target, cx),
             MenuAction::CherryPick(oid) => {
-                self.run(format!("Cherry-pick {}", oid.short(8)), cx, move |a, p| {
-                    a.cherry_pick(p, &[oid])
-                });
+                self.run(
+                    format!("Cherry-pick {}", oid.short(8)),
+                    cx,
+                    move |a, p, _| a.cherry_pick(p, &[oid]),
+                );
             }
             MenuAction::Revert(oid) => {
-                self.run(format!("Revert {}", oid.short(8)), cx, move |a, p| {
+                self.run(format!("Revert {}", oid.short(8)), cx, move |a, p, _| {
                     a.revert(p, oid)
                 });
             }
             MenuAction::Reset(oid, mode) => {
-                self.run(format!("Reset to {}", oid.short(8)), cx, move |a, p| {
+                self.run(format!("Reset to {}", oid.short(8)), cx, move |a, p, _| {
                     a.reset(p, &oid.to_hex(), mode)
                 });
             }
             MenuAction::Merge(rev) => {
-                self.run(format!("Merge {rev}"), cx, move |a, p| {
+                self.run(format!("Merge {rev}"), cx, move |a, p, _| {
                     a.merge(p, &rev, MergeMode::Auto)
                 });
             }
             MenuAction::Rebase(onto) => {
-                self.run(format!("Rebase onto {onto}"), cx, move |a, p| {
+                self.run(format!("Rebase onto {onto}"), cx, move |a, p, _| {
                     a.rebase(p, &onto)
                 });
             }
             MenuAction::MergeInto { rev, into } => {
-                self.run(format!("Merge {rev} into {into}"), cx, move |a, p| {
+                self.run(format!("Merge {rev} into {into}"), cx, move |a, p, _| {
                     a.checkout(p, &CheckoutTarget::Branch(into), None)?;
                     a.merge(p, &rev, MergeMode::Auto)
                 });
             }
             MenuAction::RebaseBranch { branch, onto } => {
-                self.run(format!("Rebase {branch} onto {onto}"), cx, move |a, p| {
-                    a.checkout(p, &CheckoutTarget::Branch(branch), None)?;
-                    a.rebase(p, &onto)
-                });
+                self.run(
+                    format!("Rebase {branch} onto {onto}"),
+                    cx,
+                    move |a, p, _| {
+                        a.checkout(p, &CheckoutTarget::Branch(branch), None)?;
+                        a.rebase(p, &onto)
+                    },
+                );
             }
             MenuAction::DeleteBranch(name, DeleteMode::Safe) => {
                 self.delete_branch_safe(name, window, cx);
             }
             MenuAction::DeleteBranch(name, mode) => {
-                self.run(format!("Delete branch {name}"), cx, move |a, p| {
+                self.run(format!("Delete branch {name}"), cx, move |a, p, _| {
                     a.delete_branch(p, &name, mode)
                 });
             }
@@ -1588,23 +1601,31 @@ impl RepoView {
                     refspec: Some(format!(":refs/heads/{branch}")),
                     ..PushRequest::default()
                 };
-                self.run(format!("Delete {name}"), cx, move |a, p| {
-                    a.push(p, &request, &NoProgress, &CancelToken::new(), None)
-                });
+                self.run_as(
+                    OpClass::Network,
+                    format!("Delete {name}"),
+                    cx,
+                    move |a, p, op| a.push(p, &request, op, op.cancel(), None),
+                );
             }
             MenuAction::DeleteTag(name) => {
-                self.run(format!("Delete tag {name}"), cx, move |a, p| {
+                self.run(format!("Delete tag {name}"), cx, move |a, p, _| {
                     a.delete_tag(p, &name)
                 });
             }
             MenuAction::PushTag(name) => {
-                self.run(format!("Push tag {name}"), cx, move |a, p| {
-                    let remotes = a.ports().remotes.remotes(p)?;
-                    let remote = pick_remote(&remotes, None).ok_or_else(|| {
-                        archipel_ops::OpError::Refused("the repository has no remote".into())
-                    })?;
-                    a.push_tag(p, &remote.name, &name, &NoProgress, &CancelToken::new())
-                });
+                self.run_as(
+                    OpClass::Network,
+                    format!("Push tag {name}"),
+                    cx,
+                    move |a, p, op| {
+                        let remotes = a.ports().remotes.remotes(p)?;
+                        let remote = pick_remote(&remotes, None).ok_or_else(|| {
+                            OpError::Refused("the repository has no remote".into())
+                        })?;
+                        a.push_tag(p, &remote.name, &name, op, op.cancel())
+                    },
+                );
             }
             MenuAction::Stash(oid, mode) => self.stash_op(oid, mode, cx),
             MenuAction::OpenSubmodule(path) => {
@@ -3124,8 +3145,14 @@ impl Staging for RepoView {
         &mut self.staging
     }
 
-    fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: staging::Job) {
-        self.run(label, cx, job);
+    fn run_job_as(
+        &mut self,
+        class: OpClass,
+        label: String,
+        cx: &mut Context<Self>,
+        job: staging::Job,
+    ) {
+        self.run_as(class, label, cx, job);
     }
 
     fn report(&mut self, text: String, cx: &mut Context<Self>) {
@@ -3245,7 +3272,7 @@ mod menu_tests {
     #[test]
     fn unmerged_branch_refusal_is_recognized() {
         let failed = |stderr: &str| {
-            archipel_ops::OpError::Git(archipel_model::GitError::CommandFailed {
+            OpError::Git(archipel_model::GitError::CommandFailed {
                 command: "git branch -d feat".into(),
                 exit_code: Some(1),
                 stderr: stderr.into(),
