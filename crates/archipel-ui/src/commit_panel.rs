@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, SharedString, Window, div, px};
 
 use crate::theme::{color, radius};
-use crate::widgets::{button, primary_button, section};
+use crate::widgets::{SHORT_OID, button, primary_button, section};
 
 /// What the panel reports to the workspace.
 pub enum CommitPanelEvent {
@@ -159,7 +159,11 @@ impl CommitPanel {
                                             Some(Ok(())) => ", pushed".into(),
                                             Some(Err(e)) => format!(", push failed: {e}"),
                                         };
-                                        (name, format!("committed {}{push}", c.oid.short(8)), false)
+                                        (
+                                            name,
+                                            format!("committed {}{push}", c.oid.short(SHORT_OID)),
+                                            false,
+                                        )
                                     }
                                     Outcome::Failed(e) => (name, e.to_string(), true),
                                     Outcome::Skipped(r) => (name, format!("skipped: {r}"), false),

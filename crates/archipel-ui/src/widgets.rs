@@ -8,8 +8,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyView, App, AppContext, Bounds, Context, Div, ElementId, Empty, Hsla, Pixels, SharedString,
-    Stateful, UniformList, UniformListScrollHandle, Window, div, px, svg,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, Deferred, Div, ElementId, Empty, Hsla,
+    Modifiers, Pixels, Point, SharedString, Stateful, UniformList, UniformListScrollHandle, Window,
+    anchored, deferred, div, px, svg,
 };
 
 use crate::theme::{color, radius, text_size, ui_font};
@@ -74,7 +75,36 @@ pub fn primary_button(
         .child(label.into())
 }
 
-/// The frame of a right-click menu; place it with `deferred(anchored())`.
+/// Hex digits shown of a commit id.
+pub const SHORT_OID: usize = 8;
+
+/// Whether no modifier (Ctrl, Alt, Cmd / Win, Shift) is held: views only
+/// take plain keys for their own navigation.
+pub fn unmodified(m: Modifiers) -> bool {
+    !(m.control || m.alt || m.platform || m.shift)
+}
+
+/// `popup` (a menu or a dropdown) at `position`, kept inside the window
+/// and drawn over the rest of it.
+pub fn popup_at(position: Point<Pixels>, popup: impl IntoElement) -> Deferred {
+    deferred(anchored().position(position).snap_to_window().child(popup)).with_priority(1)
+}
+
+/// `dialog` centered over its parent, which it dims and blocks.
+pub fn modal(dialog: impl IntoElement, cx: &App) -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .occlude()
+        .bg(color(cx, T::BgApp).opacity(0.6))
+        .child(dialog)
+        .into_any_element()
+}
+
+/// The frame of a right-click menu; place it with [`popup_at`].
 pub fn context_menu(cx: &App) -> Div {
     div()
         .occlude()

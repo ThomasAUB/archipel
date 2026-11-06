@@ -19,7 +19,7 @@ use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Win
 use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Job, Staging};
 use crate::theme::color;
-use crate::widgets::{button, icon_button};
+use crate::widgets::{SHORT_OID, button, icon_button};
 
 /// What the pane reports to the workspace.
 pub enum QuickEditEvent {
@@ -218,7 +218,7 @@ impl QuickEdit {
         let (head, sync) = self.staging.summary().map_or_else(Default::default, |s| {
             let head = match &s.head {
                 HeadState::Branch(b) | HeadState::Unborn(b) => b.clone(),
-                HeadState::Detached(oid) => format!("detached at {}", oid.short(8)),
+                HeadState::Detached(oid) => format!("detached at {}", oid.short(SHORT_OID)),
             };
             let sync = match &s.upstream {
                 None if s.head.branch().is_some() => "no upstream".to_owned(),

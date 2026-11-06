@@ -14,7 +14,7 @@ use gpui_kit::{AnyElement, Context, Entity, KeyDownEvent, SharedString, Window, 
 
 use crate::staging::Staging;
 use crate::theme::{color, mono_font};
-use crate::widgets::{button, primary_button};
+use crate::widgets::{button, primary_button, unmodified};
 
 /// Files above this size are not opened in the editor.
 const MAX_EDIT_BYTES: usize = 4 * 1024 * 1024;
@@ -285,7 +285,7 @@ pub(crate) fn render_body<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElem
             let m = &e.keystroke.modifiers;
             match e.keystroke.key.as_str() {
                 "s" if m.control || m.platform => save(v, cx),
-                "escape" if !(m.control || m.alt || m.platform || m.shift) => escape(v, cx),
+                "escape" if unmodified(*m) => escape(v, cx),
                 _ => return,
             }
             cx.stop_propagation();
