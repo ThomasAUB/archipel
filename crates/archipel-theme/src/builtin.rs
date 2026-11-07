@@ -58,7 +58,7 @@ pub fn dark() -> Theme {
 pub fn high_contrast() -> Theme {
     let mut theme = Theme::from_base(
         HIGH_CONTRAST_ID,
-        "High contrast",
+        "High Contrast",
         BaseColors {
             background: Color::BLACK,
             text: Color::WHITE,

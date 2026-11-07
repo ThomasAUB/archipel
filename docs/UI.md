@@ -40,7 +40,7 @@ too; prefer the names of this document in prose and in new code.
 | **Tab Bar** | The tabs above the Main Area. | `Workspace::render_tabs` |
 | **Main Area** | What the active tab shows: the Dashboard or a Repo View. | `Workspace::render` |
 | **Operations Drawer** | Log of operations, progress and errors (`Ctrl+J`). | `Workspace::render_drawer` |
-| **Status Bar** | One line at the bottom: notice, warning or shortcut hints; click to dismiss a notice. At its right end, the **Project Color** swatch (with a project open): click for a color picker setting the project's accent color, as *Set the project color…* does. Then the **Theme Picker**: the current theme's name; click to pick another (Classic Dark, Classic Light, High contrast, user themes). The choice is remembered across launches. | `Workspace::render_status` |
+| **Status Bar** | One line at the bottom: notice, warning or shortcut hints; click to dismiss a notice. At its right end, the **Project Color** swatch (with a project open): click for a color picker setting the project's accent color, as *Set the project color…* does. Then the **Theme Picker**: the current theme's name; click to pick another (Classic Dark, Classic Light, High Contrast, user themes). The choice is remembered across launches. | `Workspace::render_status` |
 | **Overlay** | A panel drawn over the Workspace: Palette, Commit Panel, Forge Panel or Branches Panel. | `Overlay` enum |
 
 ## 2. Sidebar
