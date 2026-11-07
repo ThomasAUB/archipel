@@ -5,7 +5,7 @@
 # Archipel
 
 [![CI](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml)
-[![Coverage](https://github.com/ThomasAUB/archipel/raw/badges/coverage.svg)](https://github.com/ThomasAUB/archipel/actions/workflows/ci.yml)
+[![Coverage](https://coveralls.io/repos/github/ThomasAUB/archipel/badge.svg?branch=main)](https://coveralls.io/github/ThomasAUB/archipel?branch=main)
 
 A fast, light-on-RAM Git client built around **projects**: groups of repos you
 work on together. See the state of every repo at a glance, and act on them in

@@ -44,8 +44,6 @@ jobs:
   coverage:
     name: Test coverage
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -71,23 +69,11 @@ jobs:
           path: |
             lcov.info
             coverage.json
-      # Badge SVG rendered at publish time and pushed to the `badges` branch: the
-      # repo is private, so shields.io cannot read it, but github.com serves it
-      # to signed-in viewers of the README.
-      - name: Publish coverage badge
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          pct=$(jq '.data[0].totals.lines.percent' coverage.json)
-          color=$(awk -v p="$pct" 'BEGIN { print (p >= 80 ? "brightgreen" : p >= 60 ? "yellow" : "red") }')
-          mkdir badges && cd badges
-          msg=$(LC_ALL=C printf '%.1f%%25' "$pct")
-          curl -fsSL -o coverage.svg "https://img.shields.io/badge/coverage-${msg}-${color}"
-          git init -q -b badges
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add coverage.svg
-          git commit -qm "Coverage badge for ${GITHUB_SHA::7}"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" badges
+      # Coveralls renders the README badge from the uploaded report.
+      - name: Upload to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          file: lcov.info
 
   deny:
     name: Licenses and advisories
