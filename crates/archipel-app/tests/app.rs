@@ -497,7 +497,9 @@ fn refused_undo_fails_the_operation() {
     e.app.dispatch(Command::Undo(repo.id())).unwrap();
     let finished = e.rt.block_on(async {
         loop {
+            // Refreshes spawned by the commit and the undo finish too.
             if let AppEvent::Op(op) = events.recv().await.unwrap()
+                && op.label == "Undo"
                 && let archipel_ops::OpEventKind::Finished(result) = op.kind
             {
                 return result;
