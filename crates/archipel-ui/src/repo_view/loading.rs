@@ -25,8 +25,9 @@ const HEAD_SCAN_ROWS: u32 = 512;
 /// Metadata entries kept by the view (rows around the visible window).
 const META_KEEP: usize = 4000;
 
-/// The parts of a repo summary the graph and refs panel depend on: when
-/// they move, the graph is reloaded; a working-copy edit alone does not.
+/// The parts of a repo summary the graph and refs panel depend on, and the
+/// ref tips: when they move, the graph is reloaded; a working-copy edit
+/// alone does not.
 #[derive(PartialEq, Eq)]
 pub(super) struct RefsState {
     head: HeadState,
@@ -35,6 +36,9 @@ pub(super) struct RefsState {
     describe: Option<String>,
     stash_count: u32,
     last_fetch: Option<Timestamp>,
+    /// Every branch and tag: one created or deleted elsewhere (terminal,
+    /// another tool) moves none of the fields above.
+    tips: Option<Vec<RefTip>>,
 }
 
 impl RefsState {
@@ -46,6 +50,7 @@ impl RefsState {
             describe: s.describe.clone(),
             stash_count: s.stash_count,
             last_fetch: s.last_fetch,
+            tips: None,
         }
     }
 }
@@ -306,19 +311,34 @@ impl RepoView {
     /// The repo was refreshed (file watcher, focus, F5): reloads the
     /// working copy, and the graph and refs when `HEAD` or refs moved.
     pub fn on_summary(&mut self, summary: Option<&RepoSummary>, cx: &mut Context<Self>) {
-        let state = summary.map(RefsState::of);
-        if self.refs_state.is_some() && state.is_some() && state != self.refs_state {
-            self.load_graph(cx);
-            self.load_refs(cx);
-        }
-        if state.is_some() {
-            self.refs_state = state;
+        if let Some(summary) = summary {
+            self.check_refs(summary, cx);
         }
         staging::on_summary(self, summary, cx);
         self.load_changes(cx);
         // A checkout or an update inside a submodule only shows in the
         // working copy, not in the refs.
         self.load_submodules(cx);
+    }
+
+    /// Reads the ref tips, then reloads the graph and refs panel when they or
+    /// the refs-related parts of `summary` moved since the last check.
+    fn check_refs(&mut self, summary: &RepoSummary, cx: &mut Context<Self>) {
+        let refs = self.core.repo_actions().ports().refs.clone();
+        let path = self.path.clone();
+        let mut state = RefsState::of(summary);
+        let task = cx.background_spawn(async move { refs.ref_tips(&path).ok() });
+        cx.spawn(async move |this, cx| {
+            state.tips = task.await;
+            let _ = this.update(cx, |v, cx| {
+                if v.refs_state.as_ref().is_some_and(|s| *s != state) {
+                    v.load_graph(cx);
+                    v.load_refs(cx);
+                }
+                v.refs_state = Some(state);
+            });
+        })
+        .detach();
     }
 
     /// The forge status of the repo was read again (or its branch changed).

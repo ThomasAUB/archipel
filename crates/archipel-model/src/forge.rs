@@ -201,6 +201,20 @@ pub enum ReviewState {
     ChangesRequested,
 }
 
+/// Whether the forge would merge a pull request now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeState {
+    /// Not computed (yet) by the forge, or not asked.
+    #[default]
+    Unknown,
+    /// Can be merged.
+    Mergeable,
+    /// Conflicts with the target branch.
+    Conflicts,
+    /// Refused for another reason (`draft`, `ci must pass`, `not approved`…).
+    Blocked(String),
+}
+
 /// An open pull / merge request with its CI and review state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestStatus {
@@ -212,12 +226,57 @@ pub struct PullRequestStatus {
     pub url: String,
     /// Draft / work in progress.
     pub draft: bool,
+    /// Source branch.
+    #[serde(default)]
+    pub source: String,
     /// Target branch.
     pub target: String,
+    /// Head commit of the source branch on the forge.
+    #[serde(default)]
+    pub head_sha: String,
+    /// Login of the author.
+    #[serde(default)]
+    pub author: String,
     /// CI of the head commit, `None` when there is no CI.
     pub ci: Option<CiState>,
     /// Review state.
     pub review: ReviewState,
+    /// Mergeability; only read when listing a repo's pull requests.
+    #[serde(default)]
+    pub merge: MergeState,
+}
+
+/// How a pull request is merged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MergeMethod {
+    /// A merge commit (GitLab: the project's merge method).
+    #[default]
+    Merge,
+    /// The commits squashed into one.
+    Squash,
+    /// The commits rebased onto the target (GitHub only: GitLab sets this
+    /// per project).
+    Rebase,
+}
+
+/// How to merge a pull request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeOptions {
+    /// Method.
+    pub method: MergeMethod,
+    /// Delete the source branch on the forge once merged.
+    pub delete_source_branch: bool,
+    /// Merge only if the head is still this commit (what the user saw);
+    /// the forge refuses when someone pushed since.
+    pub expected_head: Option<String>,
+}
+
+/// What merging a pull request did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeReport {
+    /// What failed after the merge itself succeeded (the source branch
+    /// could not be deleted).
+    pub warning: Option<String>,
 }
 
 /// A pull / merge request to create.

@@ -3,13 +3,14 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, CiState, ForgeKind, Namespace, NamespaceKind, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
+    CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeOptions, MergeReport,
+    MergeState, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    RemoteRepo, ReviewState,
 };
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode, optional};
+use crate::http::{Api, Auth, Method, encode, optional, permission};
 use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitLab provider.
@@ -38,7 +39,15 @@ struct MergeRequest {
     web_url: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    source_branch: String,
     target_branch: String,
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    author: Option<User>,
+    #[serde(default)]
+    has_conflicts: bool,
     #[serde(default)]
     detailed_merge_status: Option<String>,
     #[serde(default)]
@@ -125,6 +134,63 @@ fn project(repo: &str) -> String {
     format!("/projects/{}", encode(repo))
 }
 
+/// Mergeability from `detailed_merge_status` (computed asynchronously:
+/// `checking` / `unchecked` until then).
+fn merge_state(mr: &MergeRequest) -> MergeState {
+    if mr.has_conflicts {
+        return MergeState::Conflicts;
+    }
+    let blocked = |reason: &str| MergeState::Blocked(reason.into());
+    match mr.detailed_merge_status.as_deref() {
+        None | Some("checking" | "unchecked" | "approvals_syncing" | "preparing") => {
+            MergeState::Unknown
+        }
+        Some("mergeable") => MergeState::Mergeable,
+        Some("conflict" | "broken_status") => MergeState::Conflicts,
+        Some("draft_status") => blocked("draft"),
+        Some("ci_must_pass") => blocked("CI must pass"),
+        Some("ci_still_running") => blocked("CI still running"),
+        Some("not_approved") => blocked("not approved"),
+        Some("discussions_not_resolved") => blocked("unresolved discussions"),
+        Some("need_rebase") => blocked("needs a rebase"),
+        Some("requested_changes") => blocked("changes requested"),
+        Some(other) => blocked(&other.replace('_', " ")),
+    }
+}
+
+/// The merge request `iid` with its head pipeline and review state (the
+/// single-MR endpoint carries the head pipeline, lists do not).
+fn status(api: &Api<'_>, base: &str, iid: u64) -> Result<PullRequestStatus, ForgeError> {
+    let mr: MergeRequest = api.get(&format!("{base}/merge_requests/{iid}"), "merge request")?;
+    // Approvals may be unavailable (permissions): no approval then.
+    let approved = api
+        .get::<Approvals>(
+            &format!("{base}/merge_requests/{}/approvals", mr.iid),
+            "approvals",
+        )
+        .is_ok_and(|a| !a.approved_by.is_empty());
+    let review = if mr.detailed_merge_status.as_deref() == Some("requested_changes") {
+        ReviewState::ChangesRequested
+    } else if approved {
+        ReviewState::Approved
+    } else {
+        ReviewState::Pending
+    };
+    Ok(PullRequestStatus {
+        number: mr.iid,
+        ci: ci_state(mr.head_pipeline.as_ref()),
+        merge: merge_state(&mr),
+        title: mr.title,
+        url: mr.web_url,
+        draft: mr.draft,
+        source: mr.source_branch,
+        target: mr.target_branch,
+        head_sha: mr.sha.unwrap_or_default(),
+        author: mr.author.map(|u| u.username).unwrap_or_default(),
+        review,
+    })
+}
+
 impl ForgeApi for GitLab {
     fn kind(&self) -> ForgeKind {
         ForgeKind::gitlab()
@@ -166,34 +232,19 @@ impl PullRequestApi for GitLab {
         let Some(listed) = list.into_iter().next() else {
             return Ok(None);
         };
-        // The single-MR endpoint carries the head pipeline.
-        let mr: MergeRequest = api.get(
-            &format!("{base}/merge_requests/{}", listed.iid),
-            "merge request",
+        status(&api, &base, listed.iid).map(Some)
+    }
+
+    fn list_open(&self, at: &Endpoint, repo: &str) -> Result<Vec<PullRequestStatus>, ForgeError> {
+        let api = api(at);
+        let base = project(repo);
+        let list: Vec<MergeRequest> = api.get_pages(
+            &format!(
+                "{base}/merge_requests?state=opened&per_page=100&order_by=created_at&sort=asc"
+            ),
+            &format!("project {repo}"),
         )?;
-        // Approvals may be unavailable (permissions): no approval then.
-        let approved = api
-            .get::<Approvals>(
-                &format!("{base}/merge_requests/{}/approvals", mr.iid),
-                "approvals",
-            )
-            .is_ok_and(|a| !a.approved_by.is_empty());
-        let review = if mr.detailed_merge_status.as_deref() == Some("requested_changes") {
-            ReviewState::ChangesRequested
-        } else if approved {
-            ReviewState::Approved
-        } else {
-            ReviewState::Pending
-        };
-        Ok(Some(PullRequestStatus {
-            number: mr.iid,
-            ci: ci_state(mr.head_pipeline.as_ref()),
-            title: mr.title,
-            url: mr.web_url,
-            draft: mr.draft,
-            target: mr.target_branch,
-            review,
-        }))
+        list.iter().map(|mr| status(&api, &base, mr.iid)).collect()
     }
 
     fn create(
@@ -239,6 +290,44 @@ impl PullRequestApi for GitLab {
                 &format!("merge request !{number}"),
             )
             .map(drop)
+    }
+
+    fn merge(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError> {
+        let squash = match options.method {
+            MergeMethod::Merge => false,
+            MergeMethod::Squash => true,
+            MergeMethod::Rebase => {
+                return Err(ForgeError::Unsupported(
+                    "GitLab rebases according to the project's merge method: choose Merge \
+                     or Squash"
+                        .into(),
+                ));
+            }
+        };
+        let mut body = json!({
+            "squash": squash,
+            "should_remove_source_branch": options.delete_source_branch,
+        });
+        if let Some(sha) = &options.expected_head {
+            body["sha"] = json!(sha);
+        }
+        let what = format!("merge request !{number}");
+        permission(
+            api(at).write::<serde_json::Value>(
+                Method::Put,
+                &format!("{}/merge_requests/{number}/merge", project(repo)),
+                body,
+                &what,
+            ),
+            &format!("merge {what}"),
+        )?;
+        Ok(MergeReport::default())
     }
 }
 

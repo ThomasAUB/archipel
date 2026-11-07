@@ -21,6 +21,8 @@ pub enum Method {
     Put,
     /// PATCH.
     Patch,
+    /// DELETE.
+    Delete,
 }
 
 /// A request to a forge API.
@@ -106,8 +108,12 @@ impl HttpTransport for UreqTransport {
     fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
         let url = request.url.as_str();
         let result = match request.method {
-            Method::Get => {
-                let mut b = self.agent.get(url);
+            Method::Get | Method::Delete => {
+                let mut b = if request.method == Method::Get {
+                    self.agent.get(url)
+                } else {
+                    self.agent.delete(url)
+                };
                 for (k, v) in &request.headers {
                     b = b.header(k.as_str(), v.as_str());
                 }
@@ -269,6 +275,12 @@ impl Api<'_> {
         self.decode(&response)
     }
 
+    /// DELETE `path`; the answer body is ignored.
+    pub fn delete(&self, path: &str, what: &str) -> Result<(), ForgeError> {
+        self.send(Method::Delete, self.url(path), None, what)
+            .map(drop)
+    }
+
     /// GET every page of a list (following `Link: rel="next"`), up to
     /// [`MAX_PAGES`].
     pub fn get_pages<T: DeserializeOwned>(
@@ -308,6 +320,22 @@ pub fn optional<T>(result: Result<T, ForgeError>) -> Result<Option<T>, ForgeErro
         Err(ForgeError::Unauthorized { .. } | ForgeError::NotFound { .. }) => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// For a write the user may not be allowed to do (merge): a 401 / 403
+/// then means a missing permission more often than a bad token.
+pub fn permission<T>(result: Result<T, ForgeError>, action: &str) -> Result<T, ForgeError> {
+    result.map_err(|e| match e {
+        ForgeError::Unauthorized { host, status } => ForgeError::Http {
+            host,
+            status,
+            message: format!(
+                "not allowed to {action} (no permission on the repository, or the token \
+                 lacks write access)"
+            ),
+        },
+        e => e,
+    })
 }
 
 /// The `rel="next"` URL of a `Link` header.

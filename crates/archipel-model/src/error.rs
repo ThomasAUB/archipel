@@ -180,6 +180,10 @@ pub enum ForgeError {
     /// The account list could not be read or written.
     #[error("forge accounts: {0}")]
     Accounts(String),
+    /// The forge cannot do what was asked (e.g. a merge method GitLab
+    /// only sets per project).
+    #[error("{0}")]
+    Unsupported(String),
     /// The forge's API rate limit is used up; the token is fine.
     #[error("{host}: API rate limit reached, try again later")]
     RateLimited {

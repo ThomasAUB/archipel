@@ -1,5 +1,6 @@
 //! Forge integration (spec §8) against fakes: per-repo status column,
-//! sign-in / sign-out, pull requests across repos, clone from an account.
+//! sign-in / sign-out, pull requests across repos (open, list, merge),
+//! clone from an account.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
@@ -8,8 +9,8 @@ use std::time::{Duration, Instant};
 use archipel_app::forge::{ForgePorts, ForgeStatus};
 use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, Services};
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, CiState, ForgeKind, NamespaceKind, PullRequestStatus, RemoteRepo,
-    ReviewState,
+    CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, NamespaceKind,
+    PullRequestStatus, RemoteRepo, ReviewState,
 };
 use archipel_model::ports::{CredentialStore, ForgeAccountStore, RemoteInfo};
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
@@ -65,9 +66,13 @@ fn env() -> Env {
             title: "Add x".into(),
             url: "https://github.com/acme/r0/pull/7".into(),
             draft: false,
+            source: "feat/x".into(),
             target: "main".into(),
+            head_sha: "h7".into(),
+            author: "ann".into(),
             ci: Some(CiState::Failure),
             review: ReviewState::Approved,
+            merge: MergeState::Mergeable,
         },
     );
     forge.with_ci(
@@ -299,6 +304,67 @@ fn status_column_follows_sign_in() {
     assert!(e.creds.accounts().unwrap().is_empty());
     wait_until("signed out", || {
         matches!(forge_of(&e, 0), ForgeStatus::SignedOut { .. })
+    });
+}
+
+#[test]
+fn open_pull_requests_are_listed_and_merged() {
+    let e = env();
+    sign_in(&e);
+    wait_until("status", || matches!(forge_of(&e, 0), ForgeStatus::Open(_)));
+    let app = e.app.clone();
+    let listed =
+        e.rt.block_on(async move { app.open_pull_requests(&[]).await })
+            .unwrap();
+    let results: Vec<_> = listed
+        .iter()
+        .map(|r| {
+            r.result
+                .as_ref()
+                .map(|prs| prs.iter().map(|p| p.number).collect::<Vec<_>>())
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            Ok(vec![7]),
+            Ok(vec![]),
+            Err(&"not signed in to gitlab.other.example".to_owned())
+        ]
+    );
+    let r0 = listed[0].clone();
+    let (forge_repo, pr) = (r0.forge.unwrap(), r0.result.unwrap()[0].clone());
+
+    // Someone pushed since the list was read: the forge refuses.
+    let mut stale = pr.clone();
+    stale.head_sha = "older".into();
+    let app = e.app.clone();
+    let fr = forge_repo.clone();
+    let err =
+        e.rt.block_on(async move {
+            app.merge_pull_request(r0.repo, &fr, &stale, MergeMethod::Merge, false)
+                .await
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("modified"), "{err}");
+    assert!(e.forge.merged().is_empty());
+
+    let app = e.app.clone();
+    let report =
+        e.rt.block_on(async move {
+            app.merge_pull_request(r0.repo, &forge_repo, &pr, MergeMethod::Squash, true)
+                .await
+        })
+        .unwrap();
+    assert_eq!(report.warning, None);
+    let merged = e.forge.merged();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].number, 7);
+    assert_eq!(merged[0].options.method, MergeMethod::Squash);
+    assert!(merged[0].options.delete_source_branch);
+    assert_eq!(merged[0].options.expected_head.as_deref(), Some("h7"));
+    wait_until("status re-read after the merge", || {
+        matches!(forge_of(&e, 0), ForgeStatus::NoPullRequest { .. })
     });
 }
 

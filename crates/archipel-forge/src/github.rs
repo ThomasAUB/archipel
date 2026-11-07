@@ -2,13 +2,14 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, ForgeKind, Namespace, NamespaceKind, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState, overall_ci_state,
+    CiJob, CiJobState, CiRun, ForgeKind, MergeMethod, MergeOptions, MergeReport, MergeState,
+    Namespace, NamespaceKind, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    ReviewState, overall_ci_state,
 };
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode, encode_path, optional};
+use crate::http::{Api, Auth, Method, encode, encode_path, optional, permission};
 use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitHub provider.
@@ -40,6 +41,14 @@ struct Ref {
     #[serde(rename = "ref")]
     name: String,
     sha: String,
+    /// `None` when the fork was deleted.
+    #[serde(default)]
+    repo: Option<RefRepo>,
+}
+
+#[derive(Deserialize)]
+struct RefRepo {
+    full_name: String,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +60,11 @@ struct Pull {
     draft: bool,
     base: Ref,
     head: Ref,
+    #[serde(default)]
+    user: Option<User>,
+    /// Only on the single pull request endpoint.
+    #[serde(default)]
+    mergeable_state: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +214,46 @@ fn review_state(reviews: &[Review]) -> ReviewState {
     }
 }
 
+/// Mergeability from `mergeable_state` (computed lazily by GitHub:
+/// `unknown` until then).
+fn merge_state(state: Option<&str>) -> MergeState {
+    match state {
+        None | Some("unknown") => MergeState::Unknown,
+        // `unstable`: failing non-required checks; `has_hooks`: Enterprise
+        // pre-receive hooks. Both merge.
+        Some("clean" | "unstable" | "has_hooks") => MergeState::Mergeable,
+        Some("dirty") => MergeState::Conflicts,
+        Some("blocked") => MergeState::Blocked("blocked by branch protection".into()),
+        Some("behind") => MergeState::Blocked("behind the target branch".into()),
+        Some(other) => MergeState::Blocked(other.into()),
+    }
+}
+
+/// A pull request with the CI of its head and its review state. CI and
+/// reviews need extra scopes some tokens lack: a pull request without them
+/// still shows, with no CI state.
+fn status(api: &Api<'_>, base: &str, pull: Pull) -> Result<PullRequestStatus, ForgeError> {
+    let jobs = commit_ci(api, base, &pull.head.sha)?;
+    let reviews: Vec<Review> = optional(api.get(
+        &format!("{base}/pulls/{}/reviews?per_page=100", pull.number),
+        "reviews",
+    ))?
+    .unwrap_or_default();
+    Ok(PullRequestStatus {
+        number: pull.number,
+        title: pull.title,
+        url: pull.html_url,
+        draft: pull.draft,
+        source: pull.head.name,
+        target: pull.base.name,
+        head_sha: pull.head.sha,
+        author: pull.user.map(|u| u.login).unwrap_or_default(),
+        ci: overall_ci_state(&jobs),
+        review: review_state(&reviews),
+        merge: merge_state(pull.mergeable_state.as_deref()),
+    })
+}
+
 impl ForgeApi for GitHub {
     fn kind(&self) -> ForgeKind {
         ForgeKind::github()
@@ -246,23 +300,27 @@ impl PullRequestApi for GitHub {
         let Some(pull) = pulls.into_iter().next() else {
             return Ok(None);
         };
-        // CI and reviews need extra scopes some tokens lack: a pull request
-        // without them still shows, with no CI state.
-        let jobs = commit_ci(&api, &base, &pull.head.sha)?;
-        let reviews: Vec<Review> = optional(api.get(
-            &format!("{base}/pulls/{}/reviews?per_page=100", pull.number),
-            "reviews",
-        ))?
-        .unwrap_or_default();
-        Ok(Some(PullRequestStatus {
-            number: pull.number,
-            title: pull.title,
-            url: pull.html_url,
-            draft: pull.draft,
-            target: pull.base.name,
-            ci: overall_ci_state(&jobs),
-            review: review_state(&reviews),
-        }))
+        status(&api, &base, pull).map(Some)
+    }
+
+    fn list_open(&self, at: &Endpoint, repo: &str) -> Result<Vec<PullRequestStatus>, ForgeError> {
+        let api = api(at);
+        let base = format!("/repos/{}", encode_path(repo));
+        let pulls: Vec<Pull> = api.get_pages(
+            &format!("{base}/pulls?state=open&per_page=100"),
+            &format!("repository {repo}"),
+        )?;
+        pulls
+            .into_iter()
+            .map(|listed| {
+                // Only the single pull request carries its mergeability.
+                let pull = optional(
+                    api.get::<Pull>(&format!("{base}/pulls/{}", listed.number), "pull request"),
+                )?
+                .unwrap_or(listed);
+                status(&api, &base, pull)
+            })
+            .collect()
     }
 
     fn create(
@@ -304,6 +362,55 @@ impl PullRequestApi for GitHub {
                 &format!("pull request #{number}"),
             )
             .map(drop)
+    }
+
+    fn merge(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError> {
+        let api = api(at);
+        let base = format!("/repos/{}", encode_path(repo));
+        let what = format!("pull request #{number}");
+        // The source branch, for the deletion: the merge answer lacks it.
+        let pull: Pull = api.get(&format!("{base}/pulls/{number}"), &what)?;
+        let method = match options.method {
+            MergeMethod::Merge => "merge",
+            MergeMethod::Squash => "squash",
+            MergeMethod::Rebase => "rebase",
+        };
+        let mut body = json!({ "merge_method": method });
+        if let Some(sha) = &options.expected_head {
+            body["sha"] = json!(sha);
+        }
+        permission(
+            api.write::<serde_json::Value>(
+                Method::Put,
+                &format!("{base}/pulls/{number}/merge"),
+                body,
+                &what,
+            ),
+            &format!("merge {what}"),
+        )?;
+        let mut report = MergeReport::default();
+        // A branch of a fork is not ours to delete.
+        let same_repo = pull
+            .head
+            .repo
+            .as_ref()
+            .is_some_and(|r| r.full_name.eq_ignore_ascii_case(repo));
+        if options.delete_source_branch && same_repo {
+            let branch = pull.head.name;
+            if let Err(e) = api.delete(
+                &format!("{base}/git/refs/heads/{}", encode_path(&branch)),
+                &format!("branch {branch}"),
+            ) {
+                report.warning = Some(format!("branch {branch} not deleted: {e}"));
+            }
+        }
+        Ok(report)
     }
 }
 

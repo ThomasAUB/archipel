@@ -4,8 +4,8 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiRun, ForgeKind, ForgeToken, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus,
-    RemoteRepo,
+    CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 
 use crate::http::HttpTransport;
@@ -46,6 +46,8 @@ pub trait PullRequestApi: Send + Sync {
         repo: &str,
         branch: &str,
     ) -> Result<Option<PullRequestStatus>, ForgeError>;
+    /// Every open pull request with CI, review and merge state.
+    fn list_open(&self, at: &Endpoint, repo: &str) -> Result<Vec<PullRequestStatus>, ForgeError>;
     /// Opens a pull request.
     fn create(
         &self,
@@ -61,6 +63,14 @@ pub trait PullRequestApi: Send + Sync {
         number: u64,
         description: &str,
     ) -> Result<(), ForgeError>;
+    /// Merges a pull request.
+    fn merge(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError>;
 }
 
 /// CI of branches.

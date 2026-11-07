@@ -421,6 +421,7 @@ pub fn linked_description(description: &str, all: &[(String, PullRequestRef)]) -
 #[cfg(test)]
 mod tests {
     use archipel_model::RepoPath;
+    use archipel_model::forge::MergeState;
 
     use super::*;
     use crate::dashboard::RepoStatus;
@@ -445,9 +446,13 @@ mod tests {
             title: "Add x".into(),
             url: "u".into(),
             draft: false,
+            source: "feat".into(),
             target: "main".into(),
+            head_sha: "abc".into(),
+            author: "me".into(),
             ci,
             review,
+            merge: MergeState::Unknown,
         }
     }
 

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, Namespace,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 use archipel_model::ports::{
     CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
@@ -15,11 +15,11 @@ use archipel_model::ports::{
 /// Forge access, each a narrow trait object (spec §8).
 #[derive(Clone)]
 pub struct ForgePorts {
-    /// Open pull request of a branch (dashboard column).
+    /// Open pull requests (dashboard column, review list).
     pub pull_requests: Arc<dyn PullRequestReader>,
     /// CI of a branch head (dashboard "CI" column).
     pub ci: Arc<dyn CiReader>,
-    /// Pull request creation and linking.
+    /// Pull request creation, linking and merge.
     pub pull_request_writer: Arc<dyn PullRequestWriter>,
     /// Namespaces and repositories of an account (clone from an account).
     pub directory: Arc<dyn ForgeDirectory>,
@@ -78,6 +78,9 @@ impl PullRequestReader for NoForge {
     ) -> Result<Option<PullRequestStatus>, ForgeError> {
         Err(refused(&repo.account.host))
     }
+    fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
 }
 
 impl CiReader for NoForge {
@@ -100,6 +103,14 @@ impl PullRequestWriter for NoForge {
         _number: u64,
         _description: &str,
     ) -> Result<(), ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+    fn merge_pull_request(
+        &self,
+        repo: &ForgeRepo,
+        _number: u64,
+        _options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError> {
         Err(refused(&repo.account.host))
     }
 }

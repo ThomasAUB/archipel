@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, Namespace,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
 };
 use archipel_model::ports::{
     CiReader, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
@@ -97,6 +97,10 @@ impl PullRequestReader for ForgeClient {
     ) -> Result<Option<PullRequestStatus>, ForgeError> {
         self.with(&repo.account, |p, at| p.for_branch(at, &repo.path, branch))
     }
+
+    fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError> {
+        self.with(&repo.account, |p, at| p.list_open(at, &repo.path))
+    }
 }
 
 impl CiReader for ForgeClient {
@@ -122,6 +126,17 @@ impl PullRequestWriter for ForgeClient {
     ) -> Result<(), ForgeError> {
         self.with(&repo.account, |p, at| {
             p.set_description(at, &repo.path, number, description)
+        })
+    }
+
+    fn merge_pull_request(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError> {
+        self.with(&repo.account, |p, at| {
+            p.merge(at, &repo.path, number, options)
         })
     }
 }
