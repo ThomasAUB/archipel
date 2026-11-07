@@ -2,7 +2,7 @@
 //! the column header and the repo rows, and the quick edit pane lying over
 //! their right edge.
 
-use archipel_app::dashboard::DashboardRow;
+use archipel_app::dashboard::{Cell, DashboardRow};
 use archipel_app::{Command, Extensions};
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{RepoId, Timestamp};
@@ -10,8 +10,8 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, DragMoveEvent, KeyDownEvent, MouseButton, MouseDownEvent,
-    SharedString, Window, div, px,
+    AnyElement, ClickEvent, Context, DragMoveEvent, Entity, KeyDownEvent, MouseButton,
+    MouseDownEvent, Pixels, SharedString, StyleRefinement, WeakEntity, Window, div, px,
 };
 
 use crate::quick_edit::{QuickEdit, QuickEditEvent};
@@ -177,7 +177,11 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_lines)] // declarative element tree
-    pub(super) fn render_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_dashboard(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if self.core.project().is_none() {
             return div()
                 .flex_1()
@@ -245,11 +249,18 @@ impl Workspace {
             let tree = self.core.dependency_tree();
             self.render_tree(&tree, &rows, &selected, cx)
         } else {
+            self.dash_rows
+                .retain(|id, _| rows.iter().any(|r| r.id == *id));
             rows.iter()
                 .map(|row| {
-                    let cells = row_cells(&ext, row, now, 0, cx);
-                    Self::row_shell(row, &selected, cx)
-                        .children(cells)
+                    let content = RowContent::new(&ext, row, now, &selected);
+                    let two_lines = content
+                        .cells
+                        .first()
+                        .is_some_and(|c| c.cell.detail.is_some());
+                    let height = row_box_height(two_lines, window, cx);
+                    self.dash_row(content, cx)
+                        .cached(StyleRefinement::default().w_full().h(height))
                         .into_any_element()
                 })
                 .collect()
@@ -336,6 +347,25 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The view of a dashboard row, notified only when what it shows
+    /// changes: the others are drawn again from the last frame.
+    fn dash_row(&mut self, content: RowContent, cx: &mut Context<Self>) -> Entity<DashRow> {
+        if let Some(view) = self.dash_rows.get(&content.id) {
+            if view.read(cx).content != content {
+                view.update(cx, |r, cx| {
+                    r.content = content;
+                    cx.notify();
+                });
+            }
+            return view.clone();
+        }
+        let id = content.id;
+        let workspace = cx.weak_entity();
+        let view = cx.new(|_| DashRow { workspace, content });
+        self.dash_rows.insert(id, view.clone());
+        view
+    }
+
     /// The clickable frame of a dashboard row (selection, dimming, menus).
     pub(super) fn row_shell(
         row: &DashboardRow,
@@ -343,37 +373,36 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let id = row.id;
-        let hover = color(cx, T::BgHover);
-        let selected_bg = color(cx, T::BgSelected);
-        div()
-            .id(SharedString::from(format!("dash-{id}")))
-            .flex()
-            .items_center()
-            .px_3()
-            .py_1()
-            .min_h(row_height(cx))
-            .border_b_1()
-            .border_color(color(cx, T::BorderSubtle))
-            .cursor_pointer()
-            .when(selected.contains(&id), |d| d.bg(selected_bg))
-            .when(row.stale && !row.hidden, |d| d.opacity(0.75))
-            .when(row.hidden, |d| d.opacity(0.45))
-            .hover(move |s| s.bg(hover))
+        row_frame(id, selected.contains(&id), row.stale, row.hidden, cx)
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-                let command = row_click(id, e);
-                let plain = command == Command::Select(Some(id));
-                this.dispatch(command, cx);
-                if plain {
-                    this.toggle_quick_edit(id, window, cx);
-                }
+                this.row_clicked(id, e, window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    this.row_menu = Some((id, e.position));
-                    cx.notify();
+                    this.open_row_menu(id, e, cx);
                 }),
             )
+    }
+
+    fn row_clicked(
+        &mut self,
+        id: RepoId,
+        e: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let command = row_click(id, e);
+        let plain = command == Command::Select(Some(id));
+        self.dispatch(command, cx);
+        if plain {
+            self.toggle_quick_edit(id, window, cx);
+        }
+    }
+
+    fn open_row_menu(&mut self, id: RepoId, e: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.row_menu = Some((id, e.position));
+        cx.notify();
     }
 
     /// The category filter: one dropdown button whatever the number of
@@ -511,6 +540,102 @@ pub(super) fn row_click(id: RepoId, e: &ClickEvent) -> Command {
     }
 }
 
+/// The frame of a dashboard row: selection, dimming and hover.
+fn row_frame(
+    id: RepoId,
+    selected: bool,
+    stale: bool,
+    hidden: bool,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id(SharedString::from(format!("dash-{id}")))
+        .flex()
+        .items_center()
+        .px_3()
+        .py_1()
+        .min_h(row_height(cx))
+        .border_b_1()
+        .border_color(color(cx, T::BorderSubtle))
+        .cursor_pointer()
+        .when(selected, |d| d.bg(color(cx, T::BgSelected)))
+        .when(stale && !hidden, |d| d.opacity(0.75))
+        .when(hidden, |d| d.opacity(0.45))
+        .hover(move |s| s.bg(hover))
+}
+
+/// What a dashboard row shows; its view is drawn again only when this
+/// changes.
+#[derive(PartialEq)]
+struct RowContent {
+    id: RepoId,
+    selected: bool,
+    stale: bool,
+    hidden: bool,
+    cells: Vec<CellContent>,
+}
+
+impl RowContent {
+    fn new(ext: &Extensions, row: &DashboardRow, now: Timestamp, selected: &[RepoId]) -> Self {
+        Self {
+            id: row.id,
+            selected: selected.contains(&row.id),
+            stale: row.stale,
+            hidden: row.hidden,
+            cells: cell_contents(ext, row, now, 0),
+        }
+    }
+}
+
+/// A dashboard row as its own view. A hover change redraws the view it
+/// happens in and the views around it: with the rows drawn by the
+/// workspace, hovering one redrew every row; as views, the other rows are
+/// reused from the last frame.
+pub(super) struct DashRow {
+    workspace: WeakEntity<Workspace>,
+    content: RowContent,
+}
+
+impl Render for DashRow {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = &self.content;
+        let id = c.id;
+        let (on_click, on_menu) = (self.workspace.clone(), self.workspace.clone());
+        row_frame(id, c.selected, c.stale, c.hidden, cx)
+            .size_full()
+            .on_click(move |e, window, cx| {
+                let _ = on_click.update(cx, |this, cx| this.row_clicked(id, e, window, cx));
+            })
+            .on_mouse_down(MouseButton::Right, move |e, _, cx| {
+                let _ = on_menu.update(cx, |this, cx| this.open_row_menu(id, e, cx));
+            })
+            .children(c.cells.iter().map(|cell| cell_element(cell, cx)))
+    }
+}
+
+/// Height of a dashboard row with one or two lines of text: a cached view
+/// is laid out at a given size instead of being measured. A line is the
+/// font size times φ, GPUI's default line height.
+fn row_box_height(two_lines: bool, window: &Window, cx: &gpui_kit::App) -> Pixels {
+    let line = |size: f32| (size * 1.618_034).round();
+    let rem = f32::from(window.rem_size());
+    let mut content = line(f32::from(text_size(cx)));
+    if two_lines {
+        content += line(0.75 * rem);
+    }
+    // `py_1` above and below, and the bottom border.
+    row_height(cx).max(px(0.5 * rem + content + 1.0))
+}
+
+/// A dashboard cell: its column, what it shows and its tooltip.
+#[derive(PartialEq)]
+struct CellContent {
+    column: usize,
+    cell: Cell,
+    tooltip: Option<Vec<String>>,
+}
+
 /// The dashboard cells of a row, from column `from` on.
 pub(super) fn row_cells(
     ext: &Extensions,
@@ -519,48 +644,67 @@ pub(super) fn row_cells(
     from: usize,
     cx: &gpui_kit::App,
 ) -> Vec<AnyElement> {
+    cell_contents(ext, row, now, from)
+        .iter()
+        .map(|cell| cell_element(cell, cx))
+        .collect()
+}
+
+fn cell_contents(
+    ext: &Extensions,
+    row: &DashboardRow,
+    now: Timestamp,
+    from: usize,
+) -> Vec<CellContent> {
     ext.columns
         .columns()
         .iter()
         .enumerate()
         .skip(from)
         .map(|(i, col)| {
-            let cell = col.cell(row, now);
-            let tooltip = col.tooltip(row);
-            let detail = if i == 0 && row.hidden {
-                Some(
+            let mut cell = col.cell(row, now);
+            if i == 0 && row.hidden {
+                cell.detail = Some(
                     cell.detail
                         .map_or_else(|| "hidden".to_owned(), |d| format!("hidden · {d}")),
-                )
-            } else {
-                cell.detail
-            };
-            div()
-                .id(i)
-                .flex_grow(WIDTHS.get(i).copied().unwrap_or(1.0))
-                .flex_basis(px(0.0))
-                .overflow_hidden()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .truncate()
-                        .text_color(tone(cx, cell.tone))
-                        .child(cell.text),
-                )
-                .when(i == 0, |d| {
-                    d.children(detail.map(|t| {
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(color(cx, T::FgSubtle))
-                            .child(t)
-                    }))
-                })
-                .when_some(tooltip, |d, lines| {
-                    d.tooltip(move |_, cx| TextTooltip::view(&lines, cx))
-                })
-                .into_any_element()
+                );
+            }
+            CellContent {
+                column: i,
+                cell,
+                tooltip: col.tooltip(row),
+            }
         })
         .collect()
+}
+
+fn cell_element(content: &CellContent, cx: &gpui_kit::App) -> AnyElement {
+    let i = content.column;
+    let cell = &content.cell;
+    div()
+        .id(i)
+        .flex_grow(WIDTHS.get(i).copied().unwrap_or(1.0))
+        .flex_basis(px(0.0))
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .truncate()
+                .text_color(tone(cx, cell.tone))
+                .child(cell.text.clone()),
+        )
+        .when(i == 0, |d| {
+            d.children(cell.detail.clone().map(|t| {
+                div()
+                    .truncate()
+                    .text_xs()
+                    .text_color(color(cx, T::FgSubtle))
+                    .child(t)
+            }))
+        })
+        .when_some(content.tooltip.clone(), |d, lines| {
+            d.tooltip(move |_, cx| TextTooltip::view(&lines, cx))
+        })
+        .into_any_element()
 }

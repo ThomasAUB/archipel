@@ -35,6 +35,7 @@ use crate::quick_edit::QuickEdit;
 use crate::repo_view::RepoView;
 use crate::theme::{color, text_size, ui_font};
 
+use dashboard::DashRow;
 use overlays::{Overlay, PaletteKind};
 
 gpui_kit::actions!(
@@ -94,6 +95,8 @@ pub struct Workspace {
     overlay: Option<(Overlay, Subscription)>,
     /// Quick edit pane of the dashboard (a plain click on a row).
     quick_edit: Option<(Entity<QuickEdit>, [Subscription; 3])>,
+    /// Views of the dashboard rows (flat list), by repo.
+    dash_rows: HashMap<RepoId, Entity<DashRow>>,
     log: VecDeque<(Timestamp, String, bool)>,
     notice: Option<String>,
     warnings: Vec<String>,
@@ -176,6 +179,7 @@ impl Workspace {
             repo_views: HashMap::new(),
             overlay: None,
             quick_edit: None,
+            dash_rows: HashMap::new(),
             log: VecDeque::new(),
             notice: None,
             warnings,
@@ -356,7 +360,7 @@ impl Render for Workspace {
                 .overflow_hidden()
                 .child(view)
                 .into_any_element(),
-            None => self.render_dashboard(cx),
+            None => self.render_dashboard(window, cx),
         };
         let drawer_open = self.core.drawer_open();
         let overlay = self.render_overlay(cx);
