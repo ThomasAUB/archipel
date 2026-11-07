@@ -59,6 +59,10 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libasound2-dev pkg-config
       - name: Build
         run: cargo build --release --locked -p archipel-ui --target ${{ matrix.target }}
+        env:
+          # Windows and macOS keep debug info beside the binary (.pdb, .dSYM),
+          # Linux inside it (~240 MB): strip it there, keeping symbol names.
+          CARGO_PROFILE_RELEASE_STRIP: ${{ runner.os == 'Linux' && 'debuginfo' || 'none' }}
       - name: Package
         run: |
           name="archipel-${GITHUB_REF_NAME}-${{ matrix.target }}"
