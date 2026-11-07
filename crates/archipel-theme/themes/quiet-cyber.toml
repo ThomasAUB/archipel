@@ -6,59 +6,62 @@ extends = "dark"
 radius = 0.0
 
 [base]
-background = "#111317"
-text = "#eef1f4"
-accent = "#7fb3b8"
+background = "#0f1114"
+text = "#f2f4f6"
+accent = "#88bcc1"
 
 [typography]
 ui_font = "Jura"
 mono_font = "Hack"
+# Jura is thin with a small x-height: a size up keeps it readable
+size = 14.0
+line_height = 1.5
 
 [tokens]
 # Surfaces
-"bg.app" = "#111317"
-"bg.panel" = "#15171c"
-"bg.elevated" = "#1a1d23"
-"bg.input" = "#0f1114"
-"bg.hover" = "#1d2128"
-"bg.selected" = "#1a2429"
+"bg.app" = "#0f1114"
+"bg.panel" = "#161920"
+"bg.elevated" = "#1e2229"
+"bg.input" = "#0b0d10"
+"bg.hover" = "#232831"
+"bg.selected" = "#1f3237"
 
 # Text
-"fg.default" = "#eef1f4"
-"fg.muted" = "#c0c6cf"
-"fg.subtle" = "#a1a8b2"
-"fg.disabled" = "#727882"
+"fg.default" = "#f2f4f6"
+"fg.muted" = "#cad0d8"
+"fg.subtle" = "#adb4be"
+"fg.disabled" = "#7e858f"
 
 # Accent
-"accent" = "#7fb3b8"
-"accent.hover" = "#93c3c7"
-"accent.fg" = "#111317"
-"accent.subtle" = "#1a2a2d"
+"accent" = "#88bcc1"
+"accent.hover" = "#9ecdd1"
+"accent.fg" = "#0f1114"
+"accent.subtle" = "#1e3337"
 
 # Borders
-"border.default" = "#262a32"
-"border.subtle" = "#1c1f25"
-"border.focus" = "#6a9a9f"
+"border.default" = "#30353f"
+"border.subtle" = "#23272e"
+"border.focus" = "#7cb2b7"
 
 # Status
-"status.dirty" = "#c9a66b"
-"status.ahead" = "#7fb3b8"
-"status.behind" = "#b98aa9"
-"status.conflict" = "#c98f6b"
-"status.success" = "#8fb89a"
-"status.error" = "#c97a80"
-"status.warning" = "#c9966b"
+"status.dirty" = "#d4b075"
+"status.ahead" = "#88bcc1"
+"status.behind" = "#c697b6"
+"status.conflict" = "#d69a75"
+"status.success" = "#99c4a4"
+"status.error" = "#d6878d"
+"status.warning" = "#d6a175"
 
 # Diff
-"diff.add.bg" = "#171d1b"
-"diff.del.bg" = "#1e1719"
-"diff.add.word.bg" = "#21302a"
-"diff.del.word.bg" = "#33222a"
-"diff.add.fg" = "#9ec4a7"
-"diff.del.fg" = "#d4979c"
+"diff.add.bg" = "#17241f"
+"diff.del.bg" = "#271a1e"
+"diff.add.word.bg" = "#243b31"
+"diff.del.word.bg" = "#43262f"
+"diff.add.fg" = "#a9d1b3"
+"diff.del.fg" = "#e2a3a8"
 
 # Graph lanes: ordered so neighbours contrast (alternating hue families)
-"graph.lane.0" = "#7fb3b8"
+"graph.lane.0" = "#88bcc1"
 "graph.lane.1" = "#c17b9f"
 "graph.lane.2" = "#70b18f"
 "graph.lane.3" = "#bd91bf"
@@ -70,11 +73,11 @@ mono_font = "Hack"
 "graph.lane.9" = "#cd836b"
 
 # Syntax
-"syntax.keyword" = "#b98aa9"
-"syntax.string" = "#c9a66b"
-"syntax.comment" = "#a1a8b2"
-"syntax.function" = "#9fb9cc"
-"syntax.type" = "#7fb3b8"
-"syntax.number" = "#9a93bf"
-"syntax.constant" = "#9a93bf"
-"syntax.operator" = "#c0c6cf"
+"syntax.keyword" = "#c697b6"
+"syntax.string" = "#d4b075"
+"syntax.comment" = "#adb4be"
+"syntax.function" = "#a9c3d6"
+"syntax.type" = "#88bcc1"
+"syntax.number" = "#a69fcb"
+"syntax.constant" = "#a69fcb"
+"syntax.operator" = "#cad0d8"
