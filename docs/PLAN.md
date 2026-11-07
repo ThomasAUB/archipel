@@ -284,7 +284,7 @@ Goal: lock the UI stack and validate the Git backend with numbers.
    - commit sequentially via `git commit -F -` (stdin) so hooks and signing run;
    - partial failure report (committed / failed with hook output), retry failed ones, optional push after commit.
 5. Askpass helper and credential prompt UI (needed as soon as fetch/push exist).
-6. Add a repo to a project by cloning from a URL (P1, may slip to Phase 6): clone into a chosen folder through the network pool, with progress, then append to the project file.
+6. Add a repo to a project by cloning from a URL (P1, may slip to Phase 6): clone into a chosen folder through the network pool, with progress, then append to the project file. *Done: Forge Panel → Clone → From a URL (`App::clone_urls_into_project`).*
 7. "Open in browser" links (repo, branch, commit, compare/create-PR URL) derived from the remote URL for GitHub, GitLab, Bitbucket and Azure DevOps patterns.
 
 **Exit:** integration tests on fixtures covering partial failure (a repo with a failing `pre-commit` hook), signed commits, and an HTTPS remote requiring credentials (manual test checklist for the latter).

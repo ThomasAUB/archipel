@@ -22,7 +22,7 @@ same change in several repos with a clear per-repo report.
 | Area | State |
 |---|---|
 | Core (projects, dashboard, live updates, batch ops, multi-repo commit, undo/redo, graph, stats, themes) | implemented, tested headless |
-| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch, launch from a directory, hidden repos, repo categories (grouped sidebar), several windows in one process with per-project color / icon / title, repo dependency tree, forge integration (GitHub / GitLab: pull request column, linked pull requests across repos, clone from an account) |
+| Desktop UI (GPUI) | dashboard, project switcher, batch bar, repo graph + details, working copy with file/hunk staging, multi-repo commit, operations drawer, theme switch, launch from a directory, hidden repos, repo categories (grouped sidebar), several windows in one process with per-project color / icon / title, repo dependency tree, clone from URLs into the project, forge integration (GitHub / GitLab: pull request column, linked pull requests across repos, clone from an account) |
 | Packaging (MSI / AppImage) | not yet |
 
 ## Measured budgets

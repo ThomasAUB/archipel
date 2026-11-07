@@ -1,6 +1,6 @@
 //! Forge integration (spec §8) against fakes: per-repo status column,
 //! sign-in / sign-out, pull requests across repos (open, list, merge),
-//! clone from an account.
+//! clone from an account or from URLs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
@@ -577,4 +577,66 @@ fn clone_from_an_account_adds_repos() {
     assert_eq!(clones[0].detail, "git@github.com:acme/tools.git");
     let id = RepoPath::new(folder.join("tools")).id();
     assert!(e.app.all_rows().iter().any(|r| r.id == id));
+}
+
+#[test]
+fn clone_from_urls_adds_repos_without_an_account() {
+    let e = env();
+    // Defaults next to the project file.
+    assert_eq!(
+        e.app.default_clone_folder(),
+        Some(std::path::PathBuf::from("/p"))
+    );
+    let folder = e.dir.path().join("clones");
+    // `lib` already holds a repository: added as is, not cloned again.
+    std::fs::create_dir_all(folder.join("lib").join(".git")).unwrap();
+    // The group the clones land in is collapsed: expanded so they show up.
+    e.app
+        .dispatch(Command::ToggleCategory(String::new()))
+        .unwrap();
+    let urls = vec![
+        "https://github.com/acme/lib.git".to_owned(),
+        "git@gitlab.com:acme/tools.git".to_owned(),
+        "https://example.com/other/tools".to_owned(),
+    ];
+    let app = e.app.clone();
+    let f = folder.clone();
+    let outcomes =
+        e.rt.block_on(async move { app.clone_urls_into_project(&urls, &f).await })
+            .unwrap();
+    let paths: Vec<RepoPath> = outcomes.iter().map(|o| o.result.clone().unwrap()).collect();
+    assert_eq!(
+        paths,
+        vec![
+            RepoPath::new(folder.join("lib")),
+            RepoPath::new(folder.join("tools")),
+            RepoPath::new(folder.join("tools-2")),
+        ]
+    );
+    assert_eq!(outcomes[2].repo, "https://example.com/other/tools");
+    let clones: Vec<String> = e
+        .git
+        .calls()
+        .into_iter()
+        .filter(|c| c.op == "clone")
+        .map(|c| c.detail)
+        .collect();
+    assert_eq!(clones.len(), 2, "{clones:?}");
+    for p in &paths {
+        assert!(e.app.all_rows().iter().any(|r| r.id == p.id()));
+    }
+    let ui = e.app.ui_state().unwrap();
+    assert!(!ui.collapsed_categories.contains(&String::new()));
+    assert_eq!(ui.selected_repo, Some(paths[0].id()));
+    assert_eq!(ui.selection, vec![paths[1].id(), paths[2].id()]);
+
+    // A URL with no usable name is refused before anything runs.
+    let app = e.app.clone();
+    let err =
+        e.rt.block_on(async move {
+            app.clone_urls_into_project(&["https://host/..".to_owned()], &folder)
+                .await
+        })
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)), "{err}");
 }

@@ -40,6 +40,7 @@ impl Workspace {
             "palette.actions" => self.open_palette(PaletteKind::Actions, window, cx),
             "project.new" => self.new_project_from_folder(cx),
             "project.add_repos" => self.add_repos(cx),
+            "project.clone" | "forge.clone" => self.open_forge(ForgeTab::Clone, window, cx),
             "commit.open" | "commit.submit" => self.open_commit(window, cx),
             "repos.checkout_all" => self.open_palette(PaletteKind::Checkout, window, cx),
             "repos.branch_all" => self.open_palette(PaletteKind::Branch, window, cx),
@@ -70,7 +71,6 @@ impl Workspace {
                 let ids = self.selected_or_all();
                 self.open_forge(ForgeTab::Create(ids), window, cx);
             }
-            "forge.clone" => self.open_forge(ForgeTab::Clone, window, cx),
             "forge.open_pull_request" => self.open_pull_request(cx),
             "forge.open_ci" => self.open_ci(cx),
             other => self.notice = Some(format!("“{other}” is not available in this build")),
