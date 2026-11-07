@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use archipel_app::dashboard::Tone;
 use archipel_app::settings::{load_theme_selection, save_theme_selection};
 use archipel_theme::{
-    Appearance, Color, ColorToken, Theme, ThemeRegistry, ThemeSelection, builtin,
+    Appearance, Color, ColorToken, Oklab, Theme, ThemeRegistry, ThemeSelection, builtin,
 };
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
@@ -360,13 +360,48 @@ pub fn text_size(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.typography.size)
 }
 
-/// A surface `t` of the way from `bg.app` (0) to `bg.panel` (1): side panes
-/// use slightly different surfaces so they read apart from each other.
-pub fn surface_between(cx: &App, t: f64) -> Hsla {
+/// How far the repository panes sit from `bg.app`, in `bg.panel` steps.
+const REPO_SURFACE_STEP: f64 = 1.5;
+/// How far the staging panes sit from `bg.app`, in `bg.panel` steps.
+const STAGING_SURFACE_STEP: f64 = 1.8;
+/// Share of the accent's hue given to the staging panes.
+const STAGING_ACCENT_TINT: f64 = 0.18;
+
+/// `bg.app` moved `t` times the way to `bg.panel` (past it when `t > 1`),
+/// so the side panes keep the direction of the theme's own panel surface.
+fn beyond_panel(theme: &Theme, t: f64) -> Oklab {
+    let (app, panel) = (
+        theme.color(ColorToken::BgApp).to_oklab(),
+        theme.color(ColorToken::BgPanel).to_oklab(),
+    );
+    Oklab {
+        l: app.l + (panel.l - app.l) * t,
+        a: app.a + (panel.a - app.a) * t,
+        b: app.b + (panel.b - app.b) * t,
+        ..app
+    }
+}
+
+/// Surface of the repository side panes (projects sidebar, refs pane):
+/// neutral, clearly apart from the central pane.
+pub fn repo_surface(cx: &App) -> Hsla {
     let theme = &cx.global::<UiTheme>().theme;
+    to_hsla(beyond_panel(theme, REPO_SURFACE_STEP).to_color())
+}
+
+/// Surface of the staging panes (repo tab details, quick edit): a little
+/// further from the central pane than [`repo_surface`], with a faint accent
+/// tint so the two read apart. Stays below `bg.hover` so rows still show it.
+pub fn staging_surface(cx: &App) -> Hsla {
+    let theme = &cx.global::<UiTheme>().theme;
+    let s = beyond_panel(theme, STAGING_SURFACE_STEP);
+    let accent = theme.color(ColorToken::Accent).to_oklab();
     to_hsla(
-        theme
-            .color(ColorToken::BgApp)
-            .mix(theme.color(ColorToken::BgPanel), t),
+        Oklab {
+            a: s.a + (accent.a - s.a) * STAGING_ACCENT_TINT,
+            b: s.b + (accent.b - s.b) * STAGING_ACCENT_TINT,
+            ..s
+        }
+        .to_color(),
     )
 }

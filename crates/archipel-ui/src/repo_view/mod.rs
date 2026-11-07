@@ -44,7 +44,7 @@ use gpui_kit::{
 
 use crate::diff_view::DiffDoc;
 use crate::staging::{self, Staging, StagingEvent};
-use crate::theme::{color, radius, surface_between, tone};
+use crate::theme::{color, radius, repo_surface, staging_surface, tone};
 use crate::widgets::{Pane, PaneDrag, TextTooltip, condense_status, resize_pane, splitter};
 
 use dialogs::{Confirm, NameForm};
@@ -464,7 +464,7 @@ impl Render for RepoView {
                 div()
                     .w(px(ui.refs_width))
                     .flex_none()
-                    .bg(color(cx, T::BgPanel))
+                    .bg(repo_surface(cx))
                     .flex()
                     .flex_col()
                     .child(refs),
@@ -488,7 +488,7 @@ impl Render for RepoView {
                 div()
                     .w(px(ui.details_width))
                     .flex_none()
-                    .bg(surface_between(cx, 0.5))
+                    .bg(staging_surface(cx))
                     .flex()
                     .flex_col()
                     .child(details),

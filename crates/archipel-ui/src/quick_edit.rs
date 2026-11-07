@@ -18,7 +18,7 @@ use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Win
 
 use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, NotedJob, Staging, StagingEvent};
-use crate::theme::color;
+use crate::theme::{color, staging_surface};
 use crate::widgets::{SHORT_OID, button, icon_button};
 
 /// What the pane reports to the workspace.
@@ -283,7 +283,7 @@ impl Render for QuickEdit {
             .size_full()
             .flex()
             .flex_col()
-            .bg(color(cx, T::BgPanel))
+            .bg(staging_surface(cx))
             .track_focus(&self.focus)
             // Only Esc from here: ↑ / ↓ belong to the inputs.
             .on_key_down(cx.listener(|v, e: &KeyDownEvent, _, cx| {

@@ -10,17 +10,21 @@ use gix::traverse::commit::topo;
 
 use super::{GixReader, backend, to_gix, to_oid};
 
-/// Tips of the graph: every ref except the stash, plus `HEAD`.
+/// Tips of the graph: `HEAD`, branches, remote branches and tags, the refs the
+/// graph labels (backups such as `refs/original/*` would draw unlabelled lines).
 fn tips(repo: &gix::Repository) -> Result<Vec<gix::ObjectId>, GitError> {
     let mut tips = Vec::new();
     if let Ok(head) = repo.head_id() {
         tips.push(head.detach());
     }
-    for r in repo.references().map_err(backend)?.all().map_err(backend)? {
+    let platform = repo.references().map_err(backend)?;
+    let refs = platform
+        .local_branches()
+        .map_err(backend)?
+        .chain(platform.remote_branches().map_err(backend)?)
+        .chain(platform.tags().map_err(backend)?);
+    for r in refs {
         let mut r = r.map_err(backend)?;
-        if r.name().as_bstr() == "refs/stash" {
-            continue;
-        }
         let Ok(id) = r.peel_to_id() else { continue };
         // Only commits start a walk (tags may point to trees or blobs).
         if id

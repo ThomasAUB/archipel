@@ -11,7 +11,7 @@ use gpui_kit::{
     TextRun, Window, div, font, img, px, rems,
 };
 
-use crate::theme::{clean_dot, color, radius, row_height, text_size, ui_font};
+use crate::theme::{clean_dot, color, radius, repo_surface, row_height, text_size, ui_font};
 use crate::widgets::{button, dot, section};
 
 use super::Workspace;
@@ -183,7 +183,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .flex_none()
-            .bg(color(cx, T::BgPanel))
+            .bg(repo_surface(cx))
             .child(
                 div()
                     .id("project-switcher")

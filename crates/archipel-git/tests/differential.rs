@@ -194,6 +194,31 @@ fn history_agrees_and_is_topological() {
 }
 
 #[test]
+fn walk_skips_unlabelled_refs() {
+    let repo = archipel_fixtures::TestRepo::new().unwrap();
+    repo.write("a.txt", "a").unwrap();
+    let base = repo.commit_all("base").unwrap();
+    repo.write("a.txt", "rewritten away").unwrap();
+    let old = repo.commit_all("old").unwrap();
+    // A `filter-branch` backup, a note and a stash on the old commit.
+    repo.git(&["update-ref", "refs/original/refs/heads/main", &old])
+        .unwrap();
+    repo.git(&["notes", "add", "-m", "n", &old]).unwrap();
+    repo.write("a.txt", "dirty").unwrap();
+    repo.git(&["stash"]).unwrap();
+    repo.git(&["reset", "-q", "--hard", &base]).unwrap();
+    let path = RepoPath::new(repo.path());
+    let base = archipel_model::Oid::from_hex(&base).unwrap();
+    for reader in [
+        &GitCli::default() as &dyn HistoryReader,
+        &GixReader::default(),
+    ] {
+        let oids: Vec<_> = walk(reader, &path).iter().map(|n| n.oid).collect();
+        assert_eq!(oids, vec![base]);
+    }
+}
+
+#[test]
 fn walk_can_stop_early_and_be_cancelled() {
     let path = RepoPath::new(&fixture().repos[0].path);
     for reader in [

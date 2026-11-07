@@ -43,3 +43,4 @@ pub use app::{
     ProjectIdentity, PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoPullRequests,
     Services, file_project_id, initials,
 };
+pub use archipel_stats::{BranchRow, BranchesView, DEFAULT_STALE_BRANCH_DAYS};

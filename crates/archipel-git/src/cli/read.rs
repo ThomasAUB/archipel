@@ -323,27 +323,35 @@ impl HistoryReader for GitCli {
         sink: &mut dyn FnMut(TopologyNode) -> ControlFlow<()>,
         cancel: &CancelToken,
     ) -> Result<(), GitError> {
-        if self.resolve(repo, "HEAD")?.is_none()
-            && self.read(repo, &["for-each-ref", "--count=1"])?.is_empty()
+        // Only the refs the graph labels start a walk: backups such as
+        // `refs/original/*` or `refs/notes/*` would draw unlabelled lines.
+        let head = self.resolve(repo, "HEAD")?;
+        if head.is_none()
+            && self
+                .read(
+                    repo,
+                    &[
+                        "for-each-ref",
+                        "--count=1",
+                        "refs/heads",
+                        "refs/remotes",
+                        "refs/tags",
+                    ],
+                )?
+                .is_empty()
         {
-            return Ok(()); // empty repository
+            return Ok(()); // nothing to draw
         }
         let order = match order {
             WalkOrder::Topological => "--topo-order",
             WalkOrder::Date => "--date-order",
         };
-        let cmd = Cmd::new(
-            repo.as_path(),
-            CmdKind::Read,
-            &[
-                "rev-list",
-                "--exclude=refs/stash",
-                "--all",
-                "--parents",
-                order,
-            ],
-        )
-        .cancel(cancel);
+        let mut args = vec!["rev-list", "--parents", order];
+        if head.is_some() {
+            args.push("HEAD");
+        }
+        args.extend(["--branches", "--remotes", "--tags"]);
+        let cmd = Cmd::new(repo.as_path(), CmdKind::Read, &args).cancel(cancel);
         self.runner.stream(cmd, b'\n', &mut |line| {
             let text = std::str::from_utf8(line).map_err(|e| GitError::Backend(e.to_string()))?;
             let mut ids = text.split(' ').filter(|s| !s.is_empty());

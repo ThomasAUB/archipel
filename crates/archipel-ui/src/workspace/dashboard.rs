@@ -15,7 +15,7 @@ use gpui_kit::{
 };
 
 use crate::quick_edit::{QuickEdit, QuickEditEvent};
-use crate::theme::{color, radius, row_height, text_size, tone, ui_font};
+use crate::theme::{color, radius, row_height, staging_surface, text_size, tone, ui_font};
 use crate::widgets::{
     Pane, PaneDrag, TextTooltip, button, chip, popup_at, primary_button, resize_pane, splitter,
     unmodified,
@@ -329,7 +329,7 @@ impl Workspace {
                         .right_0()
                         .flex()
                         .occlude()
-                        .child(splitter(Pane::QuickEdit, cx).bg(color(cx, T::BgPanel)))
+                        .child(splitter(Pane::QuickEdit, cx).bg(staging_surface(cx)))
                         .child(div().w(px(width)).h_full().flex().flex_col().child(pane)),
                 )
             })

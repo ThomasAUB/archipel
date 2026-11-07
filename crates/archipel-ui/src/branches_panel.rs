@@ -6,12 +6,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use archipel_app::App as Core;
 use archipel_app::dashboard::relative_time;
+use archipel_app::{App as Core, BranchRow, DEFAULT_STALE_BRANCH_DAYS};
 use archipel_model::{Oid, RepoId, Timestamp};
 use archipel_ops::Outcome;
 use archipel_ops::batch::BatchTarget;
-use archipel_stats::{BranchRow, DEFAULT_STALE_BRANCH_DAYS};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;

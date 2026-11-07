@@ -451,7 +451,6 @@ dependencies = [
  "archipel-graph",
  "archipel-model",
  "archipel-ops",
- "archipel-stats",
  "archipel-theme",
  "embed-resource",
  "gpui-kit",
