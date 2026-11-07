@@ -14,7 +14,8 @@ same change in several repos with a clear per-repo report.
 
 - Spec: [docs/SPEC.md](docs/SPEC.md) · Plan: [docs/PLAN.md](docs/PLAN.md) ·
   Architecture rules: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
-  Extension points: [docs/EXTENDING.md](docs/EXTENDING.md) · Decisions: [docs/adr/](docs/adr/)
+  Extension points: [docs/EXTENDING.md](docs/EXTENDING.md) ·
+  Creating a theme: [docs/THEMES.md](docs/THEMES.md) · Decisions: [docs/adr/](docs/adr/)
 
 ## Status
 

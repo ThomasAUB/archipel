@@ -187,8 +187,8 @@ with `StatsRegistry::register`.
 
 ## A theme
 
-Create `themes/ocean.toml` in the user config dir (or use Settings →
-Appearance, which writes the same file):
+Create `themes/ocean.toml` in the user config dir (step-by-step tutorial,
+folder locations and the full token list: [THEMES.md](THEMES.md)):
 
 ```toml
 name = "Ocean"
