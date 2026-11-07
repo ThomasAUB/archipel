@@ -46,9 +46,20 @@ use archipel_compose::{AppDirs, ComposeError, ComposeOptions, Composition};
 use gpui_kit::{App, Global, KeyBinding};
 
 /// Keeps the core's async runtime alive for the lifetime of the GPUI app.
-struct CoreRuntime(#[allow(dead_code)] tokio::runtime::Runtime);
+struct CoreRuntime(Option<tokio::runtime::Runtime>);
 
 impl Global for CoreRuntime {}
+
+impl Drop for CoreRuntime {
+    /// Quitting must not wait for blocking jobs: a keychain read waiting on an
+    /// unlock prompt never returns, and a plain drop of the runtime would then
+    /// keep the windowless process alive (taking every later launch's request).
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
 
 /// Command-line options.
 struct Args {
@@ -233,7 +244,7 @@ fn main() {
                 tracing::warn!("{w}");
             }
             warnings.splice(0..0, notices);
-            cx.set_global(CoreRuntime(runtime));
+            cx.set_global(CoreRuntime(Some(runtime)));
             bind_keys(cx, &app);
             cx.set_global(windows::Windows::new(app.clone()));
             windows::save_on_quit(cx);
