@@ -1,0 +1,109 @@
+name: Release
+
+# Pushing a `v*` tag builds the desktop app on each platform and attaches the
+# archives to a draft GitHub Release. Review the draft, then publish it: the
+# in-app update check (`releases/latest`) only sees published, non-prerelease
+# releases. Tags with a suffix (`v0.2.0-rc1`) are marked as prereleases.
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # The oldest supported runner: the binary links against its glibc,
+          # so it also runs on older distributions.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Tag matches the crate version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "archipel-ui") | .version')"
+          case "$tag" in
+            "$version" | "$version"-*) ;;
+            *) echo "::error::tag $GITHUB_REF_NAME does not match version $version"; exit 1 ;;
+          esac
+      - name: Linux UI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libasound2-dev pkg-config
+      - name: Build
+        run: cargo build --release --locked -p archipel-ui --target ${{ matrix.target }}
+        env:
+          # Windows and macOS keep debug info beside the binary (.pdb, .dSYM),
+          # Linux inside it (~240 MB): strip it there, keeping symbol names.
+          CARGO_PROFILE_RELEASE_STRIP: ${{ runner.os == 'Linux' && 'debuginfo' || 'none' }}
+      - name: Package
+        run: |
+          name="archipel-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp LICENSE README.md "dist/$name/"
+          bin="target/${{ matrix.target }}/release/archipel"
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "../$bin.exe" "$name/"
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            cp "../$bin" "$name/"
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              cp ../assets/linux/archipel.desktop ../assets/logo/archipel.svg "$name/"
+            fi
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft the GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--draft --generate-notes --title "Archipel ${GITHUB_REF_NAME#v}")
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" "${flags[@]}"
