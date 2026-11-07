@@ -17,7 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Window, div};
 
 use crate::diff_view::{self, DiffDoc};
-use crate::staging::{self, Job, Staging, StagingEvent};
+use crate::staging::{self, NotedJob, Staging, StagingEvent};
 use crate::theme::color;
 use crate::widgets::{SHORT_OID, button, icon_button};
 
@@ -194,7 +194,7 @@ impl QuickEdit {
     }
 
     /// Runs a write on a background thread, then refreshes the repo.
-    fn run_boxed(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job) {
+    fn run_boxed(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: NotedJob) {
         self.status = Some(format!("{label}…"));
         staging::submit_job(
             &self.core,
@@ -323,7 +323,13 @@ impl Staging for QuickEdit {
         &mut self.staging
     }
 
-    fn run_job_as(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job) {
+    fn run_noted_job(
+        &mut self,
+        class: OpClass,
+        label: String,
+        cx: &mut Context<Self>,
+        job: NotedJob,
+    ) {
         self.run_boxed(class, label, cx, job);
     }
 

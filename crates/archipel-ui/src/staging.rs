@@ -46,6 +46,15 @@ const ALL_FILES: &str = "\0all";
 /// and carries the cancellation token.
 pub type Job = Box<dyn FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send>;
 
+/// A [`Job`] whose success may carry a note for the status line.
+pub type NotedJob =
+    Box<dyn FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<Option<String>, OpError> + Send>;
+
+/// `job` as a [`NotedJob`] without note.
+pub fn noted(job: Job) -> NotedJob {
+    Box::new(move |a, p, op| job(a, p, op).map(|()| None))
+}
+
 /// Submits `job` through the core's scheduler (operations drawer, per-repo
 /// serialization) and hands its status line to `done` on the view.
 pub(crate) fn submit_job<V: 'static>(
@@ -53,14 +62,15 @@ pub(crate) fn submit_job<V: 'static>(
     path: &RepoPath,
     class: OpClass,
     label: String,
-    job: Job,
+    job: NotedJob,
     cx: &mut Context<V>,
     done: impl FnOnce(&mut V, String, &mut Context<V>) + 'static,
 ) {
     let handle = core.submit_repo_job(path, class, label.clone(), job);
     cx.spawn(async move |this, cx| {
         let status = match handle.wait().await {
-            Ok(()) => format!("{label}: done"),
+            Ok(None) => format!("{label}: done"),
+            Ok(Some(note)) => format!("{label}: {note}"),
             Err(e) => format!("{label} failed: {e}"),
         };
         // The view may have been closed meanwhile.
@@ -166,8 +176,19 @@ pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {
     fn changes(&self) -> &[FileChange];
     /// The panel's state.
     fn panel(&mut self) -> &mut Panel;
+    /// Runs a job of `class` on the repo, then reloads; its note, if
+    /// any, replaces "done" on the status line.
+    fn run_noted_job(
+        &mut self,
+        class: OpClass,
+        label: String,
+        cx: &mut Context<Self>,
+        job: NotedJob,
+    );
     /// Runs a job of `class` on the repo, then reloads.
-    fn run_job_as(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job);
+    fn run_job_as(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job) {
+        self.run_noted_job(class, label, cx, noted(job));
+    }
     /// Runs a local write on the repo, then reloads.
     fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: Job) {
         self.run_job_as(OpClass::Write, label, cx, job);
@@ -336,10 +357,14 @@ fn create_branch<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>
 
 fn switch_to<V: Staging>(v: &mut V, branch: String, cx: &mut Context<V>) {
     v.panel().branches = None;
-    v.run_job(
+    v.run_noted_job(
+        OpClass::Write,
         format!("Checkout {branch}"),
         cx,
-        Box::new(move |a, p, _| a.checkout(p, &CheckoutTarget::Branch(branch), None)),
+        Box::new(move |a, p, _| {
+            a.checkout_autostash(p, &CheckoutTarget::Branch(branch))
+                .map(|o| o.note())
+        }),
     );
 }
 

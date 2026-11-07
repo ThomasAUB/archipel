@@ -112,6 +112,7 @@ A minimal view, one row per repo:
 - Commit graph, diff, staging per file / hunk / line.
 - Virtualized graph: smooth even with 100k+ commits.
 - Everyday repo actions: commit / amend, branches (checkout, create, rename, delete, set upstream), tags, stashes, fetch / pull / push, reset, revert, continue / abort a merge or rebase in progress.
+- Checkout keeps uncommitted changes: when Git refuses because they touch files that differ on the target, they are stashed, the target is checked out and they are re-applied there (staged state kept). If they conflict with the target, the target stays clean, the changes stay in an `archipel: autostash` stash entry and the status line says so; undoing the checkout switches back and pops them. Batch checkout over many repos does not autostash.
 
 ### 6. Branch drag and drop — P1
 Always confirmed through a menu, never a silent action:

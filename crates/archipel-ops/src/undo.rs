@@ -193,6 +193,11 @@ impl UndoService {
                         .into_iter()
                         .filter(|s| matches!(s, UndoStep::UpdateRef { .. })),
                 );
+                // Changes the checkout left in the stash (they conflict
+                // with its target) come back once `HEAD` is back.
+                if direction == Direction::Undo {
+                    steps.extend(entry.stash.as_ref().map(|s| UndoStep::StashPop(s.oid)));
+                }
                 Ok(UndoPlan::Steps { steps, note: None })
             }
             K::StashPush | K::StashDrop | K::StashPop => stash_plan(entry, direction),

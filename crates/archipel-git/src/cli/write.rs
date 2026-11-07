@@ -353,6 +353,20 @@ impl StashWriter for GitCli {
             .map(drop)
     }
 
+    fn stash_apply_index(&self, repo: &RepoPath, index: u32) -> Result<(), GitError> {
+        self.write(
+            repo,
+            &[
+                "stash",
+                "apply",
+                "-q",
+                "--index",
+                &format!("stash@{{{index}}}"),
+            ],
+        )
+        .map(drop)
+    }
+
     fn drop_stash(&self, repo: &RepoPath, index: u32) -> Result<(), GitError> {
         self.write(
             repo,

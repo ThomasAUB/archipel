@@ -589,6 +589,9 @@ impl StashWriter for FakeGit {
         }
         Ok(())
     }
+    fn stash_apply_index(&self, repo: &RepoPath, index: u32) -> Result<(), GitError> {
+        self.record("stash_apply_index", repo, index.to_string())
+    }
     fn drop_stash(&self, repo: &RepoPath, index: u32) -> Result<(), GitError> {
         self.record("stash_drop", repo, index.to_string())?;
         self.with_repo(repo, |r| remove_stash(r, index));

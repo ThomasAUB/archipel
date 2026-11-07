@@ -407,14 +407,14 @@ impl Staging for RepoView {
         &mut self.staging
     }
 
-    fn run_job_as(
+    fn run_noted_job(
         &mut self,
         class: OpClass,
         label: String,
         cx: &mut Context<Self>,
-        job: staging::Job,
+        job: staging::NotedJob,
     ) {
-        self.run_as(class, label, cx, job);
+        self.run_noted(class, label, cx, job);
     }
 
     fn report(&mut self, text: String, cx: &mut Context<Self>) {

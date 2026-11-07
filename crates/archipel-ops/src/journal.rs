@@ -126,6 +126,18 @@ impl Journal {
         rec: Recording,
         op: impl FnOnce() -> Result<T, GitError>,
     ) -> Result<T, OpError> {
+        self.record_stash(repo, rec, || Ok((op()?, None)))
+    }
+
+    /// Like [`Self::record`], for an operation that learns the stash entry
+    /// it involves only when it runs: a returned record replaces the
+    /// recording's.
+    pub fn record_stash<T>(
+        &self,
+        repo: &RepoPath,
+        mut rec: Recording,
+        op: impl FnOnce() -> Result<(T, Option<StashRecord>), OpError>,
+    ) -> Result<T, OpError> {
         let mut names = rec.refs.clone();
         // An unborn `HEAD` snapshots fine (symbolic); a failure here means
         // the refs cannot be read. The operation still runs, unjournaled.
@@ -155,7 +167,10 @@ impl Journal {
         } else {
             None
         };
-        let value = op()?;
+        let (value, stash) = op()?;
+        if stash.is_some() {
+            rec.stash = stash;
+        }
         let after = self.refs.snapshot(repo, &names);
         match (before, after) {
             (Some(before), Ok(after)) => {

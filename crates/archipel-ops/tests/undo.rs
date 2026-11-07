@@ -15,7 +15,8 @@ use archipel_model::testing::InMemoryStore;
 use archipel_model::{CancelToken, NoProgress, Oid, RepoPath};
 use archipel_ops::undo::UndoStep;
 use archipel_ops::{
-    Compensation, Direction, GitPorts, Journal, OpError, RepoActions, UndoPlan, UndoService,
+    CheckoutOutcome, Compensation, Direction, GitPorts, Journal, OpError, RepoActions, UndoPlan,
+    UndoService,
 };
 
 struct Env {
@@ -542,4 +543,112 @@ fn remote_branch_of_a_remote_named_with_a_slash_is_deleted() {
         .unwrap();
     let left = git(&bare, &["branch", "--list", "feat"]).unwrap();
     assert!(left.trim().is_empty(), "{left}");
+}
+
+impl Env {
+    fn read(&self, file: &str) -> String {
+        std::fs::read_to_string(self.repo.path().join(file)).unwrap()
+    }
+    /// A `feature` branch whose single commit writes `file`, back on `main`.
+    fn feature_writing(&self, file: &str, contents: &str) {
+        self.repo.git(&["checkout", "-q", "-b", "feature"]).unwrap();
+        self.commit(file, contents);
+        self.repo.git(&["checkout", "-q", "main"]).unwrap();
+    }
+    fn checkout_feature(&self) -> CheckoutOutcome {
+        self.actions
+            .checkout_autostash(&self.path, &CheckoutTarget::Branch("feature".into()))
+            .unwrap()
+    }
+    fn branch(&self) -> Option<String> {
+        self.cli
+            .summary(&self.path)
+            .unwrap()
+            .head
+            .branch()
+            .map(str::to_owned)
+    }
+}
+
+#[test]
+fn autostash_checkout_lets_git_carry_changes_it_can() {
+    let e = env();
+    e.feature_writing("b.txt", "b\n");
+    e.repo.write("a.txt", "local\n").unwrap();
+    assert_eq!(e.checkout_feature(), CheckoutOutcome::Switched);
+    assert_eq!(e.read("a.txt"), "local\n");
+    assert!(e.cli.stashes(&e.path).unwrap().is_empty());
+}
+
+#[test]
+fn autostash_checkout_reapplies_changes_keeping_the_index() {
+    let e = env();
+    e.commit("a.txt", "1\n2\n3\n4\n5\n");
+    e.feature_writing("a.txt", "1 feature\n2\n3\n4\n5\n");
+    e.repo.write("a.txt", "1\n2\n3\n4\n5 local\n").unwrap();
+    e.actions.stage(&e.path, &["a.txt".into()]).unwrap();
+    e.repo.write("new.txt", "untracked\n").unwrap();
+
+    assert_eq!(e.checkout_feature(), CheckoutOutcome::Reapplied);
+    assert_eq!(e.branch().as_deref(), Some("feature"));
+    assert_eq!(e.read("a.txt"), "1 feature\n2\n3\n4\n5 local\n");
+    assert_eq!(e.read("new.txt"), "untracked\n");
+    let changes = e.cli.changes(&e.path).unwrap();
+    let a = changes.iter().find(|c| c.path == "a.txt").unwrap();
+    assert!(a.is_staged() && !a.is_unstaged());
+    assert!(e.cli.stashes(&e.path).unwrap().is_empty());
+    assert!(e.last().stash.is_none());
+}
+
+#[test]
+fn autostash_checkout_keeps_conflicting_changes_stashed_until_undo() {
+    let e = env();
+    e.feature_writing("a.txt", "feature\n");
+    e.repo.write("a.txt", "local\n").unwrap();
+    e.repo.write("new.txt", "untracked\n").unwrap();
+
+    let CheckoutOutcome::Stashed(record) = e.checkout_feature() else {
+        panic!("the changes conflict");
+    };
+    assert_eq!(e.branch().as_deref(), Some("feature"));
+    assert_eq!(e.read("a.txt"), "feature\n");
+    assert!(e.cli.changes(&e.path).unwrap().is_empty(), "left clean");
+    let stashes = e.cli.stashes(&e.path).unwrap();
+    assert_eq!(stashes.len(), 1);
+    assert_eq!(stashes[0].oid, record.oid);
+    assert!(stashes[0].message.contains("autostash"));
+    assert_eq!(e.last().stash.map(|s| s.oid), Some(record.oid));
+
+    e.undo_last().unwrap();
+    assert_eq!(e.branch().as_deref(), Some("main"));
+    assert_eq!(e.read("a.txt"), "local\n");
+    assert_eq!(e.read("new.txt"), "untracked\n");
+    assert!(e.cli.stashes(&e.path).unwrap().is_empty());
+}
+
+#[test]
+fn autostash_checkout_cleans_untracked_files_of_a_failed_apply() {
+    let e = env();
+    e.feature_writing("u.txt", "tracked on feature\n");
+    // Git refuses: the untracked file would be overwritten.
+    e.repo.write("u.txt", "untracked here\n").unwrap();
+
+    assert!(matches!(e.checkout_feature(), CheckoutOutcome::Stashed(_)));
+    assert_eq!(e.read("u.txt"), "tracked on feature\n");
+    assert!(e.cli.changes(&e.path).unwrap().is_empty());
+    e.undo_last().unwrap();
+    assert_eq!(e.read("u.txt"), "untracked here\n");
+}
+
+#[test]
+fn autostash_checkout_of_a_missing_branch_leaves_changes_alone() {
+    let e = env();
+    e.repo.write("a.txt", "local\n").unwrap();
+    assert!(
+        e.actions
+            .checkout_autostash(&e.path, &CheckoutTarget::Branch("nope".into()))
+            .is_err()
+    );
+    assert_eq!(e.read("a.txt"), "local\n");
+    assert!(e.cli.stashes(&e.path).unwrap().is_empty());
 }

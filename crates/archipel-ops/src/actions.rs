@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use archipel_model::changes::FileState;
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeToolLauncher,
@@ -12,6 +13,7 @@ use archipel_model::ports::{
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
     PullMode, PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, TagRequest,
+    UntrackedMode,
 };
 use archipel_model::{CancelToken, GitError, Oid, ProgressSink, RepoPath};
 
@@ -140,6 +142,53 @@ fn tag_ref(name: &str) -> String {
     format!("refs/tags/{name}")
 }
 
+/// Start of the message of the stash entry carrying changes across a
+/// checkout.
+const AUTOSTASH: &str = "archipel: autostash";
+
+/// The journal recording of a checkout of `target`.
+fn checkout_recording(target: &CheckoutTarget) -> Recording {
+    let (label, refs) = match target {
+        CheckoutTarget::Branch(b) => (format!("Checkout {b}"), vec![branch_ref(b)]),
+        CheckoutTarget::TrackRemote(r) => {
+            let local = r.split_once('/').map_or(r.as_str(), |(_, b)| b);
+            (
+                format!("Checkout {local} tracking {r}"),
+                vec![branch_ref(local)],
+            )
+        }
+        CheckoutTarget::Detached(oid) => (format!("Checkout {}", oid.short(8)), Vec::new()),
+    };
+    Recording::new(OperationKind::Checkout, label).with_refs(refs)
+}
+
+/// How [`RepoActions::checkout_autostash`] ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckoutOutcome {
+    /// Git checked out the target, carrying any uncommitted changes itself.
+    Switched,
+    /// The uncommitted changes were stashed, then re-applied on the target.
+    Reapplied,
+    /// The uncommitted changes conflict with the target: they stay in this
+    /// stash entry.
+    Stashed(StashRecord),
+}
+
+impl CheckoutOutcome {
+    /// What to tell the user beyond "done", if anything.
+    #[must_use]
+    pub fn note(&self) -> Option<String> {
+        match self {
+            Self::Switched => None,
+            Self::Reapplied => Some("uncommitted changes stashed and re-applied".into()),
+            Self::Stashed(record) => Some(format!(
+                "your uncommitted changes conflict with it and were kept in the stash “{}” (undo goes back and restores them)",
+                record.message
+            )),
+        }
+    }
+}
+
 /// Single-repository actions with journaling.
 #[derive(Clone)]
 pub struct RepoActions {
@@ -256,22 +305,125 @@ impl RepoActions {
         target: &CheckoutTarget,
         batch: Option<BatchId>,
     ) -> Result<(), OpError> {
-        let (label, refs) = match target {
-            CheckoutTarget::Branch(b) => (format!("Checkout {b}"), vec![branch_ref(b)]),
-            CheckoutTarget::TrackRemote(r) => {
-                let local = r.split_once('/').map_or(r.as_str(), |(_, b)| b);
-                (
-                    format!("Checkout {local} tracking {r}"),
-                    vec![branch_ref(local)],
-                )
-            }
-            CheckoutTarget::Detached(oid) => (format!("Checkout {}", oid.short(8)), Vec::new()),
-        };
-        let rec = Recording::new(OperationKind::Checkout, label)
-            .with_refs(refs)
-            .in_batch(batch);
+        let rec = checkout_recording(target).in_batch(batch);
         self.journal
             .record(repo, rec, || self.git.branches.checkout(repo, target))
+    }
+
+    /// Checks out a branch or commit, carrying uncommitted changes over
+    /// even when Git refuses because they touch files that differ on the
+    /// target: they are then stashed, the checkout runs, and they are
+    /// re-applied on the target. When they conflict with it, the target is
+    /// left clean and the changes stay in the stash entry, recorded so that
+    /// undoing the checkout switches back and pops them.
+    pub fn checkout_autostash(
+        &self,
+        repo: &RepoPath,
+        target: &CheckoutTarget,
+    ) -> Result<CheckoutOutcome, OpError> {
+        let rec = checkout_recording(target);
+        let message = format!("{AUTOSTASH} before “{}”", rec.label);
+        self.journal.record_stash(repo, rec, || {
+            let outcome = self.switch_autostash(repo, target, message)?;
+            let stash = match &outcome {
+                CheckoutOutcome::Stashed(record) => Some(record.clone()),
+                _ => None,
+            };
+            Ok((outcome, stash))
+        })
+    }
+
+    fn switch_autostash(
+        &self,
+        repo: &RepoPath,
+        target: &CheckoutTarget,
+        message: String,
+    ) -> Result<CheckoutOutcome, OpError> {
+        let refused = match self.git.branches.checkout(repo, target) {
+            Ok(()) => return Ok(CheckoutOutcome::Switched),
+            Err(e) if e.would_overwrite_local_changes() => e,
+            Err(e) => return Err(e.into()),
+        };
+        if self.git.status.summary(repo)?.in_progress.is_some() {
+            return Err(refused.into());
+        }
+        let request = StashRequest {
+            message: Some(message),
+            untracked: UntrackedMode::Include,
+        };
+        if !self.git.stash_writer.stash_push(repo, &request)? {
+            return Err(refused.into());
+        }
+        let stash = self.stash_at(repo, 0)?;
+        if let Err(e) = self.git.branches.checkout(repo, target) {
+            // Put the changes back where they were.
+            let restored = self.stash_index_of(repo, stash.oid).and_then(|index| {
+                Ok(self
+                    .git
+                    .stash_writer
+                    .stash_apply(repo, index, StashApplyMode::Pop)?)
+            });
+            return Err(match restored {
+                Ok(()) => e.into(),
+                Err(r) => OpError::Refused(format!(
+                    "{e}; restoring your changes also failed ({r}): they are in the stash “{}”",
+                    stash.message
+                )),
+            });
+        }
+        if self.reapply(repo, stash.oid)? {
+            let index = self.stash_index_of(repo, stash.oid)?;
+            self.git.stash_writer.drop_stash(repo, index)?;
+            Ok(CheckoutOutcome::Reapplied)
+        } else {
+            Ok(CheckoutOutcome::Stashed(stash))
+        }
+    }
+
+    /// Applies the stash `oid` on the clean worktree a checkout left,
+    /// restoring what was staged when possible. On conflicts, cleans the
+    /// worktree back (the stash still holds every change) and returns
+    /// `false`.
+    fn reapply(&self, repo: &RepoPath, oid: Oid) -> Result<bool, OpError> {
+        // Cleaning up after a failed apply must only drop what it wrote.
+        if !self.git.status.changes(repo)?.is_empty() {
+            return Ok(false);
+        }
+        for keep_index in [true, false] {
+            let index = self.stash_index_of(repo, oid)?;
+            let applied = if keep_index {
+                self.git.stash_writer.stash_apply_index(repo, index)
+            } else {
+                self.git
+                    .stash_writer
+                    .stash_apply(repo, index, StashApplyMode::Keep)
+            };
+            match applied {
+                Ok(()) => return Ok(true),
+                Err(e) => {
+                    tracing::debug!(error = %e, keep_index, "autostash does not apply");
+                    self.clean_worktree(repo)?;
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Discards every change of the worktree, untracked files included.
+    fn clean_worktree(&self, repo: &RepoPath) -> Result<(), OpError> {
+        self.git.ref_writer.reset(repo, "HEAD", ResetMode::Hard)?;
+        let untracked: Vec<String> = self
+            .git
+            .status
+            .changes(repo)?
+            .into_iter()
+            .filter(|c| c.state == FileState::Untracked)
+            .map(|c| c.path)
+            .collect();
+        if !untracked.is_empty() {
+            self.git.index.discard(repo, &untracked)?;
+        }
+        Ok(())
     }
 
     /// Creates a branch.
@@ -404,6 +556,16 @@ impl RepoActions {
             self.journal.record(repo, rec, || Ok(()))?;
         }
         Ok(pushed)
+    }
+
+    fn stash_index_of(&self, repo: &RepoPath, oid: Oid) -> Result<u32, OpError> {
+        self.git
+            .stashes
+            .stashes(repo)?
+            .into_iter()
+            .find(|s| s.oid == oid)
+            .map(|s| s.index)
+            .ok_or_else(|| OpError::Refused("the stash entry no longer exists".into()))
     }
 
     fn stash_at(&self, repo: &RepoPath, index: u32) -> Result<StashRecord, OpError> {

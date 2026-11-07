@@ -237,6 +237,9 @@ pub trait StashWriter: Send + Sync {
         index: u32,
         mode: StashApplyMode,
     ) -> Result<(), GitError>;
+    /// Applies the stash at `index` and keeps it, restoring which changes
+    /// were staged (`git stash apply --index`).
+    fn stash_apply_index(&self, repo: &RepoPath, index: u32) -> Result<(), GitError>;
     /// Drops the stash at `index`.
     fn drop_stash(&self, repo: &RepoPath, index: u32) -> Result<(), GitError>;
     /// Stores a stash commit back into the stash list (undo of drop).

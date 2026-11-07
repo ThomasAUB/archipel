@@ -60,6 +60,15 @@ pub enum GitError {
     InvalidRequest(String),
 }
 
+impl GitError {
+    /// Whether a checkout was refused because it would overwrite local
+    /// changes (modified tracked files or untracked files).
+    #[must_use]
+    pub fn would_overwrite_local_changes(&self) -> bool {
+        matches!(self, Self::CommandFailed { stderr, .. } if stderr.contains("would be overwritten by checkout"))
+    }
+}
+
 /// Errors from persistent stores.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {

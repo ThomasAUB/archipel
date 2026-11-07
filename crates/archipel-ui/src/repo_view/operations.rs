@@ -76,7 +76,12 @@ impl RepoView {
                 format!("Checkout {} (detached)", oid.short(SHORT_OID))
             }
         };
-        self.run(label, cx, move |a, p, _| a.checkout(p, &target, None));
+        self.run_noted(
+            OpClass::Write,
+            label,
+            cx,
+            Box::new(move |a, p, _| a.checkout_autostash(p, &target).map(|o| o.note())),
+        );
     }
 
     /// Runs a write on a background thread, then reloads.
@@ -96,6 +101,17 @@ impl RepoView {
         cx: &mut Context<Self>,
         job: impl FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send + 'static,
     ) {
+        self.run_noted(class, label, cx, staging::noted(Box::new(job)));
+    }
+
+    /// Like [`Self::run_as`], for a job whose note replaces "done".
+    pub(super) fn run_noted(
+        &mut self,
+        class: OpClass,
+        label: impl Into<String>,
+        cx: &mut Context<Self>,
+        job: staging::NotedJob,
+    ) {
         let label = label.into();
         self.status = Some(format!("{label}…"));
         staging::submit_job(
@@ -103,7 +119,7 @@ impl RepoView {
             &self.path,
             class,
             label,
-            Box::new(job),
+            job,
             cx,
             |v, status, cx| {
                 v.status = Some(status);
