@@ -448,3 +448,98 @@ fn commit_undo_plan_moves_branch_softly() {
         }
     );
 }
+
+/// Delegates to the CLI, failing the `fail_at`-th ref update (1-based).
+struct FlakyRefWriter {
+    cli: Arc<GitCli>,
+    fail_at: usize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl archipel_model::ports::RefWriter for FlakyRefWriter {
+    fn update_ref(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        to: Option<Oid>,
+        expected: Option<Oid>,
+    ) -> Result<(), archipel_model::GitError> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if n == self.fail_at {
+            return Err(archipel_model::GitError::Unsupported("injected failure"));
+        }
+        self.cli.update_ref(repo, name, to, expected)
+    }
+    fn set_symbolic_head(
+        &self,
+        repo: &RepoPath,
+        branch_ref: &str,
+    ) -> Result<(), archipel_model::GitError> {
+        self.cli.set_symbolic_head(repo, branch_ref)
+    }
+    fn reset(
+        &self,
+        repo: &RepoPath,
+        target: &str,
+        mode: ResetMode,
+    ) -> Result<(), archipel_model::GitError> {
+        self.cli.reset(repo, target, mode)
+    }
+}
+
+#[test]
+fn undo_failing_midway_restores_the_refs_and_can_be_retried() {
+    let e = env();
+    e.repo.git(&["branch", "feature"]).unwrap();
+    e.actions.rename_branch(&e.path, "feature", "feat").unwrap();
+    let tip = e.cli.resolve(&e.path, "refs/heads/feat").unwrap();
+
+    let mut ports = GitPorts::from_backend(e.cli.clone());
+    ports.ref_writer = Arc::new(FlakyRefWriter {
+        cli: e.cli.clone(),
+        fail_at: 2,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let journal = Journal::new(e.store.clone(), e.cli.clone(), e.cli.clone(), 200);
+    let flaky = UndoService::new(ports, journal);
+    let entry = flaky.next_undo(e.path.id(), 50).unwrap().unwrap();
+    assert!(flaky.execute(&e.path, &entry, Direction::Undo).is_err());
+
+    // Rolled back to the state after the rename, entry still in effect.
+    assert_eq!(e.cli.resolve(&e.path, "refs/heads/feat").unwrap(), tip);
+    assert!(
+        e.cli
+            .resolve(&e.path, "refs/heads/feature")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(e.last().state, EntryState::Done);
+
+    e.undo_last().unwrap();
+    assert_eq!(e.cli.resolve(&e.path, "refs/heads/feature").unwrap(), tip);
+    assert!(e.cli.resolve(&e.path, "refs/heads/feat").unwrap().is_none());
+}
+
+#[test]
+fn remote_branch_of_a_remote_named_with_a_slash_is_deleted() {
+    let e = env();
+    let remote_dir = tempfile::tempdir().unwrap();
+    let bare = remote_dir.path().join("fork.git");
+    git(
+        remote_dir.path(),
+        &["init", "-q", "--bare", bare.to_str().unwrap()],
+    )
+    .unwrap();
+    e.repo
+        .git(&["remote", "add", "team/fork", bare.to_str().unwrap()])
+        .unwrap();
+    e.repo
+        .git(&["push", "-q", "team/fork", "HEAD:refs/heads/feat"])
+        .unwrap();
+    e.repo.git(&["fetch", "-q", "team/fork"]).unwrap();
+    e.actions
+        .delete_remote_branch(&e.path, "team/fork/feat", &NoProgress, &CancelToken::new())
+        .unwrap();
+    let left = git(&bare, &["branch", "--list", "feat"]).unwrap();
+    assert!(left.trim().is_empty(), "{left}");
+}

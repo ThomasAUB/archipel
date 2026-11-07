@@ -6,7 +6,7 @@
 use archipel_fixtures::TestRepo;
 use archipel_git::GitCli;
 use archipel_model::ports::{
-    IndexWriter, StashWriter, StatusReader, SubmoduleReader, SubmoduleWriter,
+    IndexWriter, StatusReader, SubmoduleReader, SubmoduleWriter, WorktreeSnapshots,
 };
 use archipel_model::requests::SubmoduleUpdate;
 use archipel_model::{CancelToken, NoProgress, Oid, RepoPath};

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolLauncher, RefReader,
-    RefWriter, RemoteOps, StashWriter, TagWriter,
+    RefWriter, RemoteOps, StashWriter, TagWriter, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -199,8 +199,12 @@ impl IndexWriter for GitCli {
 impl BranchWriter for GitCli {
     fn checkout(&self, repo: &RepoPath, target: &CheckoutTarget) -> Result<(), GitError> {
         match target {
-            CheckoutTarget::Branch(name) => self.write(repo, &["switch", "--no-guess", name]),
-            CheckoutTarget::TrackRemote(remote) => self.write(repo, &["switch", "--track", remote]),
+            CheckoutTarget::Branch(name) => {
+                self.write(repo, &["switch", "--no-guess", "--end-of-options", name])
+            }
+            CheckoutTarget::TrackRemote(remote) => {
+                self.write(repo, &["switch", "--track", "--end-of-options", remote])
+            }
             CheckoutTarget::Detached(oid) => {
                 self.write(repo, &["switch", "--detach", &oid.to_hex()])
             }
@@ -243,9 +247,17 @@ impl BranchWriter for GitCli {
         match upstream {
             Some(up) => self.write(
                 repo,
-                &["branch", &format!("--set-upstream-to={up}"), branch],
+                &[
+                    "branch",
+                    &format!("--set-upstream-to={up}"),
+                    "--end-of-options",
+                    branch,
+                ],
             ),
-            None => self.write(repo, &["branch", "--unset-upstream", branch]),
+            None => self.write(
+                repo,
+                &["branch", "--unset-upstream", "--end-of-options", branch],
+            ),
         }
         .map(drop)
     }
@@ -265,7 +277,8 @@ impl TagWriter for GitCli {
     }
 
     fn delete_tag(&self, repo: &RepoPath, name: &str) -> Result<(), GitError> {
-        self.write(repo, &["tag", "-d", name]).map(drop)
+        self.write(repo, &["tag", "-d", "--end-of-options", name])
+            .map(drop)
     }
 }
 
@@ -289,8 +302,11 @@ impl RefWriter for GitCli {
     }
 
     fn set_symbolic_head(&self, repo: &RepoPath, branch_ref: &str) -> Result<(), GitError> {
-        self.write(repo, &["symbolic-ref", "HEAD", branch_ref])
-            .map(drop)
+        self.write(
+            repo,
+            &["symbolic-ref", "--end-of-options", "HEAD", branch_ref],
+        )
+        .map(drop)
     }
 
     fn reset(&self, repo: &RepoPath, target: &str, mode: ResetMode) -> Result<(), GitError> {
@@ -300,8 +316,11 @@ impl RefWriter for GitCli {
             ResetMode::Hard => "--hard",
             ResetMode::Keep => "--keep",
         };
-        self.write(repo, &["reset", "-q", flag, target, "--"])
-            .map(drop)
+        self.write(
+            repo,
+            &["reset", "-q", flag, "--end-of-options", target, "--"],
+        )
+        .map(drop)
     }
 }
 
@@ -346,7 +365,9 @@ impl StashWriter for GitCli {
         self.write(repo, &["stash", "store", "-m", message, &oid.to_hex()])
             .map(drop)
     }
+}
 
+impl WorktreeSnapshots for GitCli {
     fn snapshot_worktree(&self, repo: &RepoPath) -> Result<Option<Oid>, GitError> {
         let text = self.write(repo, &["stash", "create"])?;
         if text.is_empty() {
@@ -476,7 +497,7 @@ impl StashWriter for GitCli {
 }
 
 impl GitCli {
-    /// The paths a [`StashWriter::snapshot_paths`] snapshot holds.
+    /// The paths a [`WorktreeSnapshots::snapshot_paths`] snapshot holds.
     fn snapshot_changes(&self, repo: &RepoPath, snapshot: Oid) -> Result<Vec<String>, GitError> {
         let hex = snapshot.to_hex();
         let out = self.runner.run(Cmd::new(
@@ -532,7 +553,7 @@ impl RemoteOps for GitCli {
             cmd = cmd.arg("--prune");
         }
         cmd = match &request.remote {
-            Some(remote) => cmd.arg(remote),
+            Some(remote) => cmd.args(["--end-of-options", remote]),
             None => cmd.arg("--all"),
         };
         self.runner.run(cmd).map(drop)
@@ -596,9 +617,16 @@ impl RemoteOps for GitCli {
                 _ => cmd.arg("--force-with-lease"),
             };
         }
-        cmd = cmd.arg(request.remote.as_deref().unwrap_or("origin"));
-        if let Some(refspec) = &request.refspec {
-            cmd = cmd.arg(refspec);
+        // Without remote nor refspec, git picks the push remote and branch
+        // from the configuration (`pushRemote`, `pushDefault`, upstream).
+        // A refspec needs a remote in front of it.
+        match (&request.remote, &request.refspec) {
+            (None, None) => {}
+            (remote, refspec) => {
+                cmd = cmd
+                    .args(["--end-of-options", remote.as_deref().unwrap_or("origin")])
+                    .args(refspec);
+            }
         }
         self.runner.run(cmd).map(drop)
     }
@@ -687,9 +715,10 @@ impl MergeToolLauncher for GitCli {
         path: Option<&str>,
         tool: Option<&str>,
     ) -> Result<(), GitError> {
+        // The user works in the tool for as long as they need.
         let mut cmd = Cmd::new(
             repo.as_path(),
-            CmdKind::Write,
+            CmdKind::Interactive,
             &["mergetool", "--no-prompt"],
         );
         if let Some(tool) = tool {

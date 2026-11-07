@@ -1,8 +1,11 @@
 //! Repository quality gates, run in CI (ARCHITECTURE §6):
 //!
 //! * `cargo xtask check-deps`: every crate only depends on the workspace
-//!   crates it is allowed to (ARCHITECTURE §2.2). Dev-dependencies are free
-//!   (adapter tests may use fixtures and real backends).
+//!   crates it is allowed to (ARCHITECTURE §2.2), every allowed edge is
+//!   used (the table stays an accurate map), and the third-party crates
+//!   wrapped by an adapter are only used by that adapter (§2.3).
+//!   Dev-dependencies are free (adapter tests may use fixtures and real
+//!   backends).
 //! * `cargo xtask check-colors`: no literal color in `archipel-ui` outside its
 //!   theme module (PLAN §3.5: UI code reads semantic tokens only).
 
@@ -49,12 +52,22 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "archipel-model",
             "archipel-theme",
             "archipel-graph",
-            "archipel-stats",
             "archipel-ops",
             "archipel-compose",
         ],
     ),
     ("xtask", &[]),
+];
+
+/// Third-party crates wrapped by an adapter: only these workspace crates may
+/// depend on them (ARCHITECTURE §2.3), the composition roots excepted.
+const WRAPPED: &[(&str, &[&str])] = &[
+    ("gix", &["archipel-git"]),
+    ("rusqlite", &["archipel-cache"]),
+    ("notify", &["archipel-watch"]),
+    ("ureq", &["archipel-forge"]),
+    ("keyring", &["archipel-forge"]),
+    ("gpui-kit", &["archipel-ui"]),
 ];
 
 fn main() -> Result<()> {
@@ -77,6 +90,12 @@ fn check_deps() -> Result<()> {
         .current_dir(workspace_root())
         .output()
         .context("running cargo metadata")?;
+    if !out.status.success() {
+        bail!(
+            "cargo metadata failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     let meta: serde_json::Value =
         serde_json::from_slice(&out.stdout).context("parsing cargo metadata")?;
     let members: Vec<&serde_json::Value> = meta["packages"]
@@ -95,14 +114,30 @@ fn check_deps() -> Result<()> {
             ));
             continue;
         };
-        for dep in package["dependencies"].as_array().into_iter().flatten() {
-            let dep_name = dep["name"].as_str().unwrap_or_default();
-            let is_dev = dep["kind"].as_str() == Some("dev");
-            if is_dev || !names.contains(&dep_name) {
-                continue;
+        let deps: Vec<&str> = package["dependencies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|dep| dep["kind"].as_str() != Some("dev"))
+            .filter_map(|dep| dep["name"].as_str())
+            .collect();
+        let wildcard = allowed.contains(&"*");
+        for dep in deps.iter().filter(|d| names.contains(d)) {
+            if !wildcard && !allowed.contains(dep) {
+                errors.push(format!("{name} must not depend on {dep}"));
             }
-            if !allowed.contains(&"*") && !allowed.contains(&dep_name) {
-                errors.push(format!("{name} must not depend on {dep_name}"));
+        }
+        for edge in allowed.iter().filter(|a| **a != "*" && !deps.contains(a)) {
+            errors.push(format!(
+                "{name}: allowed edge to {edge} is unused (remove it from ALLOWED and ARCHITECTURE.md)"
+            ));
+        }
+        for (wrapped, owners) in WRAPPED {
+            if !wildcard && deps.contains(wrapped) && !owners.contains(&name) {
+                errors.push(format!(
+                    "{name} must not depend on {wrapped}: only {} wraps it",
+                    owners.join(", ")
+                ));
             }
         }
     }
@@ -123,7 +158,7 @@ fn check_colors(src: &Path) -> Result<()> {
         return Ok(());
     }
     let pattern = regex::Regex::new(
-        r##"(rgba?\s*\(\s*0x|\bhsla?\s*\(|\brgb\s*\(|"#[0-9a-fA-F]{3,8}"|0x[0-9a-fA-F]{6}\b)"##,
+        r##"(rgba?\s*\(\s*0x|\bhsla?\s*\(|\brgb\s*\(|"#[0-9a-fA-F]{3,8}"|0x[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b)"##,
     )?;
     let mut errors = Vec::new();
     let mut stack = vec![src.to_path_buf()];
@@ -139,7 +174,9 @@ fn check_colors(src: &Path) -> Result<()> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if path.extension().is_none_or(|e| e != "rs") || rel.starts_with("theme") {
+            // Only the theme module itself maps tokens to colors.
+            let theme_module = rel == "theme.rs" || rel.starts_with("theme/");
+            if path.extension().is_none_or(|e| e != "rs") || theme_module {
                 continue;
             }
             for (i, line) in std::fs::read_to_string(&path)?.lines().enumerate() {

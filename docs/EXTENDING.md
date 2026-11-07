@@ -88,6 +88,24 @@ Then bind it in `keymap.toml` (user config dir):
 "ctrl-j" = ""          # unbind a default shortcut
 ```
 
+An action whose work no built-in command covers sends a `Command::Custom`,
+which runs against the app's public API (submit blocking work as a scheduler
+job with `App::submit_repo_job`):
+
+```rust
+use archipel_app::{Command, CustomCommand, actions::SimpleAction};
+
+let report = SimpleAction::new(
+    "my.count_dirty", "Count dirty repos",
+    |ctx| ctx.project_open,
+    |_| Some(Command::Custom(CustomCommand::new("count dirty", |app| {
+        let dirty = app.rows().iter().filter(|r| r.summary().is_some_and(|s| s.changes.is_dirty())).count();
+        tracing::info!(dirty, "dirty repos");
+        Ok(())
+    }))),
+);
+```
+
 ## A self-hosted forge
 
 ```rust
@@ -144,15 +162,14 @@ repo, so any source that returns paths nests project repos automatically.
 
 ```rust
 use std::sync::Arc;
-use archipel_app::deptree::{DependencySource, SubmoduleSource};
+use archipel_app::deptree::{DependencyReaders, DependencySource, SubmoduleSource};
 use archipel_model::submodule::SubmoduleNode;
 use archipel_model::{GitError, RepoPath};
-use archipel_ops::GitPorts;
 
 /// Submodules plus the repos listed in a `repo` manifest.
 struct WithManifest;
 impl DependencySource for WithManifest {
-    fn dependencies(&self, git: &GitPorts, repo: &RepoPath) -> Result<Vec<SubmoduleNode>, GitError> {
+    fn dependencies(&self, git: &DependencyReaders, repo: &RepoPath) -> Result<Vec<SubmoduleNode>, GitError> {
         let mut nodes = SubmoduleSource.dependencies(git, repo)?;
         nodes.extend(todo!("parse .repo/manifest.xml into nodes"));
         Ok(nodes)

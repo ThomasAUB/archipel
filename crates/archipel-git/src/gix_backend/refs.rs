@@ -6,7 +6,7 @@ use archipel_model::refs::{BranchInfo, RefKind, RefTip, StashEntry, TagInfo};
 use archipel_model::{GitError, Oid, RepoPath, Timestamp, Upstream};
 use gix::bstr::ByteSlice;
 
-use super::{GixReader, backend, to_oid};
+use super::{GixReader, backend, count_exclusive, to_oid};
 
 fn commit_time(repo: &gix::Repository, id: gix::ObjectId) -> Timestamp {
     repo.find_commit(id)
@@ -15,10 +15,12 @@ fn commit_time(repo: &gix::Repository, id: gix::ObjectId) -> Timestamp {
         .map_or(Timestamp(0), |t| Timestamp(t.seconds))
 }
 
-fn tracking(
+/// The upstream of the branch `full` pointing at `local` (`None`: unborn),
+/// with ahead / behind counts.
+pub(super) fn tracking(
     repo: &gix::Repository,
     full: &gix::refs::FullNameRef,
-    local: gix::ObjectId,
+    local: Option<gix::ObjectId>,
 ) -> Result<Option<Upstream>, GitError> {
     let Some(name) = repo.branch_remote_tracking_ref_name(full, gix::remote::Direction::Fetch)
     else {
@@ -35,23 +37,12 @@ fn tracking(
         }));
     };
     let up = up.peel_to_id().map_err(backend)?.detach();
-    let count = |tip, hidden| -> Result<u32, GitError> {
-        let walk = repo
-            .rev_walk([tip])
-            .with_hidden([hidden])
-            .all()
-            .map_err(backend)?;
-        let mut n = 0u32;
-        for info in walk {
-            info.map_err(backend)?;
-            n += 1;
-        }
-        Ok(n)
-    };
-    let (ahead, behind) = if up == local {
-        (0, 0)
-    } else {
-        (count(local, up)?, count(up, local)?)
+    let (ahead, behind) = match local {
+        Some(local) if local != up => (
+            count_exclusive(repo, local, up)?,
+            count_exclusive(repo, up, local)?,
+        ),
+        _ => (0, 0),
     };
     Ok(Some(Upstream {
         name: short,
@@ -86,7 +77,7 @@ impl RefReader for GixReader {
                     upstream: if is_remote {
                         None
                     } else {
-                        tracking(&repo, full.as_ref(), id)?
+                        tracking(&repo, full.as_ref(), Some(id))?
                     },
                     tip_time: commit_time(&repo, id),
                 });

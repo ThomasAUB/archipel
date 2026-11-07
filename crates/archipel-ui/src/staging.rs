@@ -15,8 +15,8 @@ use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, FetchRequest, PullMode, PushRequest, SequenceAction,
     StashApplyMode, StashRequest,
 };
-use archipel_model::{CancelToken, NoProgress, RepoOp, RepoPath, RepoSummary};
-use archipel_ops::{OpError, RepoActions};
+use archipel_model::{RepoOp, RepoPath, RepoSummary};
+use archipel_ops::{OpClass, OpContext, OpError, RepoActions};
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -39,8 +39,32 @@ const DISCARD_ARM_TIME: Duration = Duration::from_secs(3);
 /// The armed-discard key of the "Discard all" button (no file is named so).
 const ALL_FILES: &str = "\0all";
 
-/// A write on the repo, run on a background thread.
-pub type Job = Box<dyn FnOnce(&RepoActions, &RepoPath) -> Result<(), OpError> + Send>;
+/// A job on the repo, run by the scheduler; the context reports progress
+/// and carries the cancellation token.
+pub type Job = Box<dyn FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send>;
+
+/// Submits `job` through the core's scheduler (operations drawer, per-repo
+/// serialization) and hands its status line to `done` on the view.
+pub(crate) fn submit_job<V: 'static>(
+    core: &Arc<Core>,
+    path: &RepoPath,
+    class: OpClass,
+    label: String,
+    job: Job,
+    cx: &mut Context<V>,
+    done: impl FnOnce(&mut V, String, &mut Context<V>) + 'static,
+) {
+    let handle = core.submit_repo_job(path, class, label.clone(), job);
+    cx.spawn(async move |this, cx| {
+        let status = match handle.wait().await {
+            Ok(()) => format!("{label}: done"),
+            Err(e) => format!("{label} failed: {e}"),
+        };
+        // The view may have been closed meanwhile.
+        let _ = this.update(cx, |v, cx| done(v, status, cx));
+    })
+    .detach();
+}
 
 /// The panel's own state, held by each view showing it.
 pub struct Panel {
@@ -133,8 +157,12 @@ pub trait Staging: Sized + 'static {
     fn changes(&self) -> &[FileChange];
     /// The panel's state.
     fn panel(&mut self) -> &mut Panel;
-    /// Runs a write on the repo, then reloads.
-    fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: Job);
+    /// Runs a job of `class` on the repo, then reloads.
+    fn run_job_as(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job);
+    /// Runs a local write on the repo, then reloads.
+    fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: Job) {
+        self.run_job_as(OpClass::Write, label, cx, job);
+    }
     /// Reports a refusal (nothing written).
     fn report(&mut self, text: String, cx: &mut Context<Self>);
     /// The file whose diff is open, highlighted.
@@ -153,7 +181,7 @@ pub trait Staging: Sized + 'static {
 /// [`DISCARD_ARM_TIME`] discards.
 fn click_discard<V: Staging>(v: &mut V, file: String, cx: &mut Context<V>) {
     let files = vec![file.clone()];
-    arm_discard(v, file, cx, move |a, p| a.discard(p, &files));
+    arm_discard(v, file, cx, move |a, p, _| a.discard(p, &files));
 }
 
 /// A Discard button: the first click arms `key`, a second one on the same
@@ -162,7 +190,7 @@ pub(crate) fn arm_discard<V: Staging>(
     v: &mut V,
     key: String,
     cx: &mut Context<V>,
-    job: impl FnOnce(&RepoActions, &RepoPath) -> Result<(), OpError> + Send + 'static,
+    job: impl FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send + 'static,
 ) {
     let armed = &mut v.panel().armed;
     if armed.as_ref() == Some(&key) {
@@ -207,20 +235,25 @@ pub fn commit<V: Staging>(v: &mut V, push: bool, window: &mut Window, cx: &mut C
         .message
         .clone()
         .update(cx, |m, cx| m.set_value("", window, cx));
-    let label = if push { "Commit and push" } else { "Commit" };
-    v.run_job(
+    let (label, class) = if push {
+        ("Commit and push", OpClass::Network)
+    } else {
+        ("Commit", OpClass::Write)
+    };
+    v.run_job_as(
+        class,
         label.into(),
         cx,
-        Box::new(move |a, p| {
+        Box::new(move |a, p, op| {
             a.commit(p, &CommitRequest { message, mode }, None)?;
-            if push { push_current(a, p) } else { Ok(()) }
+            if push { push_current(a, p, op) } else { Ok(()) }
         }),
     );
 }
 
 /// Pushes the current branch; a branch without upstream is pushed to the
 /// default remote (`origin` first) and tracks it from then on.
-pub fn push_current(a: &RepoActions, p: &RepoPath) -> Result<(), OpError> {
+pub fn push_current(a: &RepoActions, p: &RepoPath, op: &OpContext) -> Result<(), OpError> {
     let summary = a.ports().status.summary(p)?;
     let request = match (summary.head.branch(), &summary.upstream) {
         (Some(branch), None) => {
@@ -236,7 +269,7 @@ pub fn push_current(a: &RepoActions, p: &RepoPath) -> Result<(), OpError> {
         }
         _ => PushRequest::default(),
     };
-    a.push(p, &request, &NoProgress, &CancelToken::new(), None)
+    a.push(p, &request, op, op.cancel(), None)
 }
 
 /// Reads the local branches into the switcher (opening it).
@@ -285,7 +318,7 @@ fn create_branch<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>
     v.run_job(
         format!("Create branch {name}"),
         cx,
-        Box::new(move |a, p| {
+        Box::new(move |a, p, _| {
             a.create_branch(p, &name, None, None)?;
             a.checkout(p, &CheckoutTarget::Branch(name), None)
         }),
@@ -297,7 +330,7 @@ fn switch_to<V: Staging>(v: &mut V, branch: String, cx: &mut Context<V>) {
     v.run_job(
         format!("Checkout {branch}"),
         cx,
-        Box::new(move |a, p| a.checkout(p, &CheckoutTarget::Branch(branch), None)),
+        Box::new(move |a, p, _| a.checkout(p, &CheckoutTarget::Branch(branch), None)),
     );
 }
 
@@ -327,40 +360,31 @@ pub fn render_actions<V: Staging>(
     let stashes = v.panel().summary.as_ref().map_or(0, |s| s.stash_count);
     let job = |eid: &'static str,
                label: &'static str,
+               class: OpClass,
                cx: &mut Context<V>,
-               job: fn(&RepoActions, &RepoPath) -> Result<(), OpError>| {
-        small(button(eid, label, cx)).on_click(
-            cx.listener(move |v: &mut V, _, _, cx| v.run_job(label.into(), cx, Box::new(job))),
-        )
+               job: fn(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError>| {
+        small(button(eid, label, cx)).on_click(cx.listener(move |v: &mut V, _, _, cx| {
+            v.run_job_as(class, label.into(), cx, Box::new(job));
+        }))
     };
+    let (write, network) = (OpClass::Write, OpClass::Network);
     div()
         .flex()
         .flex_wrap()
         .gap_1()
         .children(lead)
-        .child(job("st-fetch", "Fetch", cx, |a, p| {
-            a.fetch(
-                p,
-                &FetchRequest::default(),
-                &NoProgress,
-                &CancelToken::new(),
-            )
+        .child(job("st-fetch", "Fetch", network, cx, |a, p, op| {
+            a.fetch(p, &FetchRequest::default(), op, op.cancel())
         }))
-        .child(job("st-pull", "Pull", cx, |a, p| {
-            a.pull(
-                p,
-                PullMode::FastForwardOnly,
-                &NoProgress,
-                &CancelToken::new(),
-                None,
-            )
+        .child(job("st-pull", "Pull", network, cx, |a, p, op| {
+            a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
         }))
-        .child(job("st-push", "Push", cx, push_current))
-        .child(job("st-stash", "Stash", cx, |a, p| {
+        .child(job("st-push", "Push", network, cx, push_current))
+        .child(job("st-stash", "Stash", write, cx, |a, p, _| {
             a.stash_push(p, &StashRequest::default()).map(drop)
         }))
         .when(stashes > 0, |d| {
-            d.child(job("st-pop", "Pop", cx, |a, p| {
+            d.child(job("st-pop", "Pop", write, cx, |a, p, _| {
                 a.stash_apply(p, 0, StashApplyMode::Pop)
             }))
         })
@@ -393,7 +417,7 @@ fn render_in_progress<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyE
             v.run_job(
                 format!("{label} {}", what.to_lowercase()),
                 cx,
-                Box::new(move |a, p| a.sequence(p, action)),
+                Box::new(move |a, p, _| a.sequence(p, action)),
             );
         }))
     };
@@ -514,6 +538,7 @@ pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
 }
 
 /// Unstaged files, staged files, commit box.
+#[allow(clippy::too_many_lines)] // declarative element tree
 fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
@@ -560,7 +585,7 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
                     .pt_2()
                     .child(discard.on_click(cx.listener(move |v: &mut V, _, _, cx| {
                         let files = discard_paths.clone();
-                        arm_discard(v, ALL_FILES.to_owned(), cx, move |a, p| {
+                        arm_discard(v, ALL_FILES.to_owned(), cx, move |a, p, _| {
                             a.discard(p, &files)
                         });
                     })))
@@ -570,7 +595,7 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
                             v.run_job(
                                 "Stage all".into(),
                                 cx,
-                                Box::new(move |a, p| a.stage(p, &files)),
+                                Box::new(move |a, p, _| a.stage(p, &files)),
                             );
                         },
                     ))),
@@ -599,7 +624,7 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
                             v.run_job(
                                 "Unstage all".into(),
                                 cx,
-                                Box::new(move |a, p| a.unstage(p, &files)),
+                                Box::new(move |a, p, _| a.unstage(p, &files)),
                             );
                         },
                     )),
@@ -708,9 +733,9 @@ fn file_row<V: Staging>(
                 cx.stop_propagation();
                 let files = vec![p2.clone()];
                 let job: Job = if side == DiffSide::Staged {
-                    Box::new(move |a, p| a.unstage(p, &files))
+                    Box::new(move |a, p, _| a.unstage(p, &files))
                 } else {
-                    Box::new(move |a, p| a.stage(p, &files))
+                    Box::new(move |a, p, _| a.stage(p, &files))
                 };
                 v.run_job(action.into(), cx, job);
             })),

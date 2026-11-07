@@ -71,18 +71,21 @@ jobs:
           path: |
             lcov.info
             coverage.json
-      # Shields.io endpoint JSON on the `badges` branch, read by the README badge.
+      # Badge SVG rendered at publish time and pushed to the `badges` branch: the
+      # repo is private, so shields.io cannot read it, but github.com serves it
+      # to signed-in viewers of the README.
       - name: Publish coverage badge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           pct=$(jq '.data[0].totals.lines.percent' coverage.json)
           color=$(awk -v p="$pct" 'BEGIN { print (p >= 80 ? "brightgreen" : p >= 60 ? "yellow" : "red") }')
           mkdir badges && cd badges
-          LC_ALL=C printf '{"schemaVersion":1,"label":"coverage","message":"%.1f%%","color":"%s"}\n' "$pct" "$color" > coverage.json
+          msg=$(LC_ALL=C printf '%.1f%%25' "$pct")
+          curl -fsSL -o coverage.svg "https://img.shields.io/badge/coverage-${msg}-${color}"
           git init -q -b badges
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add coverage.json
+          git add coverage.svg
           git commit -qm "Coverage badge for ${GITHUB_SHA::7}"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" badges
 

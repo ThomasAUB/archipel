@@ -6,7 +6,7 @@
 /// Bonuses: consecutive characters, word starts (after `/`, `-`, `_`, space,
 /// or a lower→upper case change), and a match at the very start.
 #[must_use]
-pub fn score(query: &str, candidate: &str) -> Option<u32> {
+fn score(query: &str, candidate: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(0);
     }

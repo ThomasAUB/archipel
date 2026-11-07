@@ -11,7 +11,9 @@
 //! dependencies instead, or combine several).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use archipel_model::ports::{StatusReader, SubmoduleReader};
 use archipel_model::submodule::SubmoduleNode;
 use archipel_model::{GitError, Oid, RepoId, RepoPath};
 use archipel_ops::GitPorts;
@@ -21,15 +23,38 @@ use crate::dashboard::DashboardRow;
 /// Deepest nesting followed (guards against pathological or cyclic layouts).
 pub const MAX_DEPTH: usize = 12;
 
+/// The read-only Git ports a [`DependencySource`] may use.
+#[derive(Clone)]
+pub struct DependencyReaders {
+    /// Submodule list.
+    pub submodules: Arc<dyn SubmoduleReader>,
+    /// Working copy status (a dependency's dirty state).
+    pub status: Arc<dyn StatusReader>,
+}
+
+impl DependencyReaders {
+    /// The readers among `git`.
+    #[must_use]
+    pub fn from_ports(git: &GitPorts) -> Self {
+        Self {
+            submodules: git.submodules.clone(),
+            status: git.status.clone(),
+        }
+    }
+}
+
 /// Reads the dependencies of a repository as a tree of nodes.
 ///
 /// Contract: blocking (called on a scheduler read worker, never on the UI
 /// thread), may be called concurrently for different repos; a node whose
 /// path is a repo of the project is shown as that repo.
 pub trait DependencySource: Send + Sync {
-    /// Dependencies of `repo`, nested, read through the Git ports.
-    fn dependencies(&self, git: &GitPorts, repo: &RepoPath)
-    -> Result<Vec<SubmoduleNode>, GitError>;
+    /// Dependencies of `repo`, nested.
+    fn dependencies(
+        &self,
+        git: &DependencyReaders,
+        repo: &RepoPath,
+    ) -> Result<Vec<SubmoduleNode>, GitError>;
 }
 
 /// The built-in source: submodules at any depth, with their dirty state.
@@ -38,7 +63,7 @@ pub struct SubmoduleSource;
 
 impl SubmoduleSource {
     fn collect(
-        git: &GitPorts,
+        git: &DependencyReaders,
         repo: &RepoPath,
         depth: usize,
     ) -> Result<Vec<SubmoduleNode>, GitError> {
@@ -74,7 +99,7 @@ impl SubmoduleSource {
 impl DependencySource for SubmoduleSource {
     fn dependencies(
         &self,
-        git: &GitPorts,
+        git: &DependencyReaders,
         repo: &RepoPath,
     ) -> Result<Vec<SubmoduleNode>, GitError> {
         Self::collect(git, repo, 0)

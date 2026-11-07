@@ -112,6 +112,26 @@ pub(crate) fn backend(e: impl std::fmt::Display) -> GitError {
     GitError::Backend(e.to_string())
 }
 
+/// Commits reachable from `tip` but not from `hidden` (ahead / behind
+/// counts).
+pub(crate) fn count_exclusive(
+    repo: &gix::Repository,
+    tip: gix::ObjectId,
+    hidden: gix::ObjectId,
+) -> Result<u32, GitError> {
+    let walk = repo
+        .rev_walk([tip])
+        .with_hidden([hidden])
+        .all()
+        .map_err(backend)?;
+    let mut n = 0u32;
+    for info in walk {
+        info.map_err(backend)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 pub(crate) fn to_oid(id: impl AsRef<gix::oid>) -> Result<Oid, GitError> {
     Oid::from_bytes(id.as_ref().as_bytes())
         .ok_or_else(|| GitError::Backend("unsupported object id length".into()))

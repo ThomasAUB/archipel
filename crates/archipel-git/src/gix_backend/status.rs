@@ -11,7 +11,7 @@ use archipel_model::{
 use gix::bstr::ByteSlice;
 use gix::status::UntrackedFiles;
 
-use super::{GixReader, backend, to_oid};
+use super::{GixReader, backend, count_exclusive, to_oid};
 use crate::gitdir::{GitDirs, has_submodules};
 use crate::parse::status::count_changes;
 
@@ -152,55 +152,11 @@ fn upstream(
     repo: &gix::Repository,
     branch: &gix::refs::FullName,
 ) -> Result<Option<Upstream>, GitError> {
-    let Some(tracking) =
-        repo.branch_remote_tracking_ref_name(branch.as_ref(), gix::remote::Direction::Fetch)
-    else {
-        return Ok(None);
+    let local = match repo.try_find_reference(branch.as_ref()).map_err(backend)? {
+        Some(mut r) => Some(r.peel_to_id().map_err(backend)?.detach()),
+        None => None,
     };
-    let tracking = tracking.map_err(backend)?;
-    let name = tracking.as_ref().shorten().to_str_lossy().into_owned();
-    let Some(mut up_ref) = repo
-        .try_find_reference(tracking.as_ref())
-        .map_err(backend)?
-    else {
-        return Ok(Some(Upstream {
-            name,
-            ahead: 0,
-            behind: 0,
-            gone: true,
-        }));
-    };
-    let up = up_ref.peel_to_id().map_err(backend)?.detach();
-    let local = repo
-        .find_reference(branch.as_ref())
-        .map_err(backend)?
-        .peel_to_id()
-        .map_err(backend)?
-        .detach();
-    let count = |tip: gix::ObjectId, hidden: gix::ObjectId| -> Result<u32, GitError> {
-        let walk = repo
-            .rev_walk([tip])
-            .with_hidden([hidden])
-            .all()
-            .map_err(backend)?;
-        let mut n = 0u32;
-        for info in walk {
-            info.map_err(backend)?;
-            n += 1;
-        }
-        Ok(n)
-    };
-    let (ahead, behind) = if up == local {
-        (0, 0)
-    } else {
-        (count(local, up)?, count(up, local)?)
-    };
-    Ok(Some(Upstream {
-        name,
-        ahead,
-        behind,
-        gone: false,
-    }))
+    super::refs::tracking(repo, branch.as_ref(), local)
 }
 
 pub(super) fn stash_count(repo: &gix::Repository) -> Result<u32, GitError> {
@@ -238,18 +194,11 @@ fn containing_branches(
             if !contains {
                 continue;
             }
-            let mut ahead = 0u32;
-            if tip != head {
-                for info in repo
-                    .rev_walk([tip])
-                    .with_hidden([head])
-                    .all()
-                    .map_err(backend)?
-                {
-                    info.map_err(backend)?;
-                    ahead += 1;
-                }
-            }
+            let ahead = if tip == head {
+                0
+            } else {
+                count_exclusive(repo, tip, head)?
+            };
             out.push(ContainingBranch {
                 name: r.name().shorten().to_str_lossy().into_owned(),
                 is_remote,

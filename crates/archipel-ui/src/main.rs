@@ -17,9 +17,6 @@
 //! `git` as a credential helper serving the forge tokens to HTTPS fetch and
 //! push. It answers on stdout and exits, before any window or hand-off.
 
-// Render functions are declarative element trees: splitting them by line
-// count hurts readability more than it helps.
-#![allow(clippy::too_many_lines)]
 // Release builds are GUI-subsystem executables on Windows: launching from
 // Explorer opens no console window. Debug builds keep the console so logs
 // and panics stay visible during development.

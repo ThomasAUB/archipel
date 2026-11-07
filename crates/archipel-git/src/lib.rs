@@ -16,7 +16,7 @@
 mod cli;
 pub mod gitdir;
 mod gix_backend;
-pub mod parse;
+pub(crate) mod parse;
 mod version;
 
 pub use cli::{CliConfig, GitCli};

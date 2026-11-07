@@ -599,6 +599,7 @@ impl ForgePanel {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // declarative element tree
     fn render_clone(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.accounts.is_empty() {
             return div()

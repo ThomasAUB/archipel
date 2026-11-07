@@ -430,6 +430,84 @@ fn undo_through_the_command_bus() {
 }
 
 #[test]
+fn repo_jobs_run_through_the_scheduler() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    let mut events = e.app.subscribe();
+    let handle = e.app.submit_repo_job(
+        &e.repos[0],
+        archipel_ops::OpClass::Network,
+        "Fetch",
+        |_, path, op| {
+            assert!(!op.cancel().is_cancelled());
+            Ok(path.clone())
+        },
+    );
+    assert_eq!(handle.wait_blocking().unwrap(), e.repos[0]);
+    // The operations drawer saw it end.
+    let finished = e.rt.block_on(async {
+        loop {
+            if let AppEvent::Op(op) = events.recv().await.unwrap()
+                && op.label == "Fetch"
+                && let archipel_ops::OpEventKind::Finished(result) = op.kind
+            {
+                return (op.repo, result);
+            }
+        }
+    });
+    assert_eq!(finished, (Some(e.repos[0].id()), Ok(())));
+}
+
+#[test]
+fn custom_commands_run_against_the_app() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(0));
+    let s = seen.clone();
+    let command = archipel_app::CustomCommand::new("count rows", move |app| {
+        *s.lock().unwrap() = app.rows().len();
+        Ok(())
+    });
+    e.app.dispatch(Command::Custom(command)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), 3);
+}
+
+#[test]
+fn refused_undo_fails_the_operation() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    let repo = &e.repos[0];
+    e.app
+        .repo_actions()
+        .commit(
+            repo,
+            &CommitRequest {
+                message: "x".into(),
+                mode: CommitMode::New,
+            },
+            None,
+        )
+        .unwrap();
+    // The branch moves after the commit: undoing it would lose work.
+    e.git.with_repo(repo, |r| {
+        r.refs.insert("refs/heads/main".into(), oid(99));
+    });
+    let mut events = e.app.subscribe();
+    e.app.dispatch(Command::Undo(repo.id())).unwrap();
+    let finished = e.rt.block_on(async {
+        loop {
+            if let AppEvent::Op(op) = events.recv().await.unwrap()
+                && let archipel_ops::OpEventKind::Finished(result) = op.kind
+            {
+                return result;
+            }
+        }
+    });
+    assert!(finished.is_err(), "{finished:?}");
+}
+
+#[test]
 fn closing_unloads_watchers_and_keeps_summaries() {
     let e = env();
     let id = p1_id();

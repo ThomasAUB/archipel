@@ -10,6 +10,7 @@ use archipel_app::dashboard::DashboardRow;
 use archipel_model::changes::FileChange;
 use archipel_model::ports::DiffSide;
 use archipel_model::{HeadState, RepoId, RepoPath, RepoSummary};
+use archipel_ops::OpClass;
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
@@ -18,7 +19,7 @@ use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Win
 use crate::diff_view::{self, DiffDoc};
 use crate::staging::{self, Job, Staging};
 use crate::theme::color;
-use crate::widgets::{button, icon_button};
+use crate::widgets::{SHORT_OID, button, icon_button};
 
 /// What the pane reports to the workspace.
 pub enum QuickEditEvent {
@@ -192,23 +193,21 @@ impl QuickEdit {
     }
 
     /// Runs a write on a background thread, then refreshes the repo.
-    fn run_boxed(&mut self, label: String, cx: &mut Context<Self>, job: Job) {
-        let actions = self.core.repo_actions().clone();
-        let path = self.path.clone();
-        let task = cx.background_spawn(async move { job(&actions, &path) });
+    fn run_boxed(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job) {
         self.status = Some(format!("{label}…"));
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                v.status = Some(match result {
-                    Ok(()) => format!("{label}: done"),
-                    Err(e) => format!("{label} failed: {e}"),
-                });
+        staging::submit_job(
+            &self.core,
+            &self.path,
+            class,
+            label,
+            job,
+            cx,
+            |v, status, cx| {
+                v.status = Some(status);
                 v.core.refresh_repo(v.id);
                 v.load_changes(cx);
-            });
-        })
-        .detach();
+            },
+        );
         cx.notify();
     }
 
@@ -219,7 +218,7 @@ impl QuickEdit {
         let (head, sync) = self.staging.summary().map_or_else(Default::default, |s| {
             let head = match &s.head {
                 HeadState::Branch(b) | HeadState::Unborn(b) => b.clone(),
-                HeadState::Detached(oid) => format!("detached at {}", oid.short(8)),
+                HeadState::Detached(oid) => format!("detached at {}", oid.short(SHORT_OID)),
             };
             let sync = match &s.upstream {
                 None if s.head.branch().is_some() => "no upstream".to_owned(),
@@ -323,8 +322,8 @@ impl Staging for QuickEdit {
         &mut self.staging
     }
 
-    fn run_job(&mut self, label: String, cx: &mut Context<Self>, job: Job) {
-        self.run_boxed(label, cx, job);
+    fn run_job_as(&mut self, class: OpClass, label: String, cx: &mut Context<Self>, job: Job) {
+        self.run_boxed(class, label, cx, job);
     }
 
     fn report(&mut self, text: String, cx: &mut Context<Self>) {

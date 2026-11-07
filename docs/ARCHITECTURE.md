@@ -26,7 +26,7 @@ Dependencies only point **inward**, toward the pure layers. No cycles, no shortc
 
 ```
             archipel-ui        archipel-cli          ← frontends / composition roots
-                  \               /
+                  \               /                    (both wired by archipel-compose)
                    archipel-app                       ← view-models, command bus, use cases
                   /    |     |     \
      archipel-ops  archipel-graph  archipel-stats  archipel-project   ← features
@@ -35,6 +35,11 @@ Dependencies only point **inward**, toward the pure layers. No cycles, no shortc
                   \       |       /       /
                     archipel-model                    ← pure types + port traits (no I/O)
 ```
+
+Edges the drawing leaves out (the `ALLOWED` table of `xtask` is the exact map):
+
+- `archipel-ui` also uses `archipel-ops` (the `RepoActions` use cases, `OpClass`, the pure `patch` helpers) and `archipel-graph` (the history view model), besides `archipel-app`, `archipel-theme` and `archipel-model`; its `main` uses `archipel-compose`.
+- `archipel-app` and `archipel-graph` use the pure LRU registry of `archipel-cache`, never its SQLite store.
 
 Rules:
 
@@ -46,7 +51,7 @@ Rules:
 - `archipel-theme` is a pure leaf crate (tokens, derivation, theme files) with no workspace dependency; `archipel-app` and `archipel-ui` use it.
 - `archipel-graph` may use the pure LRU of `archipel-cache` (never its SQLite store).
 
-A CI check (`cargo xtask check-deps`) fails the build if a crate depends on a crate it is not allowed to; the allowed edges are the `ALLOWED` table in `xtask/src/main.rs`, kept in sync with this section. Dev-dependencies are free (adapter tests use fixtures and real backends).
+A CI check (`cargo xtask check-deps`) fails the build if a crate depends on a crate it is not allowed to, if an allowed edge is no longer used, or if a crate other than its adapter depends on a wrapped third-party crate (§2.3); the allowed edges are the `ALLOWED` table in `xtask/src/main.rs`, kept in sync with this section. Dev-dependencies are free (adapter tests use fixtures and real backends).
 
 ### 2.3 Third-party types stay inside their adapter
 
@@ -73,6 +78,7 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `IndexWriter` | `stage`, `unstage`, `apply_patch_cached`, `discard` | working copy view |
 | `RefWriter` | `checkout`, `create/rename/delete branch`, `tag`, `reset`, `update_ref` | repo actions, undo |
 | `StashWriter` | `push`, `apply`, `pop`, `drop`, `store` | repo actions, undo |
+| `WorktreeSnapshots` | `snapshot_worktree`, `snapshot_paths`, `restore_paths` | undo journal |
 | `RemoteOps` | `fetch`, `pull`, `push`, `clone` | batch ops |
 | `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `continue/abort` | drag & drop, repo actions |
 | `SubmoduleReader` | `submodules` (one level: initialized, pinned and checked-out commits) | dependency tree |
@@ -119,15 +125,15 @@ Extension is done through **registries** of trait objects, not through `match` s
 | "Open in browser" links | `ForgeProvider` trait (matches a remote URL, builds links) | `ForgeRegistry` |
 | Forge APIs (pull requests, CI, review, clone from an account) | `archipel_forge::provider::{ForgeApi, PullRequestApi, DirectoryApi}` | `ForgeClient::register` in `archipel_compose::forge_ports` |
 | Commit message helpers | `MessageTemplate`, `TicketPrefixExtractor` | per-project settings |
-| Project import (P2: submodules, `repo` manifest, VS Code workspace) | `ProjectImporter` trait | `ImporterRegistry` |
+| Project import (P2, not implemented yet: `repo` manifest, VS Code workspace) | `ProjectImporter` trait (planned) | `ImporterRegistry` (planned) |
 | Repo dependency tree (submodules; later `repo` manifests, package managers) | `DependencySource` trait | `Extensions::dependencies` |
-| Statistics | `StatProvider` trait (incremental compute + view model) | `StatsRegistry` |
+| Statistics | `StatProvider` trait (incremental compute + view model) | `StatsRegistry` (built by the CLI; the desktop app has no statistics view yet) |
 | Persistence | the store traits of §3.1 | composition root |
 
 Rules:
 
 - Built-in features use the same extension points as a fork would. If the core needs a private back door, the extension point is wrong.
-- Optional features are Cargo features (`stats`, `forge-links`, …) so a fork can drop them cleanly.
+- Optional features should become Cargo features (`stats`, `forge-links`, …) so a fork can drop them cleanly. None is feature-gated yet: today a fork drops a feature by not registering it.
 - Every extension point is listed in `docs/EXTENDING.md` (written in Phase 5) with a minimal example.
 
 ---

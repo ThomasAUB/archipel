@@ -37,7 +37,7 @@ pub mod keymap;
 pub mod message;
 pub mod settings;
 
-pub use actions::{Action, ActionContext, ActionRegistry, Command};
+pub use actions::{Action, ActionContext, ActionRegistry, Command, CustomCommand};
 pub use app::{
     App, AppError, AppEvent, CloneOutcome, CloneProtocol, DirectoryTarget, Extensions, ProjectIcon,
     ProjectIdentity, PullRequestOutcome, PullRequestPlan, PullRequestTarget, Services,

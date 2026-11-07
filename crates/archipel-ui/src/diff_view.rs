@@ -272,7 +272,7 @@ fn run_part<V: Staging>(
     match action {
         PartAction::Discard => {
             let target = file.display_path().to_owned();
-            arm_discard(v, arm_key, cx, move |a, repo| {
+            arm_discard(v, arm_key, cx, move |a, repo, _| {
                 a.discard_patch(repo, &target, &patch)
             });
         }
@@ -281,7 +281,7 @@ fn run_part<V: Staging>(
             v.run_job(
                 format!("{} lines", action.verb()),
                 cx,
-                Box::new(move |a, repo| a.apply_patch(repo, &patch, direction)),
+                Box::new(move |a, repo, _| a.apply_patch(repo, &patch, direction)),
             );
         }
     }

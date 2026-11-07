@@ -9,7 +9,7 @@ use archipel_model::forge::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode};
+use crate::http::{Api, Auth, Method, encode, optional};
 use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitLab provider.
@@ -270,12 +270,11 @@ impl CiApi for GitLab {
             return Ok(None);
         };
         // Newest job first; retried jobs are left out by the API.
-        let mut jobs: Vec<Job> = api
-            .get(
-                &format!("{base}/pipelines/{}/jobs?per_page=100", pipeline.id),
-                "jobs",
-            )
-            .unwrap_or_default();
+        let mut jobs: Vec<Job> = optional(api.get(
+            &format!("{base}/pipelines/{}/jobs?per_page=100", pipeline.id),
+            "jobs",
+        ))?
+        .unwrap_or_default();
         jobs.reverse();
         Ok(Some(CiRun {
             state,
