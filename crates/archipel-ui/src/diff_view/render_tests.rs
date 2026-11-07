@@ -20,9 +20,22 @@ use crate::theme::{UiTheme, color};
 /// Gutter digits used by the rows under test.
 const LINENO_WIDTH: usize = 2;
 
+/// The platform's text system. On macOS it is built on its own: the whole
+/// platform may only be created on the main thread, and tests run on others.
+fn text_system() -> Arc<dyn gpui_kit::PlatformTextSystem> {
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(gpui_apple::AppleTextSystem::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        gpui_kit::platform::current_platform(true).text_system()
+    }
+}
+
 fn context() -> HeadlessAppContext {
     let mut cx = HeadlessAppContext::with_platform(
-        gpui_kit::platform::current_platform(true).text_system(),
+        text_system(),
         Arc::new(Assets),
         gpui_kit::platform::current_headless_renderer,
     );

@@ -30,5 +30,10 @@ embed-resource = "3"
 gpui-kit = { version = "0.9.0", features = ["test-support"] }
 tempfile.workspace = true
 
+# The render tests take the text system on its own: building the whole macOS
+# platform for it requires the main thread, which test threads are not.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_apple = { package = "gpui-pre-apple", version = "=0.3.11", features = ["font-kit"] }
+
 [lints]
 workspace = true
