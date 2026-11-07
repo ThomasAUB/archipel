@@ -7,8 +7,9 @@ use std::sync::Mutex;
 use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo, ReviewState,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, MergeState,
+    Namespace, NamespaceKind, PullRequestDraft, PullRequestRef, PullRequestStatus, Release,
+    RemoteRepo, ReviewState,
 };
 use crate::ports::{
     CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
@@ -28,6 +29,17 @@ pub struct CreatedPullRequest {
     pub description: String,
 }
 
+/// A pull request merged through the fake.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergedPullRequest {
+    /// Repository path on the forge.
+    pub repo: String,
+    /// Number.
+    pub number: u64,
+    /// Options it was merged with.
+    pub options: MergeOptions,
+}
+
 /// A host known to the fake: provider, accepted token, user.
 type FakeHost = (ForgeKind, String, String);
 
@@ -38,6 +50,7 @@ struct ForgeState {
     /// `(repo path, branch)` → CI run of the branch head.
     ci: HashMap<(String, String), CiRun>,
     created: Vec<CreatedPullRequest>,
+    merged: Vec<MergedPullRequest>,
     repos: HashMap<String, Vec<RemoteRepo>>,
     hosts: HashMap<String, FakeHost>,
     /// Repo paths whose calls fail.
@@ -95,6 +108,12 @@ impl FakeForge {
         lock(&self.state).created.clone()
     }
 
+    /// Pull requests merged so far.
+    #[must_use]
+    pub fn merged(&self) -> Vec<MergedPullRequest> {
+        lock(&self.state).merged.clone()
+    }
+
     /// Number of status reads served.
     #[must_use]
     pub fn reads(&self) -> usize {
@@ -119,6 +138,18 @@ impl PullRequestReader for FakeForge {
         let mut s = lock(&self.state);
         s.reads += 1;
         Ok(s.open.get(&(repo.path.clone(), branch.to_owned())).cloned())
+    }
+
+    fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError> {
+        self.check(repo)?;
+        let mut open: Vec<PullRequestStatus> = lock(&self.state)
+            .open
+            .iter()
+            .filter(|((path, _), _)| *path == repo.path)
+            .map(|(_, pr)| pr.clone())
+            .collect();
+        open.sort_by_key(|pr| pr.number);
+        Ok(open)
     }
 }
 
@@ -155,9 +186,13 @@ impl PullRequestWriter for FakeForge {
                 title: draft.title.clone(),
                 url: url.clone(),
                 draft: draft.draft,
+                source: draft.source.clone(),
                 target: draft.target.clone(),
+                head_sha: String::new(),
+                author: String::new(),
                 ci: None,
                 review: ReviewState::Pending,
+                merge: MergeState::Unknown,
             },
         );
         Ok(PullRequestRef { number, url })
@@ -181,6 +216,51 @@ impl PullRequestWriter for FakeForge {
             })?;
         description.clone_into(&mut pr.description);
         Ok(())
+    }
+
+    /// Refuses a draft, or a head that moved since `expected_head`, as the
+    /// forges do.
+    fn merge_pull_request(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError> {
+        self.check(repo)?;
+        let mut s = lock(&self.state);
+        let key = s
+            .open
+            .iter()
+            .find(|((path, _), pr)| *path == repo.path && pr.number == number)
+            .map(|(k, pr)| (k.clone(), pr.clone()));
+        let Some((key, pr)) = key else {
+            return Err(ForgeError::NotFound {
+                host: repo.account.host.clone(),
+                what: format!("pull request {number}"),
+            });
+        };
+        let refuse = |message: &str| ForgeError::Http {
+            host: repo.account.host.clone(),
+            status: 405,
+            message: message.into(),
+        };
+        if pr.draft {
+            return Err(refuse("draft"));
+        }
+        if options
+            .expected_head
+            .as_ref()
+            .is_some_and(|sha| *sha != pr.head_sha)
+        {
+            return Err(refuse("head branch was modified"));
+        }
+        s.open.remove(&key);
+        s.merged.push(MergedPullRequest {
+            repo: repo.path.clone(),
+            number,
+            options: options.clone(),
+        });
+        Ok(MergeReport::default())
     }
 }
 

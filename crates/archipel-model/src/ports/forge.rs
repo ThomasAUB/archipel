@@ -10,11 +10,11 @@
 
 use crate::error::ForgeError;
 use crate::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, Release, RemoteRepo,
+    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, Namespace,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo,
 };
 
-/// Reads the open pull / merge request of a branch (dashboard column).
+/// Reads open pull / merge requests (dashboard column, review list).
 pub trait PullRequestReader: Send + Sync {
     /// The open pull request whose source is `branch`, with its CI and
     /// review state; `None` when there is none.
@@ -23,6 +23,9 @@ pub trait PullRequestReader: Send + Sync {
         repo: &ForgeRepo,
         branch: &str,
     ) -> Result<Option<PullRequestStatus>, ForgeError>;
+    /// Every open pull request of the repo (bounded number of pages), with
+    /// CI, review and merge state.
+    fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError>;
 }
 
 /// Reads the CI of a branch head (dashboard "CI" column).
@@ -32,7 +35,7 @@ pub trait CiReader: Send + Sync {
     fn ci_for_branch(&self, repo: &ForgeRepo, branch: &str) -> Result<Option<CiRun>, ForgeError>;
 }
 
-/// Creates pull / merge requests.
+/// Creates and merges pull / merge requests.
 pub trait PullRequestWriter: Send + Sync {
     /// Opens a pull request. The source branch must already be on the forge.
     fn create_pull_request(
@@ -48,6 +51,13 @@ pub trait PullRequestWriter: Send + Sync {
         number: u64,
         description: &str,
     ) -> Result<(), ForgeError>;
+    /// Merges a pull request (and deletes its source branch when asked).
+    fn merge_pull_request(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<MergeReport, ForgeError>;
 }
 
 /// Lists what an account can see (clone from an account / org / group).

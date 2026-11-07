@@ -10,8 +10,8 @@ use archipel_forge::ForgeClient;
 use archipel_forge::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJobState, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, NamespaceKind,
-    PullRequestDraft, ReviewState,
+    CiJobState, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod, MergeOptions,
+    MergeState, Namespace, NamespaceKind, PullRequestDraft, ReviewState,
 };
 use archipel_model::ports::{
     CiReader, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
@@ -349,6 +349,217 @@ fn gitlab_merge_request_status() {
             .headers
             .contains(&("PRIVATE-TOKEN".into(), "tok".into()))
     );
+}
+
+fn body(request: &HttpRequest) -> serde_json::Value {
+    serde_json::from_str(request.body.as_deref().unwrap()).unwrap()
+}
+
+#[test]
+fn github_lists_open_pull_requests_with_mergeability() {
+    let http = Arc::new(FakeHttp::default());
+    let pull = |n: u64, state: Option<&str>| {
+        json!({
+            "number": n, "title": format!("PR {n}"), "html_url": format!("u{n}"),
+            "base": {"ref": "main", "sha": "b"},
+            "head": {"ref": format!("f{n}"), "sha": format!("h{n}")},
+            "user": {"login": "ann"}, "mergeable_state": state
+        })
+    };
+    // Specific routes first: the fake matches URL substrings.
+    http.on(Method::Get, "/pulls/1/reviews", 200, json!([]));
+    http.on(Method::Get, "/pulls/2/reviews", 200, json!([]));
+    http.on(Method::Get, "/pulls/1", 200, pull(1, Some("dirty")));
+    http.on(Method::Get, "/pulls/2", 200, pull(2, Some("clean")));
+    http.on(
+        Method::Get,
+        "/pulls?state=open",
+        200,
+        json!([pull(1, None), pull(2, None)]),
+    );
+    let c = client(&http, &["github.com"]);
+    let prs = c.open_pull_requests(&github_repo()).unwrap();
+    let got: Vec<_> = prs
+        .iter()
+        .map(|p| {
+            (
+                p.number,
+                p.source.as_str(),
+                p.head_sha.as_str(),
+                p.merge.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (1, "f1", "h1", MergeState::Conflicts),
+            (2, "f2", "h2", MergeState::Mergeable)
+        ]
+    );
+    assert_eq!(prs[0].author, "ann");
+}
+
+#[test]
+fn github_merge_checks_the_head_and_deletes_the_branch() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls/42",
+        200,
+        json!({
+            "number": 42, "title": "t", "html_url": "u",
+            "base": {"ref": "main", "sha": "b"},
+            "head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "Octo/App"}}
+        }),
+    );
+    http.on(Method::Put, "/pulls/42/merge", 200, json!({"merged": true}));
+    http.on(Method::Delete, "/git/refs/heads/feat/x", 204, json!(null));
+    let c = client(&http, &["github.com"]);
+    let options = MergeOptions {
+        method: MergeMethod::Squash,
+        delete_source_branch: true,
+        expected_head: Some("abc".into()),
+    };
+    let report = c.merge_pull_request(&github_repo(), 42, &options).unwrap();
+    assert_eq!(report.warning, None);
+    let seen = http.seen();
+    let merge = seen.iter().find(|r| r.method == Method::Put).unwrap();
+    assert_eq!(body(merge), json!({"merge_method": "squash", "sha": "abc"}));
+    assert!(seen.iter().any(|r| r.method == Method::Delete
+        && r.url == "https://api.github.com/repos/octo/app/git/refs/heads/feat/x"));
+}
+
+#[test]
+fn github_merge_failures() {
+    // The branch of a fork is left alone.
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls/42",
+        200,
+        json!({
+            "number": 42, "title": "t", "html_url": "u",
+            "base": {"ref": "main", "sha": "b"},
+            "head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "fork/app"}}
+        }),
+    );
+    http.on(Method::Put, "/pulls/42/merge", 200, json!({"merged": true}));
+    let c = client(&http, &["github.com"]);
+    let options = MergeOptions {
+        delete_source_branch: true,
+        ..MergeOptions::default()
+    };
+    c.merge_pull_request(&github_repo(), 42, &options).unwrap();
+    assert!(!http.seen().iter().any(|r| r.method == Method::Delete));
+
+    // A refused merge is a permission problem, not a bad token; a failed
+    // branch deletion is a warning, the merge happened.
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls/",
+        200,
+        json!({
+            "number": 42, "title": "t", "html_url": "u",
+            "base": {"ref": "main", "sha": "b"},
+            "head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "octo/app"}}
+        }),
+    );
+    http.on(
+        Method::Put,
+        "/pulls/43/merge",
+        403,
+        json!({"message": "no"}),
+    );
+    http.on(Method::Put, "/pulls/42/merge", 200, json!({"merged": true}));
+    http.on(
+        Method::Delete,
+        "/git/refs/",
+        422,
+        json!({"message": "protected"}),
+    );
+    let c = client(&http, &["github.com"]);
+    let err = c
+        .merge_pull_request(&github_repo(), 43, &MergeOptions::default())
+        .unwrap_err();
+    assert!(
+        matches!(&err, ForgeError::Http { status: 403, message, .. } if message.contains("not allowed")),
+        "{err:?}"
+    );
+    let report = c.merge_pull_request(&github_repo(), 42, &options).unwrap();
+    assert!(report.warning.unwrap().contains("protected"));
+}
+
+#[test]
+fn gitlab_lists_and_merges_merge_requests() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/api/v4/projects/team%2Fsub%2Fapp/merge_requests";
+    http.on(
+        Method::Put,
+        &format!("{base}/3/merge"),
+        200,
+        json!({"state": "merged"}),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/3/approvals"),
+        200,
+        json!({"approved_by": []}),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/3"),
+        200,
+        json!({"iid": 3, "title": "MR", "web_url": "w", "source_branch": "feat/x",
+               "target_branch": "main", "sha": "abc", "author": {"username": "ann"},
+               "detailed_merge_status": "ci_must_pass", "head_pipeline": {"status": "running"}}),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}?state=opened"),
+        200,
+        json!([{"iid": 3, "title": "MR", "web_url": "w", "target_branch": "main"}]),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let prs = c.open_pull_requests(&gitlab_repo()).unwrap();
+    assert_eq!(prs.len(), 1);
+    assert_eq!(
+        (
+            prs[0].source.as_str(),
+            prs[0].head_sha.as_str(),
+            prs[0].author.as_str()
+        ),
+        ("feat/x", "abc", "ann")
+    );
+    assert_eq!(prs[0].merge, MergeState::Blocked("CI must pass".into()));
+    assert_eq!(prs[0].ci, Some(CiState::Pending));
+
+    let options = MergeOptions {
+        method: MergeMethod::Squash,
+        delete_source_branch: true,
+        expected_head: Some("abc".into()),
+    };
+    c.merge_pull_request(&gitlab_repo(), 3, &options).unwrap();
+    let merge = http
+        .seen()
+        .into_iter()
+        .find(|r| r.method == Method::Put)
+        .unwrap();
+    assert_eq!(
+        body(&merge),
+        json!({"squash": true, "should_remove_source_branch": true, "sha": "abc"})
+    );
+
+    // GitLab rebases per project, not per merge.
+    let rebase = MergeOptions {
+        method: MergeMethod::Rebase,
+        ..MergeOptions::default()
+    };
+    let err = c
+        .merge_pull_request(&gitlab_repo(), 3, &rebase)
+        .unwrap_err();
+    assert!(matches!(err, ForgeError::Unsupported(_)), "{err:?}");
 }
 
 #[test]

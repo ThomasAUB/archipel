@@ -208,7 +208,7 @@ An Overlay sits on a transparent backdrop: clicking outside it dismisses it
 | ↳ **Action Palette** | Every action by name. | `Ctrl+Shift+P` |
 | ↳ **Prompt Palette** | The Palette as a one-line prompt: checkout target, branch name, tag name, category (with suggestions), category rename, project color, background tint, icon. (`PaletteKind`) | Actions |
 | **Commit Panel** | Multi-repo commit (spec §4): repo list with staged-file previews, branch mismatch warning, one message, push option, per-repo report and Retry failed. ([commit_panel.rs](../crates/archipel-ui/src/commit_panel.rs)) | `Ctrl+K` |
-| **Forge Panel** | Forge integration (spec §8), with three **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (create PRs for the selected repos), **Clone** (browse an account / org / group and clone). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
+| **Forge Panel** | Forge integration (spec §8), with four **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (open PRs of the selected repos, merge with a confirming second click), **New pull request** (create PRs for the selected repos), **Clone** (browse an account / org / group and clone). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
 | **Context Menus** | Row Menu, Category Menu, Tab Menu (Workspace); Graph Menu, Drop Menu (Repo View). | Right-click |
 
 ## 8. Naming rules

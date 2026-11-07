@@ -44,6 +44,7 @@ mod view;
 
 pub use forge_flow::{
     CloneOutcome, CloneProtocol, PullRequestOutcome, PullRequestPlan, PullRequestTarget,
+    RepoPullRequests,
 };
 pub use identity::{ProjectIcon, ProjectIdentity, initials};
 pub use projects::{DirectoryTarget, file_project_id};

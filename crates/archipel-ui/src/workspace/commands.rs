@@ -61,9 +61,13 @@ impl Workspace {
                 self.set_category(targets, window, cx);
             }
             "forge.accounts" => self.open_forge(ForgeTab::Accounts, window, cx),
+            "forge.pull_requests" => {
+                let ids = self.selected_or_all();
+                self.open_forge(ForgeTab::Open(ids), window, cx);
+            }
             "forge.create_pull_requests" => {
                 let ids = self.selected_or_all();
-                self.open_forge(ForgeTab::PullRequests(ids), window, cx);
+                self.open_forge(ForgeTab::Create(ids), window, cx);
             }
             "forge.clone" => self.open_forge(ForgeTab::Clone, window, cx),
             "forge.open_pull_request" => self.open_pull_request(cx),

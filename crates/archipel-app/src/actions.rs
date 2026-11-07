@@ -424,6 +424,11 @@ impl ActionRegistry {
             always,
         ));
         r.register(ui(
+            "forge.pull_requests",
+            "Open pull requests of selected repos (all when none): review, merge…",
+            with_project,
+        ));
+        r.register(ui(
             "forge.create_pull_requests",
             "Create pull requests for selected repos (all when none)…",
             with_project,

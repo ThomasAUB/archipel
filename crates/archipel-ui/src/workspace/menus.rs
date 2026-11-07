@@ -48,7 +48,7 @@ impl Workspace {
             None => base
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.row_menu = None;
-                    this.open_forge(ForgeTab::PullRequests(targets.clone()), window, cx);
+                    this.open_forge(ForgeTab::Create(targets.clone()), window, cx);
                 }))
                 .child("Create pull request…")
                 .into_any_element(),

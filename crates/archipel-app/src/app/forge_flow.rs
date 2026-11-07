@@ -1,5 +1,6 @@
 //! Forge use cases (spec §8): per-repo status (pull request, CI, review),
-//! sign-in, pull requests across repos, clone from an account.
+//! sign-in, pull requests across repos (open, list, merge), clone from an
+//! account.
 //!
 //! Every network call runs on the scheduler's network pool; the async
 //! methods only await operation handles, so frontends run them on the app
@@ -10,8 +11,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use archipel_model::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, Namespace, PullRequestDraft, PullRequestRef,
-    RemoteRepo, normalize_host,
+    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod, MergeOptions, MergeReport,
+    Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
 };
 use archipel_model::ports::RemoteInfo;
 use archipel_model::requests::PushRequest;
@@ -19,6 +20,7 @@ use archipel_model::{ForgeError, RepoId, RepoPath};
 use archipel_ops::{GitPorts, OpClass, OpError, OpSpec};
 
 use super::{App, AppError, AppEvent, lock};
+use crate::actions::Command;
 use crate::dashboard::DashboardRow;
 use crate::forge::{
     BranchCi, ForgePorts, ForgeRegistry, ForgeStatus, Located, linked_description, locate,
@@ -105,6 +107,19 @@ pub struct PullRequestOutcome {
     pub result: Result<PullRequestRef, String>,
     /// Linking it to the other pull requests failed.
     pub link_error: Option<String>,
+}
+
+/// The open pull requests of one repo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoPullRequests {
+    /// Repository.
+    pub repo: RepoId,
+    /// Display name.
+    pub name: String,
+    /// Forge repository, when found.
+    pub forge: Option<ForgeRepo>,
+    /// The open pull requests (oldest first), or why they cannot be listed.
+    pub result: Result<Vec<PullRequestStatus>, String>,
 }
 
 /// URL used to clone from an account.
@@ -612,6 +627,114 @@ impl App {
             }
         }
         errors
+    }
+
+    /// The open pull requests of `ids` (every shown repo when empty), one
+    /// network read per repo, in parallel; in project order.
+    pub async fn open_pull_requests(
+        &self,
+        ids: &[RepoId],
+    ) -> Result<Vec<RepoPullRequests>, AppError> {
+        let rows: Vec<DashboardRow> = self
+            .rows()
+            .into_iter()
+            .filter(|r| ids.is_empty() || ids.contains(&r.id))
+            .collect();
+        if rows.is_empty() {
+            return Err(AppError::InvalidInput("no repository to list".into()));
+        }
+        let mut jobs = Vec::new();
+        for row in rows {
+            let git = self.services.git.clone();
+            let forge = self.services.forge.clone();
+            let links = self.ext.forges.clone();
+            let (path, preferred) = (row.path.clone(), upstream_remote(&row));
+            let spec = OpSpec::new(
+                Some(row.id),
+                OpClass::Network,
+                format!("List pull requests of {}", row.name),
+            );
+            let handle = self.scheduler.submit(spec, move |_| {
+                let remotes = git.remotes.remotes(&path)?;
+                let accounts = forge.accounts.accounts()?;
+                Ok(
+                    match locate(&remotes, preferred.as_deref(), &accounts, &links) {
+                        Located::Repo { repo, .. } => {
+                            let open = forge.pull_requests.open_pull_requests(&repo);
+                            (Some(repo), open.map_err(|e| e.to_string()))
+                        }
+                        Located::SignedOut { host } => {
+                            (None, Err(format!("not signed in to {host}")))
+                        }
+                        Located::NotOnForge => (None, Err("no remote on a known forge".to_owned())),
+                    },
+                )
+            });
+            jobs.push((row.id, row.name, handle));
+        }
+        let mut out = Vec::new();
+        for (repo, name, handle) in jobs {
+            let (forge, result) = handle
+                .wait()
+                .await
+                .unwrap_or_else(|e| (None, Err(e.to_string())));
+            out.push(RepoPullRequests {
+                repo,
+                name,
+                forge,
+                result,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Merges `pr` on the forge, only if its head is still the commit it was
+    /// listed with; then fetches the repo and re-reads its forge status.
+    pub async fn merge_pull_request(
+        &self,
+        repo: RepoId,
+        forge_repo: &ForgeRepo,
+        pr: &PullRequestStatus,
+        method: MergeMethod,
+        delete_source_branch: bool,
+    ) -> Result<MergeReport, AppError> {
+        if pr.draft {
+            return Err(AppError::InvalidInput(format!(
+                "#{} is a draft: mark it ready on the forge first",
+                pr.number
+            )));
+        }
+        let options = MergeOptions {
+            method,
+            delete_source_branch,
+            expected_head: (!pr.head_sha.is_empty()).then(|| pr.head_sha.clone()),
+        };
+        let forge = self.services.forge.clone();
+        let (target, number) = (forge_repo.clone(), pr.number);
+        let spec = OpSpec::new(
+            Some(repo),
+            OpClass::Network,
+            format!("Merge pull request {} #{number}", forge_repo.path),
+        );
+        let report = self
+            .scheduler
+            .submit(spec, move |_| {
+                Ok(forge
+                    .pull_request_writer
+                    .merge_pull_request(&target, number, &options)?)
+            })
+            .wait()
+            .await?;
+        // The target branch moved on the forge: show it locally.
+        if let Err(e) = self.dispatch(Command::Fetch(vec![repo])) {
+            tracing::warn!(error = %e, "cannot fetch after a merge");
+        }
+        self.load_forge(repo, true);
+        self.emit(AppEvent::Notice(match &report.warning {
+            Some(w) => format!("Merged {} #{number} ({w})", forge_repo.path),
+            None => format!("Merged {} #{number}", forge_repo.path),
+        }));
+        Ok(report)
     }
 
     // ----- clone from an account -------------------------------------------

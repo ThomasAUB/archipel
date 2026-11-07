@@ -129,7 +129,7 @@ Computed locally, per repo and aggregated per project. Three views in v1:
 Anything else waits for real usage.
 
 ### 8. Forge integration (GitHub, GitLab, …) — P2
-> Implemented for GitHub (and GitHub Enterprise Server) and GitLab (gitlab.com and self-hosted): sign-in by personal access token, "Pull request" dashboard column, "CI" dashboard column (latest run of the current branch, jobs on hover), pull requests across repos, clone from an account (ADR 0003). Not yet: OAuth device flow (it needs an OAuth application registered on each forge), Gitea / Forgejo, Bitbucket and Azure DevOps providers (links only).
+> Implemented for GitHub (and GitHub Enterprise Server) and GitLab (gitlab.com and self-hosted): sign-in by personal access token, "Pull request" dashboard column, "CI" dashboard column (latest run of the current branch, jobs on hover), pull requests across repos, open pull requests listed per repo and merged from Archipel, clone from an account (ADR 0003). Not yet: OAuth device flow (it needs an OAuth application registered on each forge), Gitea / Forgejo, Bitbucket and Azure DevOps providers (links only).
 
 Easy, low-friction integration with code hosting forges:
 - Providers: GitHub, GitLab (including self-hosted), then Gitea / Forgejo, Bitbucket, Azure DevOps — each as a pluggable provider behind one small trait, so a fork can add its own without patching the core.
@@ -138,6 +138,7 @@ Easy, low-friction integration with code hosting forges:
 - Per-repo forge status in the dashboard: open PR/MR for the current branch, its CI status, review state.
 - CI status of the current branch in the dashboard, with or without a PR: overall state and job counts in a "CI" column, every job (failures first) on hover, "Open CI run" from the row menu.
 - Create a PR/MR from a branch (title, description, target branch prefilled); multi-repo: one PR per repo for the same branch, linked together.
+- List the open PRs/MRs of the selected repos (source → target, author, CI, review, mergeability) and merge one: merge commit, squash or rebase (GitHub; GitLab uses the project's method), optionally deleting the source branch. A second click confirms; the forge refuses if the head moved since the list was read. The repo is fetched afterwards.
 - Still no built-in code review (see Non-goals): reviewing happens on the forge.
 
 ### 9. Repo dependency tree — P2

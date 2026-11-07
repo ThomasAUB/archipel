@@ -1,6 +1,7 @@
 //! The forge panel (spec §8): accounts (sign in with a personal access
-//! token, sign out), pull requests for the selected repos (one per repo,
-//! linked), and clone from an account / organization / group.
+//! token, sign out), open pull requests of the selected repos (merge them),
+//! new pull requests for the selected repos (one per repo, linked), and
+//! clone from an account / organization / group.
 //!
 //! Every forge call runs on the app runtime (scheduler network pool); the
 //! panel only awaits the results.
@@ -8,10 +9,15 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use archipel_app::{App as Core, CloneProtocol, PullRequestPlan};
+use archipel_app::forge::{ci_label, review_label};
+use archipel_app::{App as Core, CloneProtocol, PullRequestPlan, RepoPullRequests};
 use archipel_model::RepoId;
-use archipel_model::forge::{ForgeAccount, ForgeKind, Namespace, RemoteRepo};
+use archipel_model::forge::{
+    ForgeAccount, ForgeKind, ForgeRepo, MergeMethod, MergeState, Namespace, PullRequestStatus,
+    RemoteRepo,
+};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -26,8 +32,10 @@ use crate::widgets::{button, chip, primary_button, section};
 pub enum ForgeTab {
     /// Signed-in hosts, sign-in form.
     Accounts,
-    /// Pull requests for these repos (all when empty).
-    PullRequests(Vec<RepoId>),
+    /// Open pull requests of these repos (all when empty), to merge.
+    Open(Vec<RepoId>),
+    /// New pull requests for these repos (all when empty).
+    Create(Vec<RepoId>),
     /// Clone from an account.
     Clone,
 }
@@ -43,7 +51,11 @@ pub enum ForgePanelEvent {
 /// Report line: text, link, error.
 type Line = (String, Option<String>, bool);
 
+/// How long a Merge button waits for the confirming second click.
+const MERGE_ARM_TIME: Duration = Duration::from_secs(4);
+
 /// The panel.
+#[allow(clippy::struct_excessive_bools)] // independent form toggles and the busy flag
 pub struct ForgePanel {
     core: Arc<Core>,
     tab: ForgeTab,
@@ -54,7 +66,13 @@ pub struct ForgePanel {
     kind: Option<ForgeKind>,
     host: Entity<InputState>,
     token: Entity<InputState>,
-    // Pull requests.
+    // Open pull requests.
+    open: Vec<RepoPullRequests>,
+    method: MergeMethod,
+    delete_branch: bool,
+    /// The Merge button clicked once: `(repo, number)`.
+    armed: Option<(RepoId, u64)>,
+    // New pull requests.
     plan: Option<PullRequestPlan>,
     title: Entity<InputState>,
     description: Entity<TextareaState>,
@@ -79,6 +97,12 @@ fn kind_label(kind: &ForgeKind) -> String {
         "gitlab" => "GitLab".into(),
         other => other.to_owned(),
     }
+}
+
+/// `!12` on GitLab, `#12` elsewhere.
+fn pr_ref(forge: Option<&ForgeRepo>, number: u64) -> String {
+    let gitlab = forge.is_some_and(|f| f.account.kind == ForgeKind::gitlab());
+    format!("{}{number}", if gitlab { '!' } else { '#' })
 }
 
 impl ForgePanel {
@@ -123,6 +147,10 @@ impl ForgePanel {
             kind: None,
             host,
             token,
+            open: Vec::new(),
+            method: MergeMethod::default(),
+            delete_branch: true,
+            armed: None,
             plan: None,
             title,
             description,
@@ -155,7 +183,8 @@ impl ForgePanel {
                 };
                 focus.update(cx, |i, cx| i.focus(window, cx));
             }
-            ForgeTab::PullRequests(ids) => self.prepare(ids.clone(), window, cx),
+            ForgeTab::Open(ids) => self.list_open(ids.clone(), window, cx),
+            ForgeTab::Create(ids) => self.prepare(ids.clone(), window, cx),
             ForgeTab::Clone => {
                 if self.account.is_none()
                     && let Some(first) = self.accounts.first().cloned()
@@ -245,7 +274,88 @@ impl ForgePanel {
         );
     }
 
-    // ----- pull requests --------------------------------------------------
+    // ----- open pull requests ---------------------------------------------
+
+    fn list_open(&mut self, ids: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
+        self.armed = None;
+        let core = self.core.clone();
+        self.run(
+            async move { core.open_pull_requests(&ids).await },
+            window,
+            cx,
+            |p, result, _, _| match result {
+                Ok(open) => p.open = open,
+                Err(e) => p.error = Some(e.to_string()),
+            },
+        );
+    }
+
+    /// The Merge button: the first click arms it, a second one before
+    /// [`MERGE_ARM_TIME`] merges.
+    fn click_merge(
+        &mut self,
+        repo: RepoId,
+        number: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.armed != Some((repo, number)) {
+            self.armed = Some((repo, number));
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(MERGE_ARM_TIME).await;
+                let _ = this.update(cx, |p, cx| {
+                    if p.armed == Some((repo, number)) {
+                        p.armed = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
+        self.armed = None;
+        let found = self.open.iter().find(|r| r.repo == repo).and_then(|r| {
+            let pr = r
+                .result
+                .as_ref()
+                .ok()?
+                .iter()
+                .find(|p| p.number == number)?;
+            Some((r.forge.clone()?, pr.clone()))
+        });
+        let Some((forge, pr)) = found else { return };
+        let label = format!("{} {}", forge.path, pr_ref(Some(&forge), number));
+        let url = pr.url.clone();
+        let (method, delete) = (self.method, self.delete_branch);
+        let core = self.core.clone();
+        self.run(
+            async move {
+                core.merge_pull_request(repo, &forge, &pr, method, delete)
+                    .await
+            },
+            window,
+            cx,
+            move |p, result, _, cx| match result {
+                Ok(report) => {
+                    for r in p.open.iter_mut().filter(|r| r.repo == repo) {
+                        if let Ok(prs) = &mut r.result {
+                            prs.retain(|pr| pr.number != number);
+                        }
+                    }
+                    let text = match report.warning {
+                        Some(w) => format!("{label} merged ({w})"),
+                        None => format!("{label} merged"),
+                    };
+                    p.report = vec![(text.clone(), Some(url), false)];
+                    cx.emit(ForgePanelEvent::Notice(text));
+                }
+                Err(e) => p.error = Some(format!("{label}: {e}")),
+            },
+        );
+    }
+
+    // ----- new pull requests ----------------------------------------------
 
     fn prepare(&mut self, ids: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
         self.plan = None;
@@ -507,7 +617,175 @@ impl ForgePanel {
             .into_any_element()
     }
 
-    fn render_pull_requests(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    fn render_open(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let ids = match &self.tab {
+            ForgeTab::Open(ids) => ids.clone(),
+            _ => Vec::new(),
+        };
+        let methods = [
+            (MergeMethod::Merge, "Merge commit"),
+            (MergeMethod::Squash, "Squash"),
+            (MergeMethod::Rebase, "Rebase"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (m, label))| {
+            chip(
+                SharedString::from(format!("f-method-{i}")),
+                label,
+                self.method == m,
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, _, cx| {
+                p.method = m;
+                cx.notify();
+            }))
+        });
+        let delete = self.delete_branch;
+        let options = div()
+            .flex()
+            .gap_1()
+            .items_center()
+            .children(methods)
+            .child(
+                div()
+                    .id("f-delete-branch")
+                    .ml_2()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|p, _, _, cx| {
+                        p.delete_branch = !p.delete_branch;
+                        cx.notify();
+                    }))
+                    .child(if delete {
+                        "☑ Delete source branch"
+                    } else {
+                        "☐ Delete source branch"
+                    }),
+            )
+            .child(div().flex_1())
+            .child(button("f-open-refresh", "Refresh", cx).on_click(
+                cx.listener(move |p, _, window, cx| p.list_open(ids.clone(), window, cx)),
+            ));
+        let mut list = div().flex().flex_col().gap_1();
+        for (ri, r) in self.open.iter().enumerate() {
+            list = list.child(section(r.name.clone(), cx));
+            let prs = match &r.result {
+                Err(e) => {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child(e.clone()),
+                    );
+                    continue;
+                }
+                Ok(prs) if prs.is_empty() => {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child("No open pull request"),
+                    );
+                    continue;
+                }
+                Ok(prs) => prs,
+            };
+            for pr in prs {
+                list = list.child(self.open_row(ri, r, pr, cx));
+            }
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(options)
+            .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
+                "Click a title to open it on the forge. Merge asks for a second click, and is \
+                 refused if the branch moved since this list was read.",
+            ))
+            .child(list)
+            .into_any_element()
+    }
+
+    /// One open pull request: title (opens it), details, merge state and
+    /// the Merge button (none on a draft).
+    fn open_row(
+        &self,
+        ri: usize,
+        r: &RepoPullRequests,
+        pr: &PullRequestStatus,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (repo, number, url) = (r.repo, pr.number, pr.url.clone());
+        let mut detail = format!(
+            "{} → {} · {} · {} · {}",
+            pr.source,
+            pr.target,
+            pr.author,
+            ci_label(pr.ci),
+            review_label(pr.review)
+        );
+        if pr.draft {
+            detail.push_str(" · draft");
+        }
+        let (state, tone) = match &pr.merge {
+            MergeState::Unknown => (String::new(), T::FgMuted),
+            MergeState::Mergeable => ("mergeable".to_owned(), T::StatusSuccess),
+            MergeState::Conflicts => ("conflicts".to_owned(), T::StatusError),
+            MergeState::Blocked(why) => (why.clone(), T::StatusWarning),
+        };
+        let id = format!("f-open-{ri}-{number}");
+        let merge = if self.armed == Some((repo, number)) {
+            primary_button(
+                SharedString::from(format!("{id}-merge")),
+                "Confirm merge",
+                cx,
+            )
+        } else {
+            button(SharedString::from(format!("{id}-merge")), "Merge", cx)
+        }
+        .on_click(cx.listener(move |p, _, window, cx| {
+            p.click_merge(repo, number, window, cx);
+        }));
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id(SharedString::from(id))
+                            .truncate()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                            .child(format!("{} {}", pr_ref(r.forge.as_ref(), number), pr.title)),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(color(cx, T::FgMuted))
+                            .child(detail),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(color(cx, tone))
+                    .child(state),
+            )
+            .when(!pr.draft, |d| d.child(merge))
+    }
+
+    fn render_create(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let Some(plan) = &self.plan else {
             return div().into_any_element();
         };
@@ -742,13 +1020,15 @@ impl ForgePanel {
 }
 
 impl Render for ForgePanel {
+    #[allow(clippy::too_many_lines)] // declarative element tree
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = [
             ("f-tab-accounts", "Accounts", ForgeTab::Accounts),
+            ("f-tab-open", "Pull requests", ForgeTab::Open(Vec::new())),
             (
-                "f-tab-prs",
-                "Pull requests",
-                ForgeTab::PullRequests(Vec::new()),
+                "f-tab-create",
+                "New pull request",
+                ForgeTab::Create(Vec::new()),
             ),
             ("f-tab-clone", "Clone", ForgeTab::Clone),
         ]
@@ -756,10 +1036,13 @@ impl Render for ForgePanel {
         .map(|(id, label, tab)| {
             let active = std::mem::discriminant(&tab) == std::mem::discriminant(&self.tab);
             chip(id, label, active, cx).on_click(cx.listener(move |p, _, window, cx| {
-                // The pull request tab keeps the repos it was opened for.
+                // The pull request tabs keep the repos the panel was opened for.
                 let tab = match (&tab, &p.tab) {
-                    (ForgeTab::PullRequests(_), ForgeTab::PullRequests(ids)) => {
-                        ForgeTab::PullRequests(ids.clone())
+                    (ForgeTab::Open(_), ForgeTab::Open(ids) | ForgeTab::Create(ids)) => {
+                        ForgeTab::Open(ids.clone())
+                    }
+                    (ForgeTab::Create(_), ForgeTab::Open(ids) | ForgeTab::Create(ids)) => {
+                        ForgeTab::Create(ids.clone())
                     }
                     _ => tab.clone(),
                 };
@@ -769,7 +1052,8 @@ impl Render for ForgePanel {
         .collect::<Vec<_>>();
         let body = match self.tab {
             ForgeTab::Accounts => self.render_accounts(cx),
-            ForgeTab::PullRequests(_) => self.render_pull_requests(cx),
+            ForgeTab::Open(_) => self.render_open(cx),
+            ForgeTab::Create(_) => self.render_create(cx),
             ForgeTab::Clone => self.render_clone(cx),
         };
         let report = self
