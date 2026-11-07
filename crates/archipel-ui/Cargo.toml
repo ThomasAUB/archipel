@@ -17,6 +17,7 @@ archipel-compose.workspace = true
 archipel-graph.workspace = true
 archipel-model.workspace = true
 archipel-ops.workspace = true
+archipel-stats.workspace = true
 archipel-theme.workspace = true
 gpui-kit = "0.9.0"
 memory-stats = "1"

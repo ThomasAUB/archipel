@@ -408,6 +408,36 @@ impl App {
         }
     }
 
+    /// Local branches of the given repos (all when empty), with their age and
+    /// whether they are merged into the default branch, oldest first; then
+    /// the repos whose branches could not be read ("name: error"). Blocking:
+    /// run it off the UI thread.
+    #[must_use]
+    pub fn branch_ages(&self, ids: &[RepoId]) -> (archipel_stats::BranchesView, Vec<String>) {
+        use archipel_stats::{BranchesProvider, RepoTarget, StatProvider as _, StatView};
+        let sources = self.stat_sources();
+        let mut views = Vec::new();
+        let mut errors = Vec::new();
+        let rows = self.rows().into_iter().filter(|r| r.summary().is_some());
+        for row in rows.filter(|r| ids.is_empty() || ids.contains(&r.id)) {
+            let target = RepoTarget {
+                id: row.id,
+                path: row.path,
+                name: row.name,
+                default_branch: None,
+            };
+            match BranchesProvider.compute(&sources, &target) {
+                Ok(view) => views.push(view),
+                Err(e) => errors.push(format!("{}: {e}", target.name)),
+            }
+        }
+        let view = match BranchesProvider.aggregate(&views) {
+            StatView::Branches(view) => view,
+            _ => archipel_stats::BranchesView::default(),
+        };
+        (view, errors)
+    }
+
     /// History reads (run them off the UI thread).
     #[must_use]
     pub fn history_reader(&self) -> Arc<dyn archipel_model::ports::HistoryReader> {

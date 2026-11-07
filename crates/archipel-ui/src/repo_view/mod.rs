@@ -25,7 +25,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use archipel_app::App as Core;
-use archipel_app::forge::{BranchCi, ForgeStatus, ci_cell, ci_tooltip};
+use archipel_app::forge::{BranchCi, ForgeLimit, ForgeStatus, ci_cell, ci_tooltip};
 use archipel_graph::HistoryView;
 use archipel_model::changes::FileChange;
 use archipel_model::history::CommitMeta;
@@ -38,12 +38,12 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, DragMoveEvent, Entity, FocusHandle, KeyDownEvent, Pixels, Point,
-    SharedString, Subscription, UniformListScrollHandle, Window, div, px,
+    AnyElement, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle, KeyDownEvent, Pixels,
+    Point, SharedString, Subscription, UniformListScrollHandle, Window, div, px,
 };
 
 use crate::diff_view::DiffDoc;
-use crate::staging::{self, Staging};
+use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, surface_between, tone};
 use crate::widgets::{Pane, PaneDrag, TextTooltip, condense_status, resize_pane, splitter};
 
@@ -153,6 +153,7 @@ pub struct RepoView {
     /// CI of the current branch and forge status, as in the dashboard row.
     ci: BranchCi,
     forge: ForgeStatus,
+    forge_limit: Option<ForgeLimit>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
 }
@@ -168,7 +169,9 @@ impl RepoView {
     ) -> Self {
         let row = core.rows().into_iter().find(|r| r.id == path.id());
         let summary = row.as_ref().and_then(|r| r.summary().cloned());
-        let (ci, forge) = row.map(|r| (r.ci, r.forge)).unwrap_or_default();
+        let (ci, forge, forge_limit) = row
+            .map(|r| (r.ci, r.forge, r.forge_limit))
+            .unwrap_or_default();
         let staging = staging::Panel::new(summary, window, cx);
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let name_sub = cx.subscribe_in(
@@ -212,6 +215,7 @@ impl RepoView {
             refs_state: None,
             ci,
             forge,
+            forge_limit,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
         };
@@ -334,11 +338,12 @@ impl RepoView {
     /// The CI badge, as the dashboard "CI" cell: jobs on hover, click opens
     /// the run.
     fn render_ci(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let cell = ci_cell(&self.ci, &self.forge);
+        let now = archipel_model::Timestamp::now();
+        let cell = ci_cell(&self.ci, &self.forge, self.forge_limit, now);
         if cell.text.is_empty() {
             return None;
         }
-        let tooltip = ci_tooltip(&self.ci, &self.forge);
+        let tooltip = ci_tooltip(&self.ci, &self.forge, self.forge_limit, now);
         let url = self.ci.run().and_then(|run| run.url.clone());
         let hover = color(cx, T::BgHover);
         Some(
@@ -382,6 +387,8 @@ impl RepoView {
         cx.notify();
     }
 }
+
+impl EventEmitter<StagingEvent> for RepoView {}
 
 impl Staging for RepoView {
     fn core(&self) -> &Arc<Core> {

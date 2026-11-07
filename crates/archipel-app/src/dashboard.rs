@@ -14,7 +14,8 @@ use archipel_model::{
 };
 
 use crate::forge::{
-    BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeStatus, PullRequestOpenFilter,
+    BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeLimit, ForgeStatus,
+    PullRequestOpenFilter,
 };
 
 /// Availability of a repository of the project.
@@ -49,6 +50,8 @@ pub struct DashboardRow {
     pub forge: ForgeStatus,
     /// CI of the current branch's head on the forge (spec §8).
     pub ci: BranchCi,
+    /// Set when `forge` and `ci` may be out of date (rate limited).
+    pub forge_limit: Option<ForgeLimit>,
 }
 
 impl DashboardRow {
@@ -672,6 +675,7 @@ mod tests {
             hidden: false,
             forge: ForgeStatus::Unknown,
             ci: BranchCi::Unknown,
+            forge_limit: None,
         }
     }
 

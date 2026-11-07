@@ -16,8 +16,8 @@ use archipel_app::settings::load_settings;
 use archipel_app::{App, Extensions, Services};
 use archipel_cache::{CacheRegistry, SqliteStore};
 use archipel_forge::{
-    FileAccountStore, ForgeClient, GitHubReleases, KeychainCredentials, UreqTransport,
-    git_credential,
+    CachingTransport, FileAccountStore, ForgeClient, GitHubReleases, KeychainCredentials,
+    UreqTransport, git_credential,
 };
 use archipel_git::{CliConfig, GitCli, GixReader, check_git_version};
 use archipel_model::ForgeError;
@@ -124,9 +124,11 @@ pub const KEYCHAIN_SERVICE: &str = "dev.archipel.forge";
 #[must_use]
 pub fn forge_ports(settings: &Settings, dirs: &AppDirs) -> ForgePorts {
     let credentials = Arc::new(KeychainCredentials::new(KEYCHAIN_SERVICE));
-    let http = Arc::new(UreqTransport::new(std::time::Duration::from_secs(
-        settings.forge_timeout_secs,
-    )));
+    // Conditional GETs: the periodic status reads of unchanged repos do not
+    // count against the forge's rate limit.
+    let http = Arc::new(CachingTransport::new(Arc::new(UreqTransport::new(
+        std::time::Duration::from_secs(settings.forge_timeout_secs),
+    ))));
     let client = Arc::new(ForgeClient::with_builtins(http, credentials.clone()));
     ForgePorts {
         pull_requests: client.clone(),

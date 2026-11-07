@@ -4,10 +4,13 @@
 //! Providers only build [`HttpRequest`]s and parse [`HttpResponse`]s, so their
 //! logic is tested against a fake transport with no network.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use archipel_model::{ForgeError, forge::ForgeToken};
+use archipel_model::{ForgeError, Timestamp, forge::ForgeToken};
 use serde::de::DeserializeOwned;
 
 /// HTTP method.
@@ -151,6 +154,86 @@ impl HttpTransport for UreqTransport {
     }
 }
 
+/// Entries kept at most by [`CachingTransport`]; the cache is emptied when
+/// full.
+const MAX_CACHED: usize = 1024;
+
+/// Makes repeated GETs conditional: the `ETag` of each answer is kept and
+/// sent back as `If-None-Match`, and a `304 Not Modified` is served from the
+/// kept answer. GitHub does not count 304s against the rate limit, so the
+/// periodic status reads of unchanged repos cost nothing.
+pub struct CachingTransport {
+    inner: Arc<dyn HttpTransport>,
+    /// Kept answers by request key (URL and credentials).
+    cache: Mutex<HashMap<u64, (String, HttpResponse)>>,
+}
+
+impl CachingTransport {
+    /// Caches the GETs sent through `inner`.
+    #[must_use]
+    pub fn new(inner: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            inner,
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The cache key of a GET: its URL and headers (the token among them,
+    /// so accounts never share answers), hashed to keep no token around.
+    fn key(request: &HttpRequest) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        request.url.hash(&mut hasher);
+        request.headers.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn cache(&self) -> std::sync::MutexGuard<'_, HashMap<u64, (String, HttpResponse)>> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keeps a successful answer that has an `ETag`; forgets the key
+    /// otherwise.
+    fn keep(&self, key: u64, response: &HttpResponse) {
+        let mut cache = self.cache();
+        match response.header("etag") {
+            Some(etag) if (200..=299).contains(&response.status) => {
+                if cache.len() >= MAX_CACHED && !cache.contains_key(&key) {
+                    cache.clear();
+                }
+                cache.insert(key, (etag.to_owned(), response.clone()));
+            }
+            _ => {
+                cache.remove(&key);
+            }
+        }
+    }
+}
+
+impl HttpTransport for CachingTransport {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        if request.method != Method::Get {
+            return self.inner.send(request);
+        }
+        let key = Self::key(request);
+        let cached = self.cache().get(&key).cloned();
+        let Some((etag, kept)) = cached else {
+            let response = self.inner.send(request)?;
+            self.keep(key, &response);
+            return Ok(response);
+        };
+        let mut conditional = request.clone();
+        conditional.headers.push(("If-None-Match".into(), etag));
+        let response = self.inner.send(&conditional)?;
+        if response.status == 304 {
+            return Ok(kept);
+        }
+        self.keep(key, &response);
+        Ok(response)
+    }
+}
+
 /// How a provider authenticates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Auth {
@@ -224,13 +307,18 @@ impl Api<'_> {
             })?;
         match response.status {
             200..=299 => Ok(response),
+            // GitHub answers 403 when the rate limit is used up, with
+            // `retry-after` for its secondary (abuse) limit.
             429 => Err(ForgeError::RateLimited {
                 host: self.host.to_owned(),
+                retry_at: retry_at(&response, Timestamp::now()),
             }),
-            // GitHub answers 403 when the rate limit is used up.
-            403 if response.header("x-ratelimit-remaining") == Some("0") => {
+            403 if response.header("x-ratelimit-remaining") == Some("0")
+                || response.header("retry-after").is_some() =>
+            {
                 Err(ForgeError::RateLimited {
                     host: self.host.to_owned(),
+                    retry_at: retry_at(&response, Timestamp::now()),
                 })
             }
             401 | 403 => Err(ForgeError::Unauthorized {
@@ -338,6 +426,20 @@ pub fn permission<T>(result: Result<T, ForgeError>, action: &str) -> Result<T, F
     })
 }
 
+/// When a rate-limited forge accepts calls again: `retry-after` (seconds),
+/// else the reset time of the limit (GitHub `x-ratelimit-reset`, GitLab
+/// `ratelimit-reset`, epoch seconds).
+fn retry_at(response: &HttpResponse, now: Timestamp) -> Option<Timestamp> {
+    let number = |name| response.header(name)?.trim().parse::<i64>().ok();
+    number("retry-after")
+        .map(|secs| Timestamp(now.0 + secs))
+        .or_else(|| {
+            number("x-ratelimit-reset")
+                .or_else(|| number("ratelimit-reset"))
+                .map(Timestamp)
+        })
+}
+
 /// The `rel="next"` URL of a `Link` header.
 #[must_use]
 pub fn next_link(header: &str) -> Option<String> {
@@ -407,6 +509,28 @@ mod tests {
     }
 
     #[test]
+    fn retry_time_of_a_rate_limit() {
+        let now = Timestamp(1_000);
+        let answer = |headers: &[(&str, &str)]| HttpResponse {
+            status: 403,
+            headers: headers
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            body: String::new(),
+        };
+        assert_eq!(
+            retry_at(&answer(&[("retry-after", "60")]), now),
+            Some(Timestamp(1_060))
+        );
+        assert_eq!(
+            retry_at(&answer(&[("x-ratelimit-reset", "5000")]), now),
+            Some(Timestamp(5_000))
+        );
+        assert_eq!(retry_at(&answer(&[]), now), None);
+    }
+
+    #[test]
     fn request_debug_hides_the_token() {
         let req = HttpRequest {
             method: Method::Get,
@@ -415,5 +539,60 @@ mod tests {
             body: None,
         };
         assert!(!format!("{req:?}").contains("secret"));
+    }
+
+    /// Answers 200 with an `ETag` unless the request carries it, then 304.
+    #[derive(Default)]
+    struct EtagServer {
+        seen: Mutex<Vec<HttpRequest>>,
+    }
+
+    impl HttpTransport for EtagServer {
+        fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+            self.seen.lock().unwrap().push(request.clone());
+            let matches = request
+                .headers
+                .iter()
+                .any(|(k, v)| k == "If-None-Match" && v == "\"v1\"");
+            Ok(if matches {
+                HttpResponse {
+                    status: 304,
+                    ..HttpResponse::default()
+                }
+            } else {
+                HttpResponse {
+                    status: 200,
+                    headers: vec![("etag".into(), "\"v1\"".into())],
+                    body: "[1]".into(),
+                }
+            })
+        }
+    }
+
+    fn get(url: &str, token: &str) -> HttpRequest {
+        HttpRequest {
+            method: Method::Get,
+            url: url.into(),
+            headers: vec![("Authorization".into(), format!("Bearer {token}"))],
+            body: None,
+        }
+    }
+
+    #[test]
+    fn repeated_gets_are_conditional() {
+        let server = Arc::new(EtagServer::default());
+        let http = CachingTransport::new(server.clone());
+        let first = http.send(&get("u", "a")).unwrap();
+        let second = http.send(&get("u", "a")).unwrap();
+        assert_eq!((second.status, second.body.as_str()), (200, "[1]"));
+        assert_eq!(first, second, "a 304 serves the kept answer");
+        // Another token does not share the answer.
+        http.send(&get("u", "b")).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let conditional = |r: &HttpRequest| r.headers.iter().any(|(k, _)| k == "If-None-Match");
+        assert_eq!(
+            seen.iter().map(conditional).collect::<Vec<_>>(),
+            [false, true, false]
+        );
     }
 }

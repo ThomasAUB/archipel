@@ -3,12 +3,13 @@
 //! Every batch returns a [`BatchReport`] with one [`Outcome`] per repo: there
 //! is never a silent all-or-nothing, and failed repos can be retried.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use archipel_model::journal::BatchId;
-use archipel_model::requests::{CheckoutTarget, FetchRequest, PullMode, TagRequest};
-use archipel_model::{RepoId, RepoPath, Timestamp};
+use archipel_model::requests::{CheckoutTarget, DeleteMode, FetchRequest, PullMode, TagRequest};
+use archipel_model::{Oid, RepoId, RepoPath, Timestamp};
 
 use crate::actions::RepoActions;
 use crate::error::OpError;
@@ -243,6 +244,51 @@ impl BatchOps {
                 a.create_branch(&t.path, &name, start.as_deref(), batch)?;
                 a.checkout(&t.path, &CheckoutTarget::Branch(name.clone()), batch)
                     .map(Outcome::Done)
+            },
+        )
+        .await
+    }
+
+    /// Deletes local branches, each only if it still points at the commit it
+    /// was listed at (`branches`: per repo, name and tip). A branch that moved,
+    /// disappeared or is checked out meanwhile is left alone. Deletion is
+    /// forced: the caller picked the branches knowing whether they are merged,
+    /// and every deletion is journaled in one batch. Reports the number of
+    /// branches deleted per repo.
+    pub async fn delete_branches_all(
+        &self,
+        targets: &[BatchTarget],
+        branches: HashMap<RepoId, Vec<(String, Oid)>>,
+    ) -> BatchReport<usize> {
+        let batch = Some(self.new_batch_id());
+        let branches = Arc::new(branches);
+        self.run(
+            targets,
+            OpClass::Write,
+            "Delete branches",
+            move |a, t, _| {
+                let wanted = branches.get(&t.id).map_or(&[][..], Vec::as_slice);
+                let current = a.ports().refs.branches(&t.path)?;
+                let mut deleted = 0;
+                let mut skipped = Vec::new();
+                for (name, tip) in wanted {
+                    match current.iter().find(|b| !b.is_remote && b.name == *name) {
+                        None => skipped.push(format!("{name} no longer exists")),
+                        Some(b) if b.is_head => skipped.push(format!("{name} is checked out")),
+                        Some(b) if b.target != *tip => {
+                            skipped.push(format!("{name} moved since it was listed"));
+                        }
+                        Some(_) => {
+                            a.delete_branch(&t.path, name, DeleteMode::Force, batch)?;
+                            deleted += 1;
+                        }
+                    }
+                }
+                Ok(if deleted == 0 && !skipped.is_empty() {
+                    Outcome::Skipped(skipped.join(", "))
+                } else {
+                    Outcome::Done(deleted)
+                })
             },
         )
         .await

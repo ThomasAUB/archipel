@@ -9,7 +9,9 @@ use archipel_model::forge::{
     CiJob, CiJobState, CiRun, CiState, PullRequestRef, PullRequestStatus, ReviewState,
 };
 
-use crate::dashboard::{Cell, DashboardColumn, DashboardRow, RepoFilter, SortKey, Tone};
+use crate::dashboard::{
+    Cell, DashboardColumn, DashboardRow, RepoFilter, SortKey, Tone, relative_time,
+};
 
 /// What the dashboard knows about a repo on its forge.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -69,6 +71,46 @@ impl BranchCi {
             Self::Run(run) => Some(run),
             _ => None,
         }
+    }
+}
+
+/// The last forge read of a row hit the forge's rate limit: its status and
+/// CI are those of an earlier read, and may be out of date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForgeLimit {
+    /// When the shown status and CI were read.
+    pub as_of: Timestamp,
+    /// When the forge accepts calls again, if it said.
+    pub retry_at: Option<Timestamp>,
+}
+
+impl ForgeLimit {
+    /// Mark appended to the cells it applies to.
+    pub const MARK: &'static str = " ?";
+
+    /// Explanation for the tooltips.
+    #[must_use]
+    pub fn note(&self, now: Timestamp) -> String {
+        let mut note = format!(
+            "Rate limited by the forge: may be out of date (read {})",
+            relative_time(self.as_of, now)
+        );
+        if let Some(at) = self.retry_at.filter(|at| *at > now) {
+            let minutes = now.elapsed_until(at).as_secs().div_ceil(60);
+            // Writing to a String cannot fail.
+            let _ = write!(note, ", next read in {minutes} min");
+        }
+        note
+    }
+
+    fn mark(self, mut cell: Cell, now: Timestamp) -> Cell {
+        cell.text.push_str(Self::MARK);
+        let note = self.note(now);
+        cell.detail = Some(match cell.detail {
+            Some(d) => format!("{d}\n{note}"),
+            None => note,
+        });
+        cell
     }
 }
 
@@ -157,24 +199,14 @@ impl ForgeColumn {
             tone,
         }
     }
-}
 
-impl DashboardColumn for ForgeColumn {
-    fn id(&self) -> &str {
-        "forge"
-    }
-
-    fn header(&self) -> &str {
-        "Pull request"
-    }
-
-    fn cell(&self, row: &DashboardRow, _now: Timestamp) -> Cell {
+    fn status_cell(forge: &ForgeStatus) -> Cell {
         let muted = |text: &str, detail: Option<String>| Cell {
             text: text.into(),
             detail,
             tone: Tone::Muted,
         };
-        match &row.forge {
+        match forge {
             ForgeStatus::Unknown => muted("", None),
             ForgeStatus::NotOnForge => muted("—", None),
             ForgeStatus::SignedOut { host } => muted(
@@ -192,6 +224,26 @@ impl DashboardColumn for ForgeColumn {
                 detail: Some(e.clone()),
                 tone: Tone::Error,
             },
+        }
+    }
+}
+
+impl DashboardColumn for ForgeColumn {
+    fn id(&self) -> &str {
+        "forge"
+    }
+
+    fn header(&self) -> &str {
+        "Pull request"
+    }
+
+    fn cell(&self, row: &DashboardRow, now: Timestamp) -> Cell {
+        let cell = Self::status_cell(&row.forge);
+        match (row.forge_limit, &row.forge) {
+            (Some(limit), ForgeStatus::Open(_) | ForgeStatus::NoPullRequest { .. }) => {
+                limit.mark(cell, now)
+            }
+            _ => cell,
         }
     }
 
@@ -294,12 +346,12 @@ impl DashboardColumn for CiColumn {
         "CI"
     }
 
-    fn cell(&self, row: &DashboardRow, _now: Timestamp) -> Cell {
-        ci_cell(&row.ci, &row.forge)
+    fn cell(&self, row: &DashboardRow, now: Timestamp) -> Cell {
+        ci_cell(&row.ci, &row.forge, row.forge_limit, now)
     }
 
     fn tooltip(&self, row: &DashboardRow) -> Option<Vec<String>> {
-        ci_tooltip(&row.ci, &row.forge)
+        ci_tooltip(&row.ci, &row.forge, row.forge_limit, Timestamp::now())
     }
 
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
@@ -315,9 +367,22 @@ impl DashboardColumn for CiColumn {
 }
 
 /// The CI of a branch as a cell: the "CI" column, also shown in the
-/// repo view.
+/// repo view. Marked when `limit` says it may be out of date.
 #[must_use]
-pub fn ci_cell(ci: &BranchCi, forge: &ForgeStatus) -> Cell {
+pub fn ci_cell(
+    ci: &BranchCi,
+    forge: &ForgeStatus,
+    limit: Option<ForgeLimit>,
+    now: Timestamp,
+) -> Cell {
+    let cell = ci_status_cell(ci, forge);
+    match (limit, ci) {
+        (Some(limit), BranchCi::Run(_) | BranchCi::None) => limit.mark(cell, now),
+        _ => cell,
+    }
+}
+
+fn ci_status_cell(ci: &BranchCi, forge: &ForgeStatus) -> Cell {
     let muted = |text: &str| Cell {
         text: text.into(),
         detail: None,
@@ -338,7 +403,20 @@ pub fn ci_cell(ci: &BranchCi, forge: &ForgeStatus) -> Cell {
 
 /// The tooltip of [`ci_cell`]: the run and its jobs, failures first.
 #[must_use]
-pub fn ci_tooltip(ci: &BranchCi, forge: &ForgeStatus) -> Option<Vec<String>> {
+pub fn ci_tooltip(
+    ci: &BranchCi,
+    forge: &ForgeStatus,
+    limit: Option<ForgeLimit>,
+    now: Timestamp,
+) -> Option<Vec<String>> {
+    let mut lines = ci_status_tooltip(ci, forge)?;
+    if let (Some(limit), BranchCi::Run(_) | BranchCi::None) = (limit, ci) {
+        lines.insert(0, limit.note(now));
+    }
+    Some(lines)
+}
+
+fn ci_status_tooltip(ci: &BranchCi, forge: &ForgeStatus) -> Option<Vec<String>> {
     match (ci, forge) {
         (BranchCi::Run(run), _) => {
             let short: String = run.sha.chars().take(8).collect();
@@ -437,6 +515,7 @@ mod tests {
             hidden: false,
             forge,
             ci: BranchCi::Unknown,
+            forge_limit: None,
         }
     }
 

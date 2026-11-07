@@ -128,10 +128,9 @@ impl RepoView {
         let actions = self.core.repo_actions().clone();
         let path = self.path.clone();
         let branch = name.clone();
-        let task =
-            cx.background_spawn(
-                async move { actions.delete_branch(&path, &branch, DeleteMode::Safe) },
-            );
+        let task = cx.background_spawn(async move {
+            actions.delete_branch(&path, &branch, DeleteMode::Safe, None)
+        });
         self.status = Some(format!("{label}…"));
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;

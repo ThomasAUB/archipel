@@ -11,6 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, MouseButton, MouseDownEvent, SharedString, Window, div, px};
 
 use crate::repo_view::RepoView;
+use crate::staging::StagingEvent;
 use crate::theme::{color, radius};
 
 use super::Workspace;
@@ -135,13 +136,29 @@ impl Workspace {
         let TabState::Repo(id) = ui.tabs.get(ui.active_tab)? else {
             return None;
         };
+        if let Some(view) = self.repo_views.get(id) {
+            return Some(view.clone());
+        }
         let row = self.core.rows().into_iter().find(|r| r.id == *id)?;
         let core = self.core.clone();
-        Some(
-            self.repo_views
-                .entry(*id)
-                .or_insert_with(|| cx.new(|cx| RepoView::new(core, row.path, row.name, window, cx)))
-                .clone(),
-        )
+        let view = cx.new(|cx| RepoView::new(core, row.path, row.name, window, cx));
+        // Lives as long as the view.
+        cx.subscribe_in(&view, window, Self::on_staging).detach();
+        self.repo_views.insert(*id, view.clone());
+        Some(view)
+    }
+
+    /// The staging panel of a repo tab or of the quick edit pane asks for
+    /// something only the workspace can show.
+    pub(super) fn on_staging<V>(
+        &mut self,
+        _: &Entity<V>,
+        event: &StagingEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            StagingEvent::OpenForge(tab) => self.open_forge(tab.clone(), window, cx),
+        }
     }
 }

@@ -398,3 +398,57 @@ fn saving_an_edited_file_refuses_a_change_made_meanwhile() {
     let on_disk = std::fs::read(repo.path().join("src/e.txt")).unwrap();
     assert_eq!(on_disk, b"one\r\nTWO\r\n");
 }
+
+#[test]
+fn deleting_branches_skips_moved_ones_and_undoes_as_one_batch() {
+    use archipel_model::ports::RefReader;
+    use std::collections::HashMap;
+
+    let o = ops();
+    let repo = TestRepo::new().unwrap();
+    repo.write("a.txt", "a").unwrap();
+    repo.commit_all("first").unwrap();
+    repo.git(&["branch", "done"]).unwrap();
+    repo.git(&["branch", "moved"]).unwrap();
+    repo.git(&["branch", "gone"]).unwrap();
+    let path = RepoPath::new(repo.path());
+    let cli = GitCli::default();
+    let tip = cli.resolve(&path, "main").unwrap().unwrap();
+
+    // Listed, then changed before the batch runs.
+    repo.git(&["checkout", "-q", "moved"]).unwrap();
+    repo.write("b.txt", "b").unwrap();
+    repo.commit_all("more").unwrap();
+    repo.git(&["checkout", "-q", "main"]).unwrap();
+    repo.git(&["branch", "-D", "gone"]).unwrap();
+
+    let target = BatchTarget::new(path.clone());
+    let wanted = ["done", "moved", "gone", "main"]
+        .map(|n| (n.to_owned(), tip))
+        .to_vec();
+    let report = o.rt.block_on(o.batches.delete_branches_all(
+        std::slice::from_ref(&target),
+        HashMap::from([(target.id, wanted)]),
+    ));
+    assert_eq!(report.outcome(target.id), Some(&Outcome::Done(1)));
+    assert!(cli.resolve(&path, "refs/heads/done").unwrap().is_none());
+    assert!(cli.resolve(&path, "refs/heads/moved").unwrap().is_some());
+    assert!(cli.resolve(&path, "refs/heads/main").unwrap().is_some());
+
+    // Only skips: reported as such, with the reasons.
+    let again = o.rt.block_on(o.batches.delete_branches_all(
+        std::slice::from_ref(&target),
+        HashMap::from([(target.id, vec![("moved".to_owned(), tip)])]),
+    ));
+    assert!(matches!(
+        again.outcome(target.id),
+        Some(Outcome::Skipped(r)) if r.contains("moved since")
+    ));
+
+    let batch = o.store.recent(target.id, 1).unwrap()[0].batch.unwrap();
+    let locate = |id| (id == target.id).then(|| path.clone());
+    o.undo
+        .execute_batch(batch, Direction::Undo, &locate)
+        .unwrap();
+    assert_eq!(cli.resolve(&path, "done").unwrap(), Some(tip));
+}

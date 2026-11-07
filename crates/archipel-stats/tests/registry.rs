@@ -5,9 +5,10 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use archipel_model::testing::oid;
-use archipel_model::{CancelToken, StoreError};
+use archipel_model::{CancelToken, StoreError, Timestamp};
 use archipel_stats::{
     ACTIVITY_ID, BRANCHES_ID, BranchesView, HOTSPOTS_ID, HotspotsProvider, PauseToken, RepoTarget,
     StatProvider, StatSources, StatView, StatsConfig, StatsError, StatsRegistry, TableView,
@@ -156,6 +157,22 @@ fn branches_fall_back_to_main_and_flag_merged_not_deleted() {
         .map(|r| r.age.name.as_str())
         .collect();
     assert_eq!(merged, vec!["merged"]);
+}
+
+#[test]
+fn stale_branches_are_old_unmerged_and_not_checked_out() {
+    let fx = Fixture::new("r");
+    branchy_repo(&fx);
+    let view = branches_view(&fx);
+    let stale = |now: i64, secs: u64| -> Vec<String> {
+        view.stale(Timestamp(now), Duration::from_secs(secs))
+            .map(|r| r.age.name.clone())
+            .collect()
+    };
+    // `wip` is current, `merged` is merged: only `open` can be stale.
+    assert_eq!(stale(MONDAY + 5, 0), vec!["open"]);
+    assert_eq!(stale(MONDAY + 10, 5), vec!["open"]);
+    assert!(stale(MONDAY + 10, 6).is_empty());
 }
 
 #[test]

@@ -35,5 +35,5 @@ pub mod releases;
 
 pub use client::ForgeClient;
 pub use credentials::{FileAccountStore, KeychainCredentials};
-pub use http::UreqTransport;
+pub use http::{CachingTransport, UreqTransport};
 pub use releases::GitHubReleases;

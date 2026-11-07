@@ -17,7 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Window, div};
 
 use crate::diff_view::{self, DiffDoc};
-use crate::staging::{self, Job, Staging};
+use crate::staging::{self, Job, Staging, StagingEvent};
 use crate::theme::color;
 use crate::widgets::{SHORT_OID, button, icon_button};
 
@@ -46,6 +46,7 @@ pub struct QuickEdit {
 }
 
 impl EventEmitter<QuickEditEvent> for QuickEdit {}
+impl EventEmitter<StagingEvent> for QuickEdit {}
 
 impl QuickEdit {
     /// Opens the pane on a dashboard row and loads its working copy.

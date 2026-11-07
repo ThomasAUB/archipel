@@ -145,6 +145,7 @@ mod tests {
             hidden: false,
             forge: ForgeStatus::Unknown,
             ci: BranchCi::Unknown,
+            forge_limit: None,
         }
     }
 

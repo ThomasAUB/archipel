@@ -3,6 +3,9 @@
 /// Number of hotspots shown by default (per repo and per project).
 pub const DEFAULT_HOTSPOT_LIMIT: usize = 20;
 
+/// Days without a commit after which an unmerged branch is stale.
+pub const DEFAULT_STALE_BRANCH_DAYS: u64 = 90;
+
 /// Local branch names tried, in order, when `origin/HEAD` does not tell the
 /// default branch.
 pub const FALLBACK_DEFAULT_BRANCHES: [&str; 2] = ["main", "master"];

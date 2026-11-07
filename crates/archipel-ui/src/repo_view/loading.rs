@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use archipel_app::forge::{BranchCi, ForgeStatus};
+use archipel_app::dashboard::DashboardRow;
 use archipel_graph::GraphError;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::{CancelToken, HeadState, NoProgress, Oid, RepoSummary, Timestamp, Upstream};
@@ -342,10 +342,11 @@ impl RepoView {
     }
 
     /// The forge status of the repo was read again (or its branch changed).
-    pub fn on_forge(&mut self, ci: &BranchCi, forge: &ForgeStatus, cx: &mut Context<Self>) {
-        if self.ci != *ci || self.forge != *forge {
-            self.ci = ci.clone();
-            self.forge = forge.clone();
+    pub fn on_forge(&mut self, row: &DashboardRow, cx: &mut Context<Self>) {
+        if self.ci != row.ci || self.forge != row.forge || self.forge_limit != row.forge_limit {
+            self.ci = row.ci.clone();
+            self.forge = row.forge.clone();
+            self.forge_limit = row.forge_limit;
             cx.notify();
         }
     }

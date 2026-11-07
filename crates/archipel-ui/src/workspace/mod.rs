@@ -93,7 +93,7 @@ pub struct Workspace {
     repo_views: HashMap<RepoId, Entity<RepoView>>,
     overlay: Option<(Overlay, Subscription)>,
     /// Quick edit pane of the dashboard (a plain click on a row).
-    quick_edit: Option<(Entity<QuickEdit>, [Subscription; 2])>,
+    quick_edit: Option<(Entity<QuickEdit>, [Subscription; 3])>,
     log: VecDeque<(Timestamp, String, bool)>,
     notice: Option<String>,
     warnings: Vec<String>,
@@ -288,7 +288,7 @@ impl Workspace {
                     if let Some(view) = self.repo_views.get(&id) {
                         view.update(cx, |v, cx| {
                             if let Some(row) = row {
-                                v.on_forge(&row.ci, &row.forge, cx);
+                                v.on_forge(row, cx);
                             }
                             v.on_summary(summary, cx);
                         });

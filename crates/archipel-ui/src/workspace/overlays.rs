@@ -1,5 +1,5 @@
 //! Overlays over the whole window: palettes (project switcher, actions,
-//! prompts), the commit panel and the forge panel.
+//! prompts), the commit, forge and branches panels.
 
 use archipel_app::Command;
 use archipel_model::project::ProjectLocation;
@@ -7,6 +7,7 @@ use archipel_model::{ProjectId, RepoId};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Context, Entity, MouseDownEvent, SharedString, Window, div};
 
+use crate::branches_panel::{BranchesPanel, BranchesPanelEvent};
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
 use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
@@ -33,6 +34,7 @@ pub(super) enum Overlay {
     Palette(Entity<Palette>),
     Commit(Entity<CommitPanel>),
     Forge(Entity<ForgePanel>),
+    Branches(Entity<BranchesPanel>),
 }
 
 impl Workspace {
@@ -43,6 +45,7 @@ impl Workspace {
                 Overlay::Palette(p) => p.clone().into_any_element(),
                 Overlay::Commit(c) => c.clone().into_any_element(),
                 Overlay::Forge(f) => f.clone().into_any_element(),
+                Overlay::Branches(b) => b.clone().into_any_element(),
             };
             // A click outside the overlay (which occludes its own area)
             // dismisses it, without reaching what lies underneath.
@@ -356,6 +359,31 @@ impl Workspace {
             },
         );
         self.overlay = Some((Overlay::Forge(panel), sub));
+        cx.notify();
+    }
+
+    /// Opens the branches panel on the selected repos (all when none).
+    pub(super) fn open_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.core.project().is_none() {
+            return;
+        }
+        let (core, scope) = (self.core.clone(), self.selected_or_all());
+        let panel = cx.new(|cx| BranchesPanel::new(core, scope, cx));
+        let sub = cx.subscribe_in(
+            &panel,
+            window,
+            |this: &mut Self, _, event: &BranchesPanelEvent, window, cx| {
+                match event {
+                    BranchesPanelEvent::Closed => {
+                        this.overlay = None;
+                        this.focus.focus(window, cx);
+                    }
+                    BranchesPanelEvent::Finished(summary) => this.notice = Some(summary.clone()),
+                }
+                cx.notify();
+            },
+        );
+        self.overlay = Some((Overlay::Branches(panel), sub));
         cx.notify();
     }
 }

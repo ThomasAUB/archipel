@@ -62,9 +62,10 @@ impl Workspace {
                 cx.notify();
             },
         );
+        let staging = cx.subscribe_in(&pane, window, Self::on_staging);
         // Its open diff is drawn here, in place of the rows.
         let redraw = cx.observe(&pane, |_, _, cx| cx.notify());
-        self.quick_edit = Some((pane, [sub, redraw]));
+        self.quick_edit = Some((pane, [sub, staging, redraw]));
         cx.notify();
     }
 
@@ -106,6 +107,10 @@ impl Workspace {
                 chip("view-tree", "Tree", ui.show_dependency_tree, cx).on_click(
                     cx.listener(|this, _, _, cx| this.dispatch(Command::ToggleDependencyTree, cx)),
                 ),
+            )
+            .child(
+                chip("view-branches", "Branches…", false, cx)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
             )
             .when(hidden > 0 || ui.show_hidden, |d| {
                 d.child(

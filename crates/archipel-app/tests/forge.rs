@@ -20,7 +20,7 @@ use archipel_model::testing::{
     FakeChangeSource, FakeDiscovery, FakeForge, FakeGit, FakeProjectSource, InMemoryCredentials,
     InMemoryStore, oid,
 };
-use archipel_model::{HeadState, ProjectId, RepoPath, Timestamp, Upstream};
+use archipel_model::{ForgeError, HeadState, ProjectId, RepoPath, Timestamp, Upstream};
 use archipel_ops::GitPorts;
 
 /// Where the test project is stored (in memory: the fake source).
@@ -305,6 +305,54 @@ fn status_column_follows_sign_in() {
     wait_until("signed out", || {
         matches!(forge_of(&e, 0), ForgeStatus::SignedOut { .. })
     });
+}
+
+fn limited(e: &Env, i: usize) -> bool {
+    let id = e.repos[i].id();
+    e.app
+        .rows()
+        .into_iter()
+        .any(|r| r.id == id && r.forge_limit.is_some())
+}
+
+#[test]
+fn rate_limit_keeps_the_last_status_marked() {
+    let e = env();
+    sign_in(&e);
+    wait_until("statuses", || {
+        matches!(forge_of(&e, 0), ForgeStatus::Open(_))
+            && matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. })
+    });
+    let reads = e.forge.reads();
+    let retry_at = Timestamp(Timestamp::now().0 + 600);
+    e.forge.fail(
+        "acme/r0",
+        ForgeError::RateLimited {
+            host: "github.com".into(),
+            retry_at: Some(retry_at),
+        },
+    );
+    e.app.dispatch(Command::RefreshForge).unwrap();
+    wait_until("rate limited", || limited(&e, 0));
+    // The pull request read before stays, marked as maybe out of date.
+    assert!(matches!(forge_of(&e, 0), ForgeStatus::Open(_)));
+    let ext = e.app.extensions();
+    let col = ext.columns.get("forge").unwrap();
+    let row = e.app.rows().into_iter().next().unwrap();
+    let cell = col.cell(&row, Timestamp::now());
+    assert_eq!(cell.text, "#7 ✗ approved ?");
+    assert!(cell.detail.unwrap().contains("Rate limited"));
+    let ci = ext.columns.get("ci").unwrap();
+    assert!(ci.tooltip(&row).unwrap()[0].contains("next read in 10 min"));
+
+    // The host is left alone until it accepts calls again: r1, on the same
+    // host, is not read and keeps its status, marked too.
+    wait_until("r1 read", || e.forge.reads() > reads);
+    let reads = e.forge.reads();
+    e.app.dispatch(Command::RefreshForge).unwrap();
+    wait_until("r1 backed off", || limited(&e, 1));
+    assert_eq!(e.forge.reads(), reads, "no call to a rate-limited host");
+    assert!(matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. }));
 }
 
 #[test]

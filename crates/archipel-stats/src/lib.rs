@@ -37,7 +37,9 @@ mod view;
 pub use builtin::{
     ACTIVITY_ID, ActivityProvider, BRANCHES_ID, BranchesProvider, HOTSPOTS_ID, HotspotsProvider,
 };
-pub use config::{DEFAULT_HOTSPOT_LIMIT, FALLBACK_DEFAULT_BRANCHES, StatsConfig};
+pub use config::{
+    DEFAULT_HOTSPOT_LIMIT, DEFAULT_STALE_BRANCH_DAYS, FALLBACK_DEFAULT_BRANCHES, StatsConfig,
+};
 pub use default_branch::{DefaultBranch, detect_default_branch};
 pub use engine::{DeltaSize, StatsEngine, UpdateOutcome};
 pub use error::StatsError;

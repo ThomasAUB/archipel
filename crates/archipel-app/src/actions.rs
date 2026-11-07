@@ -283,6 +283,11 @@ impl ActionRegistry {
             "Create a tag on selected repos…",
             with_project,
         ));
+        r.register(ui(
+            "repos.branches",
+            "Clean up branches: merged and stale, on selected repos…",
+            with_project,
+        ));
         r.register(ui("settings.appearance", "Appearance and themes…", always));
         r.register(ui("app.copy_diagnostics", "Copy diagnostics", always));
         r.register(Arc::new(SimpleAction::new(

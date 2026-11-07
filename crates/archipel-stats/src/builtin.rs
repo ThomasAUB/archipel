@@ -98,6 +98,7 @@ impl StatProvider for BranchesProvider {
                 _ => false,
             };
             rows.push(BranchRow {
+                repo_id: repo.id,
                 repo: repo.name.clone(),
                 age: BranchAge {
                     name: b.name.clone(),

@@ -28,7 +28,7 @@ too; prefer the names of this document in prose and in new code.
 ├──────────────────────────────────────────────────────────────────────────┤
 │ Status Bar                                                               │
 └──────────────────────────────────────────────────────────────────────────┘
-  + Overlays on top: Palette, Commit Panel, Forge Panel, Context Menus
+  + Overlays on top: Palette, Commit Panel, Forge Panel, Branches Panel, Context Menus
 ```
 
 | Name | What it is | Code |
@@ -41,7 +41,7 @@ too; prefer the names of this document in prose and in new code.
 | **Main Area** | What the active tab shows: the Dashboard or a Repo View. | `Workspace::render` |
 | **Operations Drawer** | Log of operations, progress and errors (`Ctrl+J`). | `Workspace::render_drawer` |
 | **Status Bar** | One line at the bottom: notice, warning or shortcut hints; click to dismiss a notice. At its right end, the **Project Color** swatch (with a project open): click for a color picker setting the project's accent color, as *Set the project color…* does. Then the **Theme Picker**: the current theme's name; click to pick another (Classic Dark, Classic Light, High contrast, user themes). The choice is remembered across launches. | `Workspace::render_status` |
-| **Overlay** | A panel drawn over the Workspace: Palette, Commit Panel or Forge Panel. | `Overlay` enum |
+| **Overlay** | A panel drawn over the Workspace: Palette, Commit Panel, Forge Panel or Branches Panel. | `Overlay` enum |
 
 ## 2. Sidebar
 
@@ -102,7 +102,7 @@ The project overview, one row per repo (spec §3). Rendered by
 | **Dashboard Toolbar** | Above the rows: Filter Chips, Category Filter, View Chips, and the scan progress ("Scanning the folder… N found" + Stop). (`render_dashboard_toolbar`) |
 | **Filter Chips** | Toggle filters (Dirty, Behind remote, Open pull request, CI failing, …); they combine with AND. |
 | **Category Filter** | Dropdown button "Category: …" with a checklist of categories. (`render_category_filter`, `render_category_menu`) |
-| **View Chips** | **Tree** (shows the Dependency Tree) and **Hidden (N)** (shows hidden repos). |
+| **View Chips** | **Tree** (shows the Dependency Tree), **Branches…** (opens the Branches Panel) and **Hidden (N)** (shows hidden repos). |
 | **Column Header** | Column titles; click sorts. Columns: Repo, Branch, Sync, Changes, Version, Fetch, then forge columns Pull request and CI. |
 | **Dashboard Row** | One repo. Click: select it and open the Quick Edit Pane; Ctrl+click: add to the selection; double-click: open its Repo Tab. |
 | **Dependency Tree** | Replaces the flat rows when Tree is on: repos and nested submodules with connectors, each **Tree Node** with its state and actions (init / update / open / add); a submodule that is a project repo keeps its dashboard columns and shows its init / update buttons on hover. (`render_tree`) |
@@ -177,7 +177,7 @@ the Quick Edit Pane. [staging.rs](../crates/archipel-ui/src/staging.rs).
 
 | Name | What it is |
 | ---- | ---------- |
-| **Repo Actions Bar** | Fetch, Pull, Push, Stash, Pop, Undo, Redo (+ Branch in the Details Pane). (`render_actions`) |
+| **Repo Actions Bar** | Fetch, Pull, Push, a pull request button (**Create PR…**, or **PR #n** when the branch has one: opens the Forge Panel on that repo; hidden when the repo is not on a forge), Stash, Pop, Undo, Redo (+ Branch in the Details Pane). (`render_actions`) |
 | **Operation Banner** | Shown while a merge, rebase, cherry-pick or revert is in progress: Continue / Abort. |
 | **Branch Section** | Switch to another local branch or create one. |
 | **Unstaged Files** | Working-tree changes, with Stage all / Discard all and per-file stage / discard. Discard asks for a second click. |
@@ -209,6 +209,7 @@ An Overlay sits on a transparent backdrop: clicking outside it dismisses it
 | ↳ **Prompt Palette** | The Palette as a one-line prompt: checkout target, branch name, tag name, category (with suggestions), category rename, project color, background tint, icon. (`PaletteKind`) | Actions |
 | **Commit Panel** | Multi-repo commit (spec §4): repo list with staged-file previews, branch mismatch warning, one message, push option, per-repo report and Retry failed. ([commit_panel.rs](../crates/archipel-ui/src/commit_panel.rs)) | `Ctrl+K` |
 | **Forge Panel** | Forge integration (spec §8), with four **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (open PRs of the selected repos, merge with a confirming second click), **New pull request** (create PRs for the selected repos), **Clone** (browse an account / org / group and clone). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
+| **Branches Panel** | Branch cleanup across the selected repos (all when none), spec §7: **merged, not deleted** (pre-checked) and **stale** (unmerged, no commit for 90 days) local branches; Delete asks for a confirming second click, skips a branch that moved meanwhile; Undo on a repo restores its deleted branches one at a time. ([branches_panel.rs](../crates/archipel-ui/src/branches_panel.rs)) | Branches… chip, Action Palette |
 | **Context Menus** | Row Menu, Category Menu, Tab Menu (Workspace); Graph Menu, Drop Menu (Repo View). | Right-click |
 
 ## 8. Naming rules

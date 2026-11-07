@@ -1,6 +1,9 @@
 //! View models produced by statistics providers.
 
+use std::time::Duration;
+
 use archipel_model::stats::{ActivityBucket, BranchAge, Hotspot};
+use archipel_model::{RepoId, Timestamp};
 
 /// Commits per week and author, sorted by week then author.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -29,6 +32,8 @@ impl ActivityView {
 /// One branch of one repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchRow {
+    /// The repository.
+    pub repo_id: RepoId,
     /// Display name of the repository.
     pub repo: String,
     /// Age and merge state (never `merged` for the current branch).
@@ -49,6 +54,14 @@ impl BranchesView {
     /// (candidates for a batch delete).
     pub fn merged_not_deleted(&self) -> impl Iterator<Item = &BranchRow> {
         self.branches.iter().filter(|r| r.age.merged)
+    }
+
+    /// Branches not merged into the default branch, not checked out, whose
+    /// last commit is at least `min_age` older than `now`.
+    pub fn stale(&self, now: Timestamp, min_age: Duration) -> impl Iterator<Item = &BranchRow> {
+        self.branches.iter().filter(move |r| {
+            !r.age.merged && !r.current && r.age.last_commit.elapsed_until(now) >= min_age
+        })
     }
 }
 

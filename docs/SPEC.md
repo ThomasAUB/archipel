@@ -121,6 +121,8 @@ Always confirmed through a menu, never a silent action:
 - **Undo** for every local operation; a push gets a confirmed compensating action instead (revert or force-with-lease). Undo is refused, with an explanation, when it would lose work. Details: [PLAN.md](PLAN.md) §2.4.
 
 ### 7. Statistics — P1
+> In the desktop app so far: the Branches Panel (merged-not-deleted and stale branches across repos, batch delete). Activity and hotspots are computed (`archipel-cli stats`) but not shown yet.
+
 Computed locally, per repo and aggregated per project. Three views in v1:
 - activity over time (commits / week) per author;
 - branch age, and merged branches that were never deleted;

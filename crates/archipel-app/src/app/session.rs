@@ -39,6 +39,8 @@ pub(super) struct Session {
     pub(super) forge_checked: HashMap<RepoId, (String, Instant)>,
     /// Repos whose forge status is being read.
     pub(super) forge_pending: HashSet<RepoId>,
+    /// Rate-limited forge hosts, and when they accept calls again.
+    pub(super) forge_backoff: HashMap<String, Timestamp>,
 }
 
 impl Session {
@@ -61,6 +63,7 @@ fn new_row(repo: &RepoEntry, status: RepoStatus, stale: bool, ui: &UiState) -> D
         hidden: ui.is_hidden(id),
         forge: ForgeStatus::Unknown,
         ci: BranchCi::Unknown,
+        forge_limit: None,
     }
 }
 
@@ -117,6 +120,7 @@ impl App {
             tree_pending: HashSet::new(),
             forge_checked: HashMap::new(),
             forge_pending: HashSet::new(),
+            forge_backoff: HashMap::new(),
         });
         if let Err(e) = self.services.registry.mark_opened(id, Timestamp::now()) {
             tracing::warn!(error = %e, "could not update the recent list");

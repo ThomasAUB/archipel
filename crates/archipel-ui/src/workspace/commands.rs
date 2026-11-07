@@ -44,6 +44,7 @@ impl Workspace {
             "repos.checkout_all" => self.open_palette(PaletteKind::Checkout, window, cx),
             "repos.branch_all" => self.open_palette(PaletteKind::Branch, window, cx),
             "repos.tag_all" => self.open_palette(PaletteKind::Tag, window, cx),
+            "repos.branches" => self.open_branches(window, cx),
             "settings.appearance" => {
                 let size = window.viewport_size();
                 self.theme_menu = Some(Point::new(size.width, size.height));

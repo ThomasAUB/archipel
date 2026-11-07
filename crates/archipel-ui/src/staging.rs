@@ -1,13 +1,14 @@
 //! The staging panel shared by the repo tab and the dashboard's quick edit
 //! pane: the repo actions (fetch, pull, push, stash, undo, …), the branch
 //! section, unstaged files, staged files (the "ready to commit" half, in
-//! the accent color), then the commit box. Its state ([`Panel`]) and
+//! the accent color), then the commit box. The pull request button asks
+//! the workspace for the forge panel ([`StagingEvent`]). Its state ([`Panel`]) and
 //! behavior live here, so both places show and do exactly the same.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use archipel_app::forge::pick_remote;
+use archipel_app::forge::{ForgeStatus, pick_remote};
 use archipel_app::{App as Core, Command};
 use archipel_model::changes::{FileChange, FileState};
 use archipel_model::ports::DiffSide;
@@ -23,10 +24,12 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Div, Entity, SharedString, Stateful, Subscription, Window, div, px,
+    AnyElement, Context, Div, Entity, EventEmitter, SharedString, Stateful, Subscription, Window,
+    div, px,
 };
 
 use crate::file_edit::FileEdit;
+use crate::forge_panel::ForgeTab;
 use crate::theme::{color, row_height};
 use crate::widgets::{button, icon_button, primary_button, section};
 
@@ -148,7 +151,13 @@ pub fn on_summary<V: Staging>(v: &mut V, summary: Option<&RepoSummary>, cx: &mut
 }
 
 /// A view showing the staging panel.
-pub trait Staging: Sized + 'static {
+/// What the panel asks of the workspace.
+pub enum StagingEvent {
+    /// Open the forge panel on this tab.
+    OpenForge(ForgeTab),
+}
+
+pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {
     /// The app (undo / redo journal, ports).
     fn core(&self) -> &Arc<Core>;
     /// The repo shown.
@@ -349,8 +358,25 @@ pub fn small(b: Stateful<Div>) -> Stateful<Div> {
     b.py_0().text_xs()
 }
 
-/// Fetch, pull, push, stash, pop, undo, redo, after `lead` (a button of
-/// the view's own).
+/// The pull request button: the open one of the branch (to review or
+/// merge it), else "Create PR…"; none when the repo is not on a forge.
+fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Option<Stateful<Div>> {
+    let id = v.repo_path().id();
+    let forge = v.core().rows().into_iter().find(|r| r.id == id)?.forge;
+    let (label, tab) = match &forge {
+        ForgeStatus::NotOnForge => return None,
+        ForgeStatus::Open(pr) => (format!("PR #{}", pr.number), ForgeTab::Open(vec![id])),
+        _ => ("Create PR…".to_owned(), ForgeTab::Create(vec![id])),
+    };
+    Some(
+        small(button("st-pr", label, cx)).on_click(cx.listener(move |_: &mut V, _, _, cx| {
+            cx.emit(StagingEvent::OpenForge(tab.clone()));
+        })),
+    )
+}
+
+/// Fetch, pull, push, pull request, stash, pop, undo, redo, after `lead`
+/// (a button of the view's own).
 pub fn render_actions<V: Staging>(
     v: &mut V,
     lead: Option<AnyElement>,
@@ -380,6 +406,7 @@ pub fn render_actions<V: Staging>(
             a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
         }))
         .child(job("st-push", "Push", network, cx, push_current))
+        .children(pull_request_button(v, cx))
         .child(job("st-stash", "Stash", write, cx, |a, p, _| {
             a.stash_push(p, &StashRequest::default()).map(drop)
         }))

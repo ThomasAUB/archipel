@@ -416,7 +416,7 @@ impl RepoView {
             }
             MenuAction::DeleteBranch(name, mode) => {
                 self.run(format!("Delete branch {name}"), cx, move |a, p, _| {
-                    a.delete_branch(p, &name, mode)
+                    a.delete_branch(p, &name, mode, None)
                 });
             }
             MenuAction::DeleteRemoteBranch(name) => {

@@ -305,9 +305,11 @@ impl RepoActions {
         repo: &RepoPath,
         name: &str,
         mode: DeleteMode,
+        batch: Option<BatchId>,
     ) -> Result<(), OpError> {
         let rec = Recording::new(OperationKind::BranchDelete, format!("Delete branch {name}"))
-            .with_refs([branch_ref(name)]);
+            .with_refs([branch_ref(name)])
+            .in_batch(batch);
         self.journal.record(repo, rec, || {
             self.git.branches.delete_branch(repo, name, mode)
         })

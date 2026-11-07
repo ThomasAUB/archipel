@@ -198,7 +198,7 @@ fn checkout_and_branch_and_tag_undo() {
 
     let tip = e.cli.resolve(&e.path, "feature").unwrap();
     e.actions
-        .delete_branch(&e.path, "feature", DeleteMode::Force)
+        .delete_branch(&e.path, "feature", DeleteMode::Force, None)
         .unwrap();
     e.undo_last().unwrap();
     assert_eq!(e.cli.resolve(&e.path, "feature").unwrap(), tip);

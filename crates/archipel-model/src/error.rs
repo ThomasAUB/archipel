@@ -189,5 +189,7 @@ pub enum ForgeError {
     RateLimited {
         /// The host.
         host: String,
+        /// When the forge accepts calls again, if it said.
+        retry_at: Option<crate::Timestamp>,
     },
 }
