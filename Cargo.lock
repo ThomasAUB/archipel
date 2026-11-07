@@ -454,6 +454,7 @@ dependencies = [
  "archipel-theme",
  "embed-resource",
  "gpui-kit",
+ "gpui-pre-apple",
  "memory-stats",
  "tempfile",
  "tokio",

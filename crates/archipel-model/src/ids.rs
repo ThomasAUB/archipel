@@ -135,15 +135,15 @@ pub struct RepoId(pub u64);
 impl RepoId {
     /// Derives a stable id from a repository path (FNV-1a over the normalized path).
     ///
-    /// Normalization lowercases on Windows (case-insensitive file system) and
-    /// unifies separators, so the same repo always gets the same id.
+    /// Normalization lowercases on Windows and macOS (case-insensitive file
+    /// systems) and unifies separators, so the same repo always gets the same id.
     #[must_use]
     pub fn from_path(path: &Path) -> Self {
         let text = path.to_string_lossy().replace('\\', "/");
         let text = text.trim_end_matches('/');
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in text.bytes() {
-            let byte = if cfg!(windows) {
+            let byte = if cfg!(any(windows, target_os = "macos")) {
                 byte.to_ascii_lowercase()
             } else {
                 byte
@@ -256,5 +256,12 @@ mod tests {
             RepoId::from_path(Path::new("/a/b")),
             RepoId::from_path(Path::new("/a/c"))
         );
+    }
+
+    #[test]
+    fn repo_id_folds_case_where_the_file_system_does() {
+        let same =
+            RepoId::from_path(Path::new("/Work/App")) == RepoId::from_path(Path::new("/work/app"));
+        assert_eq!(same, cfg!(any(windows, target_os = "macos")));
     }
 }

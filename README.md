@@ -85,6 +85,8 @@ reopens.
 | `Ctrl+Shift+T` | dependency tree (nested submodules) |
 | `Ctrl+N` (or `Ctrl+Shift+N`) | new window |
 
+On macOS, `Cmd` replaces `Ctrl` in every shortcut except `Ctrl+Tab`.
+
 Right-click a repo for its menu. The project color and icon are set from the
 action palette ("Set the project color…", "Set the project icon…", "Set the
 project icon from an image…") and saved in the project, so `archipel.toml`
@@ -100,7 +102,7 @@ keychain, never in `archipel.toml`). The dashboard then shows each repo's
 open pull request with its CI and review state; "Create pull requests…" opens
 one per selected repo, linked together, and "Clone repositories from a forge
 account…" adds clones to the project. On Linux the keychain is the Secret
-Service (GNOME Keyring, KWallet).
+Service (GNOME Keyring, KWallet); on macOS, the login Keychain.
 
 ## Develop
 
@@ -150,3 +152,11 @@ cargo install --path crates/archipel-ui
 install -Dm644 assets/linux/archipel.desktop ~/.local/share/applications/archipel.desktop
 install -Dm644 assets/logo/archipel.svg ~/.local/share/icons/hicolor/scalable/apps/archipel.svg
 ```
+
+### macOS
+
+Builds with the Xcode Command Line Tools (`xcode-select --install`); CI tests
+it on Apple silicon. The app menu has Quit (`Cmd+Q`), Hide and Services;
+`Cmd+H` stays bound to hiding repos, so Hide Archipel has no shortcut. There is
+no `.app` bundle yet: run the `archipel` binary from a terminal
+(`cargo install --path crates/archipel-ui`).

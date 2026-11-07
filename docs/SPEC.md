@@ -165,7 +165,7 @@ Show how the repos of a project depend on each other, as a small tree:
 - **Aesthetics:** light/dark themes, careful typography, restrained animations, adjustable information density.
 - **Themes customizable by a regular user:** no code or file editing required — built-in theme editor with live preview, a full theme derived from a few base colors (background, accent), adjustable fonts / size / density / corner radius, import / export of a readable theme file for sharing.
 - **Compatibility:** respects the user's Git config (credentials, SSH, GPG/SSH signing, hooks, LFS).
-- **Platforms:** Windows and Linux first, macOS later.
+- **Platforms:** Windows, Linux and macOS (all three in CI); macOS packaging later.
 - **Code quality and architecture:** a first-class goal. Code split into single-responsibility modules with interface segregation (small role-based traits); the project must be easy to **customize by anyone who forks it** (extension points, swappable implementations, no core patching needed). Rules: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Stack

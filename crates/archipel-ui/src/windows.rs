@@ -156,6 +156,18 @@ pub fn closed(cx: &mut App, handle: AnyWindowHandle) {
     }
 }
 
+/// Unloads every open project when the app quits other than by closing its
+/// last window (Cmd+Q, Dock menu, logout), so their state is saved too.
+pub fn save_on_quit(cx: &mut App) {
+    cx.on_app_quit(|cx| {
+        for (_, core) in cx.global_mut::<Windows>().open.drain(..) {
+            core.close_project();
+        }
+        async {}
+    })
+    .detach();
+}
+
 /// Redraws every window (after a theme change).
 pub fn refresh_all(cx: &mut App) {
     for handle in cx.windows() {

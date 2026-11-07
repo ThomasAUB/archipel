@@ -120,7 +120,7 @@ impl Workspace {
                     .keymap
                     .keys_for(a.id())
                     .first()
-                    .map(ToString::to_string)
+                    .map(|k| crate::keys::gpui_keystroke(k))
                     .unwrap_or_default(),
             })
             .collect()

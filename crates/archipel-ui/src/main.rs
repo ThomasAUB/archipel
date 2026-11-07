@@ -28,6 +28,8 @@ mod diff_view;
 mod file_edit;
 mod forge_panel;
 mod instance;
+mod keys;
+mod menu;
 mod palette;
 mod quick_edit;
 mod repo_view;
@@ -234,6 +236,8 @@ fn main() {
             cx.set_global(CoreRuntime(runtime));
             bind_keys(cx, &app);
             cx.set_global(windows::Windows::new(app.clone()));
+            windows::save_on_quit(cx);
+            menu::install(cx);
             windows::open_first(cx, app, warnings);
             startup::mark("window opened");
             if let Some(listener) = listener {
@@ -266,7 +270,7 @@ fn bind_keys(cx: &mut App, app: &archipel_app::App) {
         .iter()
         .filter_map(|(stroke, action)| {
             let action = workspace::action_for(action)?;
-            match KeyBinding::load(&stroke.to_string(), action, None, false, None, cx) {
+            match KeyBinding::load(&keys::gpui_keystroke(stroke), action, None, false, None, cx) {
                 Ok(b) => Some(b),
                 Err(e) => {
                     tracing::warn!(key = %stroke, error = ?e, "unusable key binding");

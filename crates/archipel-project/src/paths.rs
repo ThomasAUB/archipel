@@ -9,6 +9,10 @@ use std::path::{Component, Path, PathBuf};
 /// Separator used for relative paths written to a project file.
 const FILE_SEPARATOR: &str = "/";
 
+/// Names that differ only by case are the same file on the default file
+/// systems of Windows (NTFS) and macOS (APFS).
+const CASE_INSENSITIVE_FS: bool = cfg!(any(windows, target_os = "macos"));
+
 /// Removes `.` components and folds `..` into the preceding component.
 ///
 /// A `..` that would climb above the root is dropped; a leading `..` of a
@@ -85,14 +89,19 @@ pub(crate) fn relative(base: &Path, target: &Path) -> Option<String> {
     }
 }
 
-/// Key used to detect duplicate paths (case-insensitive on Windows).
+/// Key used to detect duplicate paths (case-insensitive on Windows and macOS).
 #[must_use]
 pub(crate) fn dedup_key(path: &Path) -> String {
     let text = path.to_string_lossy();
-    if cfg!(windows) {
-        text.replace('/', "\\").to_lowercase()
+    let text = if cfg!(windows) {
+        text.replace('/', "\\")
     } else {
         text.into_owned()
+    };
+    if CASE_INSENSITIVE_FS {
+        text.to_lowercase()
+    } else {
+        text
     }
 }
 
@@ -104,7 +113,7 @@ fn same_component(a: Component<'_>, b: Component<'_>) -> bool {
 }
 
 fn same_name(a: &OsStr, b: &OsStr) -> bool {
-    if cfg!(windows) {
+    if CASE_INSENSITIVE_FS {
         a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
     } else {
         a == b
@@ -171,5 +180,16 @@ mod tests {
     fn relative_ignores_case_on_windows() {
         let rel = relative(Path::new(r"C:\Work\Proj"), Path::new(r"c:\work\proj\app"));
         assert_eq!(rel.as_deref(), Some("app"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn relative_ignores_case_on_macos() {
+        let rel = relative(Path::new("/Users/Me/Proj"), Path::new("/users/me/proj/app"));
+        assert_eq!(rel.as_deref(), Some("app"));
+        assert_eq!(
+            dedup_key(Path::new("/Work/App")),
+            dedup_key(Path::new("/work/app"))
+        );
     }
 }
