@@ -22,7 +22,7 @@ too; prefer the names of this document in prose and in new code.
 │ REPOSITORIES │   or a Repo View       (a Repo Tab active)                │
 │   Repo List  │                                                           │
 │              │                                                           │
-│ Add repos... │                                                           │
+│ Add / Clone  │                                                           │
 ├──────────────┴───────────────────────────────────────────────────────────┤
 │ OPERATIONS DRAWER  (Ctrl+J, hidden by default)                           │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -57,7 +57,7 @@ too; prefer the names of this document in prose and in new code.
 │ v Uncategorized (1)    │
 │     * app         -3   │
 ├────────────────────────┤
-│ [Add repos...]         │
+│[Add repos...][Clone...]│
 └────────────────────────┘
   * / o  Status Dot (dirty / clean)    +2 / -3  Sync Badge (ahead / behind)
 ```
@@ -68,6 +68,7 @@ too; prefer the names of this document in prose and in new code.
 | **Repo List** | The project's repositories, grouped by category when the project has categories (flat list otherwise). |
 | **Category Header** | Collapsible group title with its repo count. Right-click opens the **Category Menu** (rename, remove). |
 | **Sidebar Repo Row** | One repo: **Status Dot** (clean / dirty / …) and **Sync Badge** (`↑ahead ↓behind`). |
+| **Add repos… / Clone…** | Add local repos (pick a repo or a folder to scan), or open the Forge Panel's **Clone** tab. |
 
 ## 3. Tab Bar
 
@@ -208,7 +209,7 @@ An Overlay sits on a transparent backdrop: clicking outside it dismisses it
 | ↳ **Action Palette** | Every action by name. | `Ctrl+Shift+P` |
 | ↳ **Prompt Palette** | The Palette as a one-line prompt: checkout target, branch name, tag name, category (with suggestions), category rename, project color, background tint, icon. (`PaletteKind`) | Actions |
 | **Commit Panel** | Multi-repo commit (spec §4): repo list with staged-file previews, branch mismatch warning, one message, push option, per-repo report and Retry failed. ([commit_panel.rs](../crates/archipel-ui/src/commit_panel.rs)) | `Ctrl+K` |
-| **Forge Panel** | Forge integration (spec §8), with four **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (open PRs of the selected repos, merge with a confirming second click), **New pull request** (create PRs for the selected repos), **Clone** (browse an account / org / group and clone). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
+| **Forge Panel** | Forge integration (spec §8), with four **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (open PRs of the selected repos, merge with a confirming second click), **New pull request** (create PRs for the selected repos), **Clone** (into a folder, by default the project file's: from URLs typed or pasted, no account needed, or by browsing an account / org / group; clones join the Repo List expanded, selected and scrolled into view). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
 | **Branches Panel** | Branch cleanup across the selected repos (all when none), spec §7: **merged, not deleted** (pre-checked) and **stale** (unmerged, no commit for 90 days) local branches; Delete asks for a confirming second click, skips a branch that moved meanwhile; Undo on a repo restores its deleted branches one at a time. ([branches_panel.rs](../crates/archipel-ui/src/branches_panel.rs)) | Branches… chip, Action Palette |
 | **Context Menus** | Row Menu, Category Menu, Tab Menu (Workspace); Graph Menu, Drop Menu (Repo View). | Right-click |
 

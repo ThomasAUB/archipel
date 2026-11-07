@@ -11,6 +11,7 @@ use gpui_kit::{
     TextRun, Window, div, font, img, px, rems,
 };
 
+use crate::forge_panel::ForgeTab;
 use crate::theme::{clean_dot, color, radius, repo_surface, row_height, text_size, ui_font};
 use crate::widgets::{button, dot, section};
 
@@ -96,8 +97,9 @@ impl Workspace {
         let row_frame = if grouped { 20.0 } else { 8.0 } + 8.0 + 8.0 + 2.0 * 8.0;
         // Group header: padding (px_2), arrow, and the gaps around the name.
         let header_frame = 16.0 + 12.0 + 2.0 * 4.0;
-        // Footer: padding, and the button's padding and border.
-        let mut fit: f32 = 16.0 + 18.0 + measure("Add repos…", size);
+        // Footer: padding, the two buttons' padding and border, the gap.
+        let mut fit: f32 =
+            16.0 + 2.0 * 18.0 + 8.0 + measure("Add repos…", size) + measure("Clone…", size);
         for group in &groups {
             if grouped {
                 let name = group.category.as_deref().unwrap_or("Uncategorized");
@@ -171,6 +173,10 @@ impl Workspace {
             }
             if !group.collapsed {
                 for row in group.rows {
+                    if self.reveal == Some(row.id) {
+                        self.sidebar_scroll.scroll_to_item(repos.len());
+                        self.reveal = None;
+                    }
                     repos.push(repo_row(row, cx));
                 }
             }
@@ -220,7 +226,9 @@ impl Workspace {
                 div()
                     .id("side-repos")
                     .flex_1()
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.sidebar_scroll)
+                    .vertical_scrollbar(&self.sidebar_scroll)
                     .px_1()
                     .children(repos),
             )
@@ -234,7 +242,10 @@ impl Workspace {
                     .child(
                         button("add-repo", "Add repos…", cx)
                             .on_click(cx.listener(|this, _, _, cx| this.add_repos(cx))),
-                    ),
+                    )
+                    .child(button("clone-repo", "Clone…", cx).on_click(cx.listener(
+                        |this, _, window, cx| this.open_forge(ForgeTab::Clone, window, cx),
+                    ))),
             )
     }
 }

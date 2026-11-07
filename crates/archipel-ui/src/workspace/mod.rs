@@ -27,8 +27,8 @@ use gpui_kit::component::Colorize as _;
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Action, AnyElement, Context, Entity, FocusHandle, KeyDownEvent, Pixels, Point, Subscription,
-    Window, div, px,
+    Action, AnyElement, Context, Entity, FocusHandle, KeyDownEvent, Pixels, Point, ScrollHandle,
+    Subscription, Window, div, px,
 };
 
 use crate::quick_edit::QuickEdit;
@@ -128,6 +128,10 @@ pub struct Workspace {
     _activation: Subscription,
     /// Folder scan progress: repos found, still running.
     scan: Option<(usize, bool)>,
+    /// Scroll position of the sidebar's repo list.
+    sidebar_scroll: ScrollHandle,
+    /// Repo the sidebar scrolls to on its next paint (just cloned).
+    reveal: Option<RepoId>,
     /// Submodule being opened from the tree (adding it to the project
     /// re-watches every repo, which can take a moment).
     opening: Option<RepoPath>,
@@ -196,6 +200,8 @@ impl Workspace {
             _accent_picked: on_accent,
             _activation: activation,
             scan: None,
+            sidebar_scroll: ScrollHandle::new(),
+            reveal: None,
             opening: None,
             title: String::new(),
             dismissed_update: None,
@@ -305,6 +311,7 @@ impl Workspace {
                 }
             }
             AppEvent::UiStateChanged => self.drop_closed_repo_views(),
+            AppEvent::ReposRevealed(ids) => self.reveal = ids.first().copied(),
             AppEvent::ProjectsChanged
             | AppEvent::TreeChanged
             | AppEvent::ForgeAccountsChanged

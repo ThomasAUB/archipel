@@ -29,6 +29,7 @@ use crate::keymap::Keymap;
 
 mod auto_fetch;
 mod categories;
+mod clone;
 mod dispatch;
 mod forge_flow;
 mod identity;
@@ -42,10 +43,8 @@ mod undo;
 mod update_check;
 mod view;
 
-pub use forge_flow::{
-    CloneOutcome, CloneProtocol, PullRequestOutcome, PullRequestPlan, PullRequestTarget,
-    RepoPullRequests,
-};
+pub use clone::{CloneOutcome, CloneProtocol, clone_dir_name, split_clone_urls};
+pub use forge_flow::{PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoPullRequests};
 pub use identity::{ProjectIcon, ProjectIdentity, initials};
 pub use projects::{DirectoryTarget, file_project_id};
 use session::Session;
@@ -83,6 +82,9 @@ pub enum AppEvent {
     ProjectOpened(ProjectId),
     /// Rows changed (refreshed summaries).
     RowsChanged(Vec<RepoId>),
+    /// Repos the user should see now (just cloned): unhidden, their
+    /// category expanded, selected. The first one is scrolled into view.
+    ReposRevealed(Vec<RepoId>),
     /// Tabs, filters, sort or selection changed.
     UiStateChanged,
     /// The watcher could not cover every worktree: refresh on focus.

@@ -173,6 +173,12 @@ impl App {
             .map(|s| (s.id.clone(), s.def.clone()))
     }
 
+    /// Where the open project is stored.
+    #[must_use]
+    pub fn project_location(&self) -> Option<ProjectLocation> {
+        lock(&self.session).as_ref().map(|s| s.location.clone())
+    }
+
     /// Edits the open project with `f`, then saves its definition where it
     /// is stored. `f` returns `None` when it changed nothing: the file is
     /// left alone and `Ok(None)` returned.

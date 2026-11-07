@@ -1,13 +1,12 @@
 //! Forge use cases (spec §8): per-repo status (pull request, CI, review),
-//! sign-in, pull requests across repos (open, list, merge), clone from an
-//! account.
+//! sign-in, pull requests across repos (open, list, merge), listing what an
+//! account can clone (the clone itself is in `clone`).
 //!
 //! Every network call runs on the scheduler's network pool; the async
 //! methods only await operation handles, so frontends run them on the app
 //! runtime and never block their UI thread.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use archipel_model::forge::{
@@ -120,25 +119,6 @@ pub struct RepoPullRequests {
     pub forge: Option<ForgeRepo>,
     /// The open pull requests (oldest first), or why they cannot be listed.
     pub result: Result<Vec<PullRequestStatus>, String>,
-}
-
-/// URL used to clone from an account.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CloneProtocol {
-    /// HTTPS (Git credential helper).
-    #[default]
-    Https,
-    /// SSH (keys).
-    Ssh,
-}
-
-/// Result of cloning one repository.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CloneOutcome {
-    /// Forge path of the repository.
-    pub repo: String,
-    /// The local repository, or the error.
-    pub result: Result<RepoPath, String>,
 }
 
 /// What a forge read is for: a repo's branch.
@@ -838,7 +818,7 @@ impl App {
         Ok(report)
     }
 
-    // ----- clone from an account -------------------------------------------
+    // ----- browse an account to clone from ---------------------------------
 
     /// The user's namespace, organizations and groups on an account.
     pub async fn forge_namespaces(
@@ -879,76 +859,5 @@ impl App {
             })
             .wait()
             .await?)
-    }
-
-    /// Clones `repos` side by side into `folder` (in parallel, bounded by the
-    /// network pool) and adds the clones to the open project. A folder that
-    /// already holds the repository is added as is.
-    pub async fn clone_into_project(
-        &self,
-        repos: &[RemoteRepo],
-        folder: &Path,
-        protocol: CloneProtocol,
-    ) -> Result<Vec<CloneOutcome>, AppError> {
-        if self.project().is_none() {
-            return Err(AppError::NoProject);
-        }
-        if repos.is_empty() {
-            return Err(AppError::InvalidInput("no repository selected".into()));
-        }
-        let mut jobs = Vec::new();
-        for repo in repos {
-            // Same short name in two groups: use the full path instead.
-            let clash = repos
-                .iter()
-                .filter(|r| r.name == repo.name)
-                .nth(1)
-                .is_some();
-            let dir = if clash {
-                repo.path.replace('/', "-")
-            } else {
-                repo.name.clone()
-            };
-            let dest = folder.join(dir);
-            let url = match protocol {
-                CloneProtocol::Https => repo.https_url.clone(),
-                CloneProtocol::Ssh => repo.ssh_url.clone(),
-            };
-            let remote = self.services.git.remote.clone();
-            let spec = OpSpec::new(None, OpClass::Network, format!("Clone {}", repo.path));
-            let handle = self.scheduler.submit(spec, move |ctx| {
-                if dest.join(".git").exists() {
-                    return Ok(RepoPath::new(&dest));
-                }
-                if dest.exists() {
-                    return Err(OpError::Refused(format!(
-                        "{} already exists",
-                        dest.display()
-                    )));
-                }
-                Ok(remote.clone_repo(&url, &dest, ctx, ctx.cancel())?)
-            });
-            jobs.push((repo.path.clone(), handle));
-        }
-        let mut outcomes = Vec::new();
-        for (repo, handle) in jobs {
-            outcomes.push(CloneOutcome {
-                repo,
-                result: handle.wait().await.map_err(|e| e.to_string()),
-            });
-        }
-        let cloned: Vec<RepoPath> = outcomes
-            .iter()
-            .filter_map(|o| o.result.as_ref().ok().cloned())
-            .collect();
-        if !cloned.is_empty() {
-            self.add_repos(&cloned)?;
-        }
-        self.emit(AppEvent::Notice(format!(
-            "Clone: {} added to the project, {} failed",
-            cloned.len(),
-            outcomes.len() - cloned.len()
-        )));
-        Ok(outcomes)
     }
 }

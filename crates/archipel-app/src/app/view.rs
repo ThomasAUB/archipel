@@ -9,7 +9,7 @@ use archipel_model::ui_state::{TabState, UiState};
 use super::{App, AppEvent, Extensions, Session, lock};
 use crate::actions::ActionContext;
 use crate::dashboard::{DashboardRow, visible_rows};
-use crate::groups::{category_filter_keys, passes_category_filter};
+use crate::groups::{category_filter_keys, normalize_category, passes_category_filter};
 
 impl App {
     /// Every row of the open project that is not hidden, in project order
@@ -124,6 +124,55 @@ impl App {
             selected: s.ui.batch_selection(),
             active_repo,
         }
+    }
+
+    /// Makes repos visible wherever the user looks for them: unhidden, their
+    /// sidebar category expanded, their category let through the dashboard
+    /// category filter, and selected (the first one active). Emits
+    /// [`AppEvent::ReposRevealed`] so the frontend scrolls to them.
+    pub fn reveal_repos(&self, ids: &[RepoId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let hidden: Vec<RepoId> = self
+            .all_rows()
+            .into_iter()
+            .filter(|r| r.hidden && ids.contains(&r.id))
+            .map(|r| r.id)
+            .collect();
+        self.set_hidden(&hidden, false);
+        let ids: Vec<RepoId> = {
+            let mut guard = lock(&self.session);
+            let Some(s) = guard.as_mut() else { return };
+            let categories: HashMap<RepoId, Option<&str>> = s
+                .def
+                .repos
+                .iter()
+                .map(|r| (r.path.id(), r.category.as_deref()))
+                .collect();
+            let keys = category_filter_keys(categories.values().copied());
+            let ids: Vec<RepoId> = ids
+                .iter()
+                .copied()
+                .filter(|id| categories.contains_key(id))
+                .collect();
+            let ui = &mut s.ui;
+            for id in &ids {
+                let category = categories.get(id).copied().flatten();
+                let key = normalize_category(category).unwrap_or_default();
+                ui.collapsed_categories.retain(|k| *k != key);
+                if !passes_category_filter(&ui.category_filters, &keys, category) {
+                    ui.category_filters.push(key);
+                }
+            }
+            if let Some((first, rest)) = ids.split_first() {
+                ui.selected_repo = Some(*first);
+                ui.selection = rest.to_vec();
+            }
+            ids
+        };
+        self.emit(AppEvent::UiStateChanged);
+        self.emit(AppEvent::ReposRevealed(ids));
     }
 
     /// Hides or unhides repos: hidden ones leave the selection and tabs and

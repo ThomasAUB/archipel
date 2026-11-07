@@ -24,7 +24,7 @@ Priority: **P0** = MVP, **P1** = v1, **P2** = later.
 
 ### 1. Projects (groups of repos) — P0
 - A project = a name + a list of local repos.
-- Add repos by manual selection **or** by scanning a parent folder (automatic `.git` detection).
+- Add repos by manual selection **or** by scanning a parent folder (automatic `.git` detection) **or** by cloning from a URL (several at once, any URL `git clone` accepts, no forge account needed).
 - The definition is stored in a readable file (`archipel.toml`), so it can be versioned and shared with the team.
 - P2: import from submodules, `repo` manifest, VS Code workspace.
 

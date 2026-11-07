@@ -1,7 +1,8 @@
 //! The forge panel (spec §8): accounts (sign in with a personal access
 //! token, sign out), open pull requests of the selected repos (merge them),
 //! new pull requests for the selected repos (one per repo, linked), and
-//! clone from an account / organization / group.
+//! clone: from URLs (no account needed) or from an account / organization /
+//! group.
 //!
 //! Every forge call runs on the app runtime (scheduler network pool); the
 //! panel only awaits the results.
@@ -12,17 +13,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use archipel_app::forge::{ci_label, review_label};
-use archipel_app::{App as Core, CloneProtocol, PullRequestPlan, RepoPullRequests};
+use archipel_app::{
+    App as Core, CloneOutcome, CloneProtocol, PullRequestPlan, RepoPullRequests, clone_dir_name,
+    split_clone_urls,
+};
 use archipel_model::RepoId;
 use archipel_model::forge::{
     ForgeAccount, ForgeKind, ForgeRepo, MergeMethod, MergeState, Namespace, PullRequestStatus,
     RemoteRepo,
 };
 use archipel_theme::ColorToken as T;
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, PathPromptOptions, SharedString, Window, div, px};
+use gpui_kit::{
+    Context, Entity, EventEmitter, PathPromptOptions, SharedString, Subscription, Window, div, px,
+};
 
 use crate::theme::{color, radius};
 use crate::widgets::{button, chip, primary_button, section};
@@ -36,7 +42,7 @@ pub enum ForgeTab {
     Open(Vec<RepoId>),
     /// New pull requests for these repos (all when empty).
     Create(Vec<RepoId>),
-    /// Clone from an account.
+    /// Clone from URLs or from an account.
     Clone,
 }
 
@@ -79,6 +85,8 @@ pub struct ForgePanel {
     target: Entity<InputState>,
     draft: bool,
     // Clone.
+    /// URLs to clone (one or several).
+    url: Entity<InputState>,
     account: Option<ForgeAccount>,
     namespaces: Vec<Namespace>,
     namespace: Option<Namespace>,
@@ -87,6 +95,8 @@ pub struct ForgePanel {
     folder: Option<PathBuf>,
     ssh: bool,
     report: Vec<Line>,
+    /// Enter in the URL field clones.
+    _url_enter: Subscription,
 }
 
 impl EventEmitter<ForgePanelEvent> for ForgePanel {}
@@ -133,6 +143,16 @@ impl ForgePanel {
             cx,
         );
         let filter = input("Filter repositories", window, cx);
+        let url = input(
+            "https://host/owner/repo.git or git@host:owner/repo.git (several: separate with spaces)",
+            window,
+            cx,
+        );
+        let url_enter = cx.subscribe_in(&url, window, |p: &mut Self, _, event, window, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                p.clone_urls(window, cx);
+            }
+        });
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(5)
@@ -156,6 +176,7 @@ impl ForgePanel {
             description,
             target,
             draft: false,
+            url,
             account: None,
             namespaces: Vec::new(),
             namespace: None,
@@ -164,6 +185,7 @@ impl ForgePanel {
             folder: None,
             ssh: false,
             report: Vec::new(),
+            _url_enter: url_enter,
         };
         panel.show(tab, window, cx);
         panel
@@ -186,6 +208,10 @@ impl ForgePanel {
             ForgeTab::Open(ids) => self.list_open(ids.clone(), window, cx),
             ForgeTab::Create(ids) => self.prepare(ids.clone(), window, cx),
             ForgeTab::Clone => {
+                if self.folder.is_none() {
+                    self.folder = self.core.default_clone_folder();
+                }
+                self.url.update(cx, |i, cx| i.focus(window, cx));
                 if self.account.is_none()
                     && let Some(first) = self.accounts.first().cloned()
                 {
@@ -523,29 +549,72 @@ impl ForgePanel {
             cx,
             |p, result, _, cx| match result {
                 Ok(outcomes) => {
-                    p.report = outcomes
-                        .into_iter()
-                        .map(|o| match o.result {
-                            Ok(path) => (
-                                format!("{}: {}", o.repo, path.as_path().display()),
-                                None,
-                                false,
-                            ),
-                            Err(e) => (format!("{}: {e}", o.repo), None, true),
-                        })
-                        .collect();
                     for (_, on) in &mut p.repos {
                         *on = false;
                     }
-                    let ok = p.report.iter().filter(|l| !l.2).count();
-                    cx.emit(ForgePanelEvent::Notice(format!(
-                        "Clone: {ok} added to the project, {} failed",
-                        p.report.len() - ok
-                    )));
+                    p.report_clones(outcomes, cx);
                 }
                 Err(e) => p.error = Some(e.to_string()),
             },
         );
+    }
+
+    /// Clones the URLs typed in the URL field.
+    fn clone_urls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let urls = split_clone_urls(&self.url.read(cx).value());
+        if urls.is_empty() {
+            self.error = Some("Enter the URL of the repository to clone".into());
+            cx.notify();
+            return;
+        }
+        let Some(folder) = self.folder.clone() else {
+            self.error = Some("Choose the folder to clone into".into());
+            cx.notify();
+            return;
+        };
+        let core = self.core.clone();
+        self.run(
+            async move { core.clone_urls_into_project(&urls, &folder).await },
+            window,
+            cx,
+            |p, result, window, cx| match result {
+                Ok(outcomes) => {
+                    // Keep only the URLs that failed, for a retry.
+                    let failed: Vec<&str> = outcomes
+                        .iter()
+                        .filter(|o| o.result.is_err())
+                        .map(|o| o.repo.as_str())
+                        .collect();
+                    let left = failed.join(" ");
+                    p.url.update(cx, |i, cx| i.set_value(left, window, cx));
+                    p.report_clones(outcomes, cx);
+                }
+                Err(e) => p.error = Some(e.to_string()),
+            },
+        );
+    }
+
+    /// Shows the per-repo result of a clone and reports it.
+    fn report_clones(&mut self, outcomes: Vec<CloneOutcome>, cx: &mut Context<Self>) {
+        self.report = outcomes
+            .into_iter()
+            .map(|o| match o.result {
+                Ok(path) => (
+                    format!("{}: {}", o.repo, path.as_path().display()),
+                    None,
+                    false,
+                ),
+                Err(e) => (format!("{}: {e}", o.repo), None, true),
+            })
+            .collect();
+        let ok = self.report.iter().filter(|l| !l.2).count();
+        cx.emit(ForgePanelEvent::Notice(format!(
+            "Clone: {ok} added to the project, {} failed",
+            self.report.len() - ok
+        )));
     }
 
     // ----- rendering --------------------------------------------------------
@@ -877,12 +946,112 @@ impl ForgePanel {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_lines)] // declarative element tree
+    /// Clone tab: the destination folder, then the two sources (URLs, which
+    /// need no account, and an account's repositories).
     fn render_clone(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let folder = self.folder.as_ref().map_or_else(
+            || "No folder chosen".to_owned(),
+            |f| f.display().to_string(),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .flex_1()
+            .min_h_0()
+            .child(section("CLONE INTO", cx))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        button("f-folder", "Choose folder…", cx)
+                            .on_click(cx.listener(|_, _, _, cx| Self::pick_folder(cx))),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(color(cx, T::FgMuted))
+                            .child(folder),
+                    ),
+            )
+            .child(self.render_clone_url(cx))
+            .child(section("FROM AN ACCOUNT", cx))
+            .child(self.render_clone_account(cx))
+            .into_any_element()
+    }
+
+    /// Clone from URLs: the field, where each one lands, the button.
+    fn render_clone_url(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let urls = split_clone_urls(&self.url.read(cx).value());
+        let names: Vec<String> = urls
+            .iter()
+            .map(|u| clone_dir_name(u).unwrap_or_else(|| format!("? ({u})")))
+            .collect();
+        let (hint, tone) = if names.is_empty() {
+            (
+                "Any URL git clone accepts (HTTPS, SSH, a local path). Credentials come from \
+                 your Git setup: no forge account needed."
+                    .to_owned(),
+                T::FgSubtle,
+            )
+        } else if names.iter().any(|n| n.starts_with('?')) {
+            (
+                format!("Cannot name a folder after: {}", names.join(", ")),
+                T::StatusWarning,
+            )
+        } else {
+            (format!("Creates {}", names.join(", ")), T::FgMuted)
+        };
+        let label = match urls.len() {
+            0 | 1 => "Clone into the project".to_owned(),
+            n => format!("Clone {n} into the project"),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(section("FROM A URL", cx))
+            .child(Input::new(&self.url))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(color(cx, tone))
+                            .child(hint),
+                    )
+                    .child(
+                        primary_button("f-clone-url", label, cx)
+                            .on_click(cx.listener(|p, _, window, cx| p.clone_urls(window, cx))),
+                    ),
+            )
+    }
+
+    /// Clone from an account: account, namespace, repositories.
+    #[allow(clippy::too_many_lines)] // declarative element tree
+    fn render_clone_account(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.accounts.is_empty() {
             return div()
-                .text_color(color(cx, T::FgMuted))
-                .child("Sign in to a forge first (Accounts).")
+                .flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .text_color(color(cx, T::FgMuted))
+                        .child("Sign in to a forge to browse an account's repositories."),
+                )
+                .child(button("f-to-accounts", "Accounts", cx).on_click(
+                    cx.listener(|p, _, window, cx| p.show(ForgeTab::Accounts, window, cx)),
+                ))
                 .into_any_element();
         }
         let account_chips = self.accounts.clone().into_iter().enumerate().map(|(i, a)| {
@@ -948,10 +1117,6 @@ impl ForgePanel {
                     )
             });
         let chosen = self.repos.iter().filter(|(_, on)| *on).count();
-        let folder = self.folder.as_ref().map_or_else(
-            || "No folder chosen".to_owned(),
-            |f| f.display().to_string(),
-        );
         let ssh = self.ssh;
         div()
             .flex()
@@ -959,7 +1124,6 @@ impl ForgePanel {
             .gap_2()
             .flex_1()
             .min_h_0()
-            .child(section("ACCOUNT", cx))
             .child(div().flex().flex_wrap().gap_1().children(account_chips))
             .child(section("USER, ORGANIZATION OR GROUP", cx))
             .child(div().flex().flex_wrap().gap_1().children(ns_chips))
@@ -972,24 +1136,6 @@ impl ForgePanel {
                     .min_h(px(120.0))
                     .overflow_y_scrollbar()
                     .children(repos),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        button("f-folder", "Choose folder…", cx)
-                            .on_click(cx.listener(|_, _, _, cx| Self::pick_folder(cx))),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(color(cx, T::FgMuted))
-                            .child(folder),
-                    ),
             )
             .child(
                 div()
