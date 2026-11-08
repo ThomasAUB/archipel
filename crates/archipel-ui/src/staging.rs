@@ -727,11 +727,25 @@ fn render_branch<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
         .into_any_element()
 }
 
-/// The panel: actions, branch, unstaged files, staged files, commit box.
-/// `with_actions` adds the Repo Actions Bar on top; the repo tab shows it
-/// in its toolbar instead.
-pub fn render<V: Staging>(v: &mut V, with_actions: bool, cx: &mut Context<V>) -> AnyElement {
-    let actions = with_actions.then(|| render_actions(v, None, cx));
+/// The panel: actions, branch, unstaged files, staged files, commit box
+/// (the quick edit pane).
+pub fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
+    let actions = render_actions(v, None, cx);
+    render_panel(v, Some(actions), cx)
+}
+
+/// The panel without its Repo Actions Bar, which the repo tab shows in its
+/// toolbar ([`render_actions`]).
+pub fn render_body<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
+    render_panel(v, None, cx)
+}
+
+/// `actions` (if any), the operation banner, branch, files, commit box.
+fn render_panel<V: Staging>(
+    v: &mut V,
+    actions: Option<AnyElement>,
+    cx: &mut Context<V>,
+) -> AnyElement {
     let top = div()
         .flex()
         .flex_col()

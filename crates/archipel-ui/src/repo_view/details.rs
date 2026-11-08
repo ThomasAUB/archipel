@@ -30,7 +30,7 @@ impl RepoView {
     /// toolbar.
     pub(super) fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.wip_selected {
-            return staging::render(self, false, cx);
+            return staging::render_body(self, cx);
         }
         let selection = self.render_selection(cx);
         div()

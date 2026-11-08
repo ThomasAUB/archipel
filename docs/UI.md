@@ -158,8 +158,8 @@ Panels used in more than one place.
 ### Staging Panel
 
 The working-copy panel, shared by the Repo View (WIP Row selected) and the
-Quick Edit Pane. In the Repo View, the Repo Actions Bar is in the Repo Toolbar
-instead. [staging.rs](../crates/archipel-ui/src/staging.rs).
+Quick Edit Pane (`render`). In the Repo View, the Repo Actions Bar is in the
+Repo Toolbar instead (`render_body`). [staging.rs](../crates/archipel-ui/src/staging.rs).
 
 ```text
 ┌─ Repo Actions Bar ─────────────────────────────────┐

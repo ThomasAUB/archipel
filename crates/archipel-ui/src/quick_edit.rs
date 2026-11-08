@@ -294,7 +294,7 @@ impl Render for QuickEdit {
             }))
             .child(div().px_2().pt_2().child(self.render_header(cx)))
             // The same panel as the repo tab's uncommitted changes.
-            .child(staging::render(self, true, cx))
+            .child(staging::render(self, cx))
             .children(self.status.clone().map(|s| {
                 div()
                     .px_2()
