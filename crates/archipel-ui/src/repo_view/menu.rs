@@ -5,12 +5,15 @@ use archipel_app::forge::pick_remote;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::requests::{CheckoutTarget, DeleteMode, MergeMode, ResetMode, StashApplyMode};
 use archipel_model::submodule::SubmoduleInfo;
+use archipel_model::ui_state::GraphColumn;
 use archipel_model::{Oid, RepoPath};
 use archipel_ops::{OpClass, OpError};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, ClipboardItem, Context, Pixels, Point, Window};
 
-use crate::widgets::{SHORT_OID, context_menu, menu_item, menu_separator, popup_at};
+use crate::widgets::{
+    SHORT_OID, check_menu_item, context_menu, menu_item, menu_separator, popup_at,
+};
 
 use super::RepoView;
 use super::dialogs::{Confirm, NameForm};
@@ -29,6 +32,9 @@ pub(super) enum MenuTarget {
     /// Branch `source` dropped on branch `target` (drag and drop of
     /// branch badges or refs panel rows).
     Drop { source: RefTip, target: RefTip },
+    /// The commit graph header: its optional columns, the hidden ones
+    /// listed.
+    Columns(Vec<GraphColumn>),
 }
 
 /// An action picked in a right-click menu.
@@ -66,6 +72,8 @@ pub(super) enum MenuAction {
         init: bool,
     },
     Copy(String),
+    /// Shows or hides a commit graph column.
+    ToggleColumn(GraphColumn),
 }
 
 impl MenuAction {
@@ -96,6 +104,9 @@ enum MenuEntry {
         label: String,
         action: MenuAction,
         danger: bool,
+        /// On/off entries: whether the tick is shown. `None`: a plain
+        /// action.
+        checked: Option<bool>,
     },
     Separator,
 }
@@ -105,6 +116,7 @@ fn item(label: impl Into<String>, action: MenuAction) -> MenuEntry {
         label: label.into(),
         action,
         danger: false,
+        checked: None,
     }
 }
 
@@ -113,6 +125,7 @@ fn danger(label: impl Into<String>, action: MenuAction) -> MenuEntry {
         label: label.into(),
         action,
         danger: true,
+        checked: None,
     }
 }
 
@@ -129,7 +142,21 @@ fn menu_entries(
         MenuTarget::Stash(oid) => stash_entries(*oid),
         MenuTarget::Drop { source, target } => drop_entries(source, target, current),
         MenuTarget::Submodule(sub) => submodule_entries(sub),
+        MenuTarget::Columns(hidden) => column_entries(hidden),
     }
+}
+
+/// The menu of the graph header: each optional column, ticked when shown.
+fn column_entries(hidden: &[GraphColumn]) -> Vec<MenuEntry> {
+    GraphColumn::ALL
+        .into_iter()
+        .map(|c| MenuEntry::Item {
+            label: c.label().into(),
+            action: MenuAction::ToggleColumn(c),
+            danger: false,
+            checked: Some(!hidden.contains(&c)),
+        })
+        .collect()
 }
 
 /// The menu of commit `oid`, which `refs` point at.
@@ -483,6 +510,11 @@ impl RepoView {
                 self.status = Some(format!("Copied {text}"));
                 cx.notify();
             }
+            MenuAction::ToggleColumn(column) => {
+                self.core
+                    .update_ui_state(|ui| ui.toggle_graph_column(column));
+                cx.notify();
+            }
         }
     }
 
@@ -500,11 +532,15 @@ impl RepoView {
                     label,
                     action,
                     danger,
-                } => menu_item(("repo-menu", i), label, danger, cx)
-                    .on_click(cx.listener(move |v, _, window, cx| {
-                        v.choose(action.clone(), window, cx);
-                    }))
-                    .into_any_element(),
+                    checked,
+                } => match checked {
+                    Some(on) => check_menu_item(("repo-menu", i), label, on, cx),
+                    None => menu_item(("repo-menu", i), label, danger, cx),
+                }
+                .on_click(cx.listener(move |v, _, window, cx| {
+                    v.choose(action.clone(), window, cx);
+                }))
+                .into_any_element(),
             });
         let menu = context_menu(cx)
             .on_mouse_down_out(cx.listener(|v, _, _, cx| {
@@ -558,6 +594,32 @@ mod tests {
                 MenuEntry::Separator => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn column_menu_ticks_the_shown_columns() {
+        let entries = menu_entries(&MenuTarget::Columns(vec![GraphColumn::Age]), None, |_| true);
+        let ticks: Vec<(&str, Option<bool>)> = entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Item { label, checked, .. } => Some((label.as_str(), *checked)),
+                MenuEntry::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            ticks,
+            [
+                ("Author", Some(true)),
+                ("Age", Some(false)),
+                ("Date", Some(true)),
+                ("Commit", Some(true))
+            ]
+        );
+        let toggles: Vec<MenuAction> = GraphColumn::ALL
+            .into_iter()
+            .map(MenuAction::ToggleColumn)
+            .collect();
+        assert_eq!(actions(&entries), toggles.iter().collect::<Vec<_>>());
     }
 
     #[test]

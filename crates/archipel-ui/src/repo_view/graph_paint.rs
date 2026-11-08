@@ -7,11 +7,12 @@ use archipel_graph::{Edge, EdgeKind, GraphRow};
 use archipel_model::Timestamp;
 use archipel_model::refs::RefKind;
 use archipel_model::requests::StashApplyMode;
+use archipel_model::ui_state::GraphColumn;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, ClickEvent, Context, Hsla, MouseButton, MouseDownEvent, PathBuilder,
-    Pixels, Point, SharedString, Window, canvas, div, point, px, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, Hsla, MouseButton, MouseDownEvent,
+    PathBuilder, Pixels, Point, SharedString, Window, canvas, div, point, px, uniform_list,
 };
 
 use crate::theme::{color, lane, mono_font, radius, row_height};
@@ -30,8 +31,10 @@ const NODE_RADIUS: f32 = 4.0;
 const HEAD_NODE_RADIUS: f32 = 6.0;
 /// Width of the author column of the commit rows.
 const AUTHOR_WIDTH: f32 = 140.0;
-/// Width of the date column of the commit and stash rows.
-const DATE_WIDTH: f32 = 80.0;
+/// Width of the age column of the commit and stash rows.
+const AGE_WIDTH: f32 = 80.0;
+/// Width of the exact date and time column ("08/11/2026 14:32").
+const DATE_WIDTH: f32 = 115.0;
 /// Width of the commit id column of the commit and stash rows.
 const OID_WIDTH: f32 = 70.0;
 
@@ -51,11 +54,13 @@ impl RepoView {
                 .child("Loading history…")
                 .into_any_element();
         }
+        let columns = self.shown_columns();
+        let header = self.render_graph_header(&columns, cx);
         let count = usize::try_from(self.item_count()).unwrap_or(0);
         let list = uniform_list(
             "graph",
             count,
-            cx.processor(|this: &mut Self, range: Range<usize>, _window, cx| {
+            cx.processor(move |this: &mut Self, range: Range<usize>, _window, cx| {
                 let items: Vec<Item> = (u32::try_from(range.start).unwrap_or(0)
                     ..u32::try_from(range.end).unwrap_or(0))
                     .map(|i| this.item_at(i))
@@ -97,7 +102,7 @@ impl RepoView {
                         }
                         Item::Stash(k) => {
                             if let Some(base) = row_at(this.placed()[k].row) {
-                                out.push(this.render_stash_row(k, base, cx));
+                                out.push(this.render_stash_row(k, base, &columns, cx));
                             }
                         }
                         Item::Commit(r) => {
@@ -105,7 +110,7 @@ impl RepoView {
                                 let lane =
                                     this.placed().iter().find(|s| s.row == r).map(|s| s.lane);
                                 let wip = this.wip_lane_at(r);
-                                out.push(this.render_row(row, lane, wip, cx));
+                                out.push(this.render_row(row, lane, wip, &columns, cx));
                             }
                         }
                     }
@@ -113,8 +118,60 @@ impl RepoView {
                 out
             }),
         );
-        scroll_list("graph-scroll", list)
-            .handle(&self.scroll)
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(scroll_list("graph-scroll", list).handle(&self.scroll)),
+            )
+            .into_any_element()
+    }
+
+    /// The optional columns shown, in display order.
+    fn shown_columns(&self) -> Vec<GraphColumn> {
+        let ui = self.core.ui_state().unwrap_or_default();
+        GraphColumn::ALL
+            .into_iter()
+            .filter(|c| ui.shows_graph_column(*c))
+            .collect()
+    }
+
+    /// Titles of the graph columns, lined up with the rows; right-click
+    /// chooses the optional ones.
+    fn render_graph_header(&self, columns: &[GraphColumn], cx: &mut Context<Self>) -> AnyElement {
+        let hidden: Vec<GraphColumn> = GraphColumn::ALL
+            .into_iter()
+            .filter(|c| !columns.contains(c))
+            .collect();
+        div()
+            .id("graph-header")
+            .flex_none()
+            .w_full()
+            .h(row_height(cx))
+            .flex()
+            .items_center()
+            .gap_2()
+            .pr_3()
+            .border_b_1()
+            .border_color(color(cx, T::BorderSubtle))
+            .text_xs()
+            .text_color(color(cx, T::FgSubtle))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |v, e: &MouseDownEvent, _, cx| {
+                    v.open_menu(MenuTarget::Columns(hidden.clone()), e.position, cx);
+                }),
+            )
+            .child(div().w(px(lane_x(self.lane_count()))).flex_none())
+            .child(div().flex_1().min_w(px(0.0)).truncate().child("Message"))
+            .children(columns.iter().map(|c| column_cell(*c, cx).child(c.label())))
             .into_any_element()
     }
 
@@ -221,6 +278,7 @@ impl RepoView {
         row: &GraphRow,
         stash_lane: Option<u32>,
         wip_lane: Option<u32>,
+        columns: &[GraphColumn],
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let meta = self.meta.get(&row.row).cloned();
@@ -228,13 +286,13 @@ impl RepoView {
         // Same width on every row so the text columns line up.
         let width = px(lane_x(self.lane_count()));
         let lanes = graph_cell(row, stash_lane, wip_lane, cx);
-        let (summary, author, date) = meta.map_or_else(
-            || (String::new(), String::new(), String::new()),
+        let (summary, author, time) = meta.map_or_else(
+            || (String::new(), String::new(), None),
             |m| {
                 (
                     m.summary.clone(),
                     m.author_name.clone(),
-                    archipel_app::dashboard::relative_time(m.commit_time, Timestamp::now()),
+                    Some(m.commit_time),
                 )
             },
         );
@@ -376,31 +434,16 @@ impl RepoView {
                     .when(is_head, |d| d.font_weight(gpui_kit::FontWeight::SEMIBOLD))
                     .child(summary),
             )
-            .child(
-                div()
-                    .w(px(AUTHOR_WIDTH))
-                    .flex_none()
-                    .truncate()
-                    .text_color(color(cx, T::FgMuted))
-                    .child(author),
-            )
-            .child(
-                div()
-                    .w(px(DATE_WIDTH))
-                    .flex_none()
-                    .truncate()
-                    .text_xs()
-                    .text_color(color(cx, T::FgSubtle))
-                    .child(date),
-            )
-            .child(
-                div()
-                    .w(px(OID_WIDTH))
-                    .text_xs()
-                    .font_family(mono_font(cx))
-                    .text_color(color(cx, T::FgSubtle))
-                    .child(oid.short(SHORT_OID)),
-            )
+            .children(columns.iter().map(|c| {
+                let text = match c {
+                    GraphColumn::Author => author.clone(),
+                    GraphColumn::Age | GraphColumn::Date => {
+                        time.map(|t| time_text(*c, t)).unwrap_or_default()
+                    }
+                    GraphColumn::Commit => oid.short(SHORT_OID),
+                };
+                column_cell(*c, cx).child(text)
+            }))
             .into_any_element()
     }
 
@@ -412,6 +455,7 @@ impl RepoView {
         &mut self,
         k: usize,
         base: &GraphRow,
+        columns: &[GraphColumn],
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let stash = &self.placed()[k];
@@ -421,7 +465,7 @@ impl RepoView {
         let cell = stash_cell(base, stash.lane, linked, self.wip_lane_at(stash.row), cx);
         let name = format!("stash@{{{}}}", stash.entry.index);
         let title = stash_title(&stash.entry.message).to_owned();
-        let date = archipel_app::dashboard::relative_time(stash.entry.time, Timestamp::now());
+        let time = stash.entry.time;
         let selected = self.stash_selected == Some(oid);
         let tint = color(cx, T::StatusDirty);
         let hover = color(cx, T::BgHover);
@@ -484,24 +528,47 @@ impl RepoView {
                     .text_color(color(cx, T::FgMuted))
                     .child(title),
             )
-            .child(
-                div()
-                    .w(px(DATE_WIDTH))
-                    .flex_none()
-                    .truncate()
-                    .text_xs()
-                    .text_color(color(cx, T::FgSubtle))
-                    .child(date),
-            )
-            .child(
-                div()
-                    .w(px(OID_WIDTH))
-                    .text_xs()
-                    .font_family(mono_font(cx))
-                    .text_color(color(cx, T::FgSubtle))
-                    .child(oid.short(SHORT_OID)),
-            )
+            // Stashes have no author; the columns after it stay lined up
+            // since they are right-aligned.
+            .children(columns.iter().filter_map(|c| {
+                let text = match c {
+                    GraphColumn::Author => return None,
+                    GraphColumn::Age | GraphColumn::Date => time_text(*c, time),
+                    GraphColumn::Commit => oid.short(SHORT_OID),
+                };
+                Some(column_cell(*c, cx).child(text))
+            }))
             .into_any_element()
+    }
+}
+
+/// Time `t` as shown in date column `column`: relative, or exact.
+fn time_text(column: GraphColumn, t: Timestamp) -> String {
+    if column == GraphColumn::Date {
+        archipel_app::dashboard::exact_time(t)
+    } else {
+        archipel_app::dashboard::relative_time(t, Timestamp::now())
+    }
+}
+
+/// An empty cell of optional column `column`, sized and styled for it.
+fn column_cell(column: GraphColumn, cx: &App) -> Div {
+    let cell = div().flex_none().truncate();
+    match column {
+        GraphColumn::Author => cell.w(px(AUTHOR_WIDTH)).text_color(color(cx, T::FgMuted)),
+        GraphColumn::Age => cell
+            .w(px(AGE_WIDTH))
+            .text_xs()
+            .text_color(color(cx, T::FgSubtle)),
+        GraphColumn::Date => cell
+            .w(px(DATE_WIDTH))
+            .text_xs()
+            .text_color(color(cx, T::FgSubtle)),
+        GraphColumn::Commit => cell
+            .w(px(OID_WIDTH))
+            .text_xs()
+            .font_family(mono_font(cx))
+            .text_color(color(cx, T::FgSubtle)),
     }
 }
 

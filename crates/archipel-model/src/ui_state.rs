@@ -23,6 +23,35 @@ pub enum SortDirection {
     Descending,
 }
 
+/// An optional column of a repo view's commit graph, after the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GraphColumn {
+    /// Author name.
+    Author,
+    /// Commit time, relative to now.
+    Age,
+    /// Commit date and time, to the minute.
+    Date,
+    /// Short commit id.
+    Commit,
+}
+
+impl GraphColumn {
+    /// Every optional column, in display order.
+    pub const ALL: [Self; 4] = [Self::Author, Self::Age, Self::Date, Self::Commit];
+
+    /// Title shown in the graph header and its menu.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Author => "Author",
+            Self::Age => "Age",
+            Self::Date => "Date",
+            Self::Commit => "Commit",
+        }
+    }
+}
+
 /// UI state remembered per project: the *private* project state, never
 /// written to the shared `archipel.toml`.
 ///
@@ -72,6 +101,9 @@ pub struct UiState {
     /// Collapsed sections of a repo view's refs pane, by title (`LOCAL`,
     /// `REMOTE`, `TAGS`, `SUBMODULES`), shared by all repo views.
     pub collapsed_ref_sections: Vec<String>,
+    /// Commit graph columns hidden in the repo views; the exact date and
+    /// time is hidden until asked for.
+    pub hidden_graph_columns: Vec<GraphColumn>,
     /// Categories the dashboard is filtered on (any of them); the empty
     /// name is "Uncategorized". Empty: no category filter.
     pub category_filters: Vec<String>,
@@ -87,6 +119,21 @@ impl UiState {
     #[must_use]
     pub fn is_hidden(&self, repo: RepoId) -> bool {
         self.hidden_repos.contains(&repo)
+    }
+
+    /// Whether the commit graph shows `column`.
+    #[must_use]
+    pub fn shows_graph_column(&self, column: GraphColumn) -> bool {
+        !self.hidden_graph_columns.contains(&column)
+    }
+
+    /// Hides `column` of the commit graph when shown, shows it when hidden.
+    pub fn toggle_graph_column(&mut self, column: GraphColumn) {
+        if let Some(i) = self.hidden_graph_columns.iter().position(|c| *c == column) {
+            self.hidden_graph_columns.remove(i);
+        } else {
+            self.hidden_graph_columns.push(column);
+        }
     }
 
     /// The repos batch actions apply to: the multi-selection, else the
@@ -125,6 +172,7 @@ impl Default for UiState {
             collapsed_nodes: Vec::new(),
             collapsed_categories: Vec::new(),
             collapsed_ref_sections: Vec::new(),
+            hidden_graph_columns: vec![GraphColumn::Date],
             category_filters: Vec::new(),
             accent: None,
             icon: None,
@@ -144,6 +192,17 @@ mod tests {
         let state: UiState = serde_json::from_str(old).unwrap();
         assert!(state.hidden_repos.is_empty());
         assert!(!state.show_dependency_tree);
+        assert_eq!(state.hidden_graph_columns, [GraphColumn::Date]);
+    }
+
+    #[test]
+    fn graph_columns_toggle() {
+        let mut state = UiState::default();
+        state.toggle_graph_column(GraphColumn::Author);
+        assert!(!state.shows_graph_column(GraphColumn::Author));
+        assert!(state.shows_graph_column(GraphColumn::Age));
+        state.toggle_graph_column(GraphColumn::Author);
+        assert!(state.shows_graph_column(GraphColumn::Author));
     }
 
     #[test]

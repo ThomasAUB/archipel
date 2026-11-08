@@ -149,6 +149,81 @@ pub fn relative_time(then: Timestamp, now: Timestamp) -> String {
     }
 }
 
+/// Order of the day, month and year in a written date, which varies by
+/// country.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateOrder {
+    /// 08/11/2026: most of the world.
+    DayMonthYear,
+    /// 11/08/2026: the United States and a few others.
+    MonthDayYear,
+    /// 2026/11/08: China, Japan, Korea, Hungary…
+    YearMonthDay,
+}
+
+impl DateOrder {
+    /// The order of the system locale, read once.
+    #[must_use]
+    pub fn system() -> Self {
+        static ORDER: std::sync::OnceLock<DateOrder> = std::sync::OnceLock::new();
+        *ORDER.get_or_init(|| {
+            sys_locale::get_locale().map_or(Self::DayMonthYear, |l| Self::for_locale(&l))
+        })
+    }
+
+    /// The order used with locale `tag` (`fr-FR`, `en_US.UTF-8`, `ja`…):
+    /// by region when it has one, else by language.
+    #[must_use]
+    pub fn for_locale(tag: &str) -> Self {
+        let tag = tag.split(['.', '@']).next().unwrap_or_default();
+        let mut parts = tag.split(['-', '_']);
+        let language = parts.next().unwrap_or_default().to_ascii_lowercase();
+        // The region is the first two-letter subtag after the language
+        // (`zh-Hant-TW` has a script before it).
+        let region = parts.find(|p| p.len() == 2).map(str::to_ascii_uppercase);
+        match region.as_deref() {
+            Some("US" | "PH" | "FM" | "MH" | "PW" | "AS" | "GU" | "MP" | "PR" | "UM" | "VI") => {
+                Self::MonthDayYear
+            }
+            Some("CN" | "TW" | "HK" | "MO" | "JP" | "KR" | "KP" | "HU" | "LT" | "MN" | "IR") => {
+                Self::YearMonthDay
+            }
+            Some(_) => Self::DayMonthYear,
+            None => match language.as_str() {
+                "en" => Self::MonthDayYear,
+                "zh" | "ja" | "ko" | "hu" | "lt" | "mn" | "fa" => Self::YearMonthDay,
+                _ => Self::DayMonthYear,
+            },
+        }
+    }
+
+    const fn pattern(self) -> &'static str {
+        match self {
+            Self::DayMonthYear => "%d/%m/%Y %H:%M",
+            Self::MonthDayYear => "%m/%d/%Y %H:%M",
+            Self::YearMonthDay => "%Y/%m/%d %H:%M",
+        }
+    }
+}
+
+/// Date and time of `t` to the minute, in the local time zone, the date
+/// written in the system locale's order ("08/11/2026 14:32").
+#[must_use]
+pub fn exact_time(t: Timestamp) -> String {
+    exact_time_in(t, &jiff::tz::TimeZone::system(), DateOrder::system())
+}
+
+/// [`exact_time`] in time zone `tz`, the date in `order`.
+fn exact_time_in(t: Timestamp, tz: &jiff::tz::TimeZone, order: DateOrder) -> String {
+    jiff::Timestamp::from_second(t.0)
+        .map(|ts| {
+            ts.to_zoned(tz.clone())
+                .strftime(order.pattern())
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 fn status_cell(row: &DashboardRow) -> Option<Cell> {
     match &row.status {
         RepoStatus::Ready(_) => None,
@@ -660,6 +735,51 @@ mod tests {
     use archipel_model::{ChangeCounts, ChangedFiles, Upstream};
 
     use super::*;
+
+    #[test]
+    fn exact_time_is_to_the_minute_in_the_locale_order() {
+        // 2026-11-08 14:32:59 UTC.
+        let t = Timestamp(1_794_148_379);
+        let utc = jiff::tz::TimeZone::UTC;
+        assert_eq!(
+            exact_time_in(t, &utc, DateOrder::DayMonthYear),
+            "08/11/2026 14:32"
+        );
+        assert_eq!(
+            exact_time_in(t, &utc, DateOrder::MonthDayYear),
+            "11/08/2026 14:32"
+        );
+        assert_eq!(
+            exact_time_in(t, &utc, DateOrder::YearMonthDay),
+            "2026/11/08 14:32"
+        );
+        let paris = jiff::tz::TimeZone::get("Europe/Paris").unwrap();
+        assert_eq!(
+            exact_time_in(t, &paris, DateOrder::DayMonthYear),
+            "08/11/2026 15:32"
+        );
+    }
+
+    #[test]
+    fn date_order_follows_the_locale() {
+        use DateOrder as O;
+        for (tag, order) in [
+            ("fr-FR", O::DayMonthYear),
+            ("fr_FR.UTF-8", O::DayMonthYear),
+            ("en-GB", O::DayMonthYear),
+            ("en-US", O::MonthDayYear),
+            ("en_US.UTF-8", O::MonthDayYear),
+            ("en", O::MonthDayYear),
+            ("es-US", O::MonthDayYear),
+            ("ja-JP", O::YearMonthDay),
+            ("zh-Hant-TW", O::YearMonthDay),
+            ("ko", O::YearMonthDay),
+            ("de", O::DayMonthYear),
+            ("", O::DayMonthYear),
+        ] {
+            assert_eq!(DateOrder::for_locale(tag), order, "{tag}");
+        }
+    }
 
     fn row(name: &str, f: impl FnOnce(&mut RepoSummary)) -> DashboardRow {
         let mut s = RepoSummary::empty("main");

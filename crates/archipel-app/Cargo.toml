@@ -21,6 +21,8 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 regex.workspace = true
+jiff.workspace = true
+sys-locale.workspace = true
 
 [dev-dependencies]
 archipel-model = { workspace = true, features = ["testing"] }
