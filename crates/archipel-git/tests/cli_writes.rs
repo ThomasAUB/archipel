@@ -19,7 +19,9 @@ use archipel_model::requests::{
     PatchDirection, PullMode, PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest,
     TagRequest, UntrackedMode,
 };
-use archipel_model::{CancelToken, GitError, NoProgress, Oid, Progress, RepoOp, RepoPath};
+use archipel_model::{
+    CancelToken, GitError, HeadState, NoProgress, Oid, Progress, RepoOp, RepoPath,
+};
 
 fn setup() -> (TestRepo, RepoPath, GitCli) {
     let repo = TestRepo::new().unwrap();
@@ -194,6 +196,57 @@ fn branches_and_checkout() {
     cli.checkout(&path, &CheckoutTarget::Detached(head))
         .unwrap();
     assert!(cli.summary(&path).unwrap().head.branch().is_none());
+}
+
+#[test]
+fn branch_on_a_repo_with_no_commit_moves_head() {
+    let repo = TestRepo::new().unwrap();
+    let path = RepoPath::new(repo.path());
+    let cli = GitCli::default();
+    repo.write("a.txt", "a\n").unwrap();
+    cli.stage(&path, &["a.txt".into()]).unwrap();
+    // What the UI runs: create on HEAD, then check out.
+    cli.create_branch(&path, "dev", None).unwrap();
+    cli.checkout(&path, &CheckoutTarget::Branch("dev".into()))
+        .unwrap();
+    let head = cli.summary(&path).unwrap().head;
+    assert_eq!(head, HeadState::Unborn("dev".into()));
+    // Back to the first unborn name (undo of the checkout).
+    cli.checkout(&path, &CheckoutTarget::Branch("main".into()))
+        .unwrap();
+    assert_eq!(
+        cli.summary(&path).unwrap().head,
+        HeadState::Unborn("main".into())
+    );
+    // The staged file is kept, and the first commit lands on HEAD's branch.
+    let oid = commit(&cli, &path, "initial").unwrap();
+    assert_eq!(cli.resolve(&path, "refs/heads/main").unwrap(), Some(oid));
+    assert!(cli.create_branch(&path, "bad..name", None).is_err());
+}
+
+#[test]
+fn branch_on_an_orphan_branch_moves_head() {
+    let (repo, path, cli) = setup();
+    repo.git(&["switch", "-q", "--orphan", "fresh"]).unwrap();
+    cli.create_branch(&path, "other", None).unwrap();
+    cli.checkout(&path, &CheckoutTarget::Branch("other".into()))
+        .unwrap();
+    assert_eq!(
+        cli.summary(&path).unwrap().head,
+        HeadState::Unborn("other".into())
+    );
+    // An existing branch is switched to, not shadowed.
+    cli.checkout(&path, &CheckoutTarget::Branch("main".into()))
+        .unwrap();
+    assert_eq!(
+        cli.summary(&path).unwrap().head,
+        HeadState::Branch("main".into())
+    );
+    // With a commit on HEAD, an unknown branch is still an error.
+    assert!(
+        cli.checkout(&path, &CheckoutTarget::Branch("nope".into()))
+            .is_err()
+    );
 }
 
 #[test]

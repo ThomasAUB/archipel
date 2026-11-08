@@ -30,6 +30,30 @@ impl GitCli {
             .ok_or_else(|| GitError::InvalidRequest("HEAD has no commit".into()))
     }
 
+    /// Recovers from `failed` (a `git branch <name>` or `git switch <name>`)
+    /// when `HEAD` is on a branch with no commit yet: a fresh repository or
+    /// an orphan branch. Git refuses both there (no commit to point the new
+    /// branch at; no such branch to switch to), yet the unborn branch only
+    /// exists as `HEAD`, so pointing `HEAD` at `name` loses nothing: the
+    /// first commit then lands on `name`, and the index is kept. Anything
+    /// else (HEAD has a commit, `name` is an existing branch) returns
+    /// `failed` unchanged.
+    fn move_unborn_head(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        failed: GitError,
+    ) -> Result<String, GitError> {
+        if self.resolve(repo, "HEAD")?.is_some()
+            || self.resolve(repo, &format!("refs/heads/{name}"))?.is_some()
+        {
+            return Err(failed);
+        }
+        // `--create=` keeps a name starting with `-` from reading as an
+        // option; Git validates the name.
+        self.write(repo, &["switch", &format!("--create={name}")])
+    }
+
     /// Splits paths into tracked and untracked ones.
     fn partition_tracked(
         &self,
@@ -199,9 +223,9 @@ impl IndexWriter for GitCli {
 impl BranchWriter for GitCli {
     fn checkout(&self, repo: &RepoPath, target: &CheckoutTarget) -> Result<(), GitError> {
         match target {
-            CheckoutTarget::Branch(name) => {
-                self.write(repo, &["switch", "--no-guess", "--end-of-options", name])
-            }
+            CheckoutTarget::Branch(name) => self
+                .write(repo, &["switch", "--no-guess", "--end-of-options", name])
+                .or_else(|e| self.move_unborn_head(repo, name, e)),
             CheckoutTarget::TrackRemote(remote) => {
                 self.write(repo, &["switch", "--track", "--end-of-options", remote])
             }
@@ -220,7 +244,12 @@ impl BranchWriter for GitCli {
     ) -> Result<(), GitError> {
         let mut args = vec!["branch", "--no-track", "--end-of-options", name];
         args.extend(start);
-        self.write(repo, &args).map(drop)
+        let created = self.write(repo, &args);
+        match start {
+            None => created.or_else(|e| self.move_unborn_head(repo, name, e)),
+            Some(_) => created,
+        }
+        .map(drop)
     }
 
     fn rename_branch(&self, repo: &RepoPath, old: &str, new: &str) -> Result<(), GitError> {
