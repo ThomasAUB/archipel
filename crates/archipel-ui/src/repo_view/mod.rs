@@ -494,7 +494,6 @@ impl Render for RepoView {
                     .child(details),
             );
         let confirm = self.render_confirm(cx);
-        let force_push = staging::render_force_push(self, cx);
         let menu = self.render_menu(cx);
         let name_form = self.render_name_form(cx);
         div()
@@ -524,7 +523,6 @@ impl Render for RepoView {
                     .child(condense_status(s))
             }))
             .children(confirm)
-            .children(force_push)
             .children(menu)
     }
 }

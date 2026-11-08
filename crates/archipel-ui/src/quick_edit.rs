@@ -278,7 +278,6 @@ impl QuickEdit {
 
 impl Render for QuickEdit {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let force_push = staging::render_force_push(self, cx);
         div()
             .id("quick-edit")
             .size_full()
@@ -305,7 +304,6 @@ impl Render for QuickEdit {
                     .text_color(color(cx, T::FgMuted))
                     .child(s)
             }))
-            .children(force_push)
     }
 }
 

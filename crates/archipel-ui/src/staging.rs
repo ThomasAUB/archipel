@@ -25,19 +25,20 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Div, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString,
-    Stateful, Subscription, Window, div, px,
+    AnyElement, Context, Div, Entity, EventEmitter, SharedString, Stateful, Subscription, Window,
+    div, px,
 };
 
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
-use crate::theme::{color, radius, row_height};
-use crate::widgets::{button, icon_button, modal, primary_button, section};
+use crate::theme::{color, row_height};
+use crate::widgets::{TextTooltip, button, icon_button, primary_button, section};
 
 /// Height of the branch switcher list before it scrolls.
 const BRANCH_LIST_HEIGHT: f32 = 160.0;
 
-/// How long a Discard button waits for the confirming second click.
+/// How long a Discard (or Force push) button waits for the confirming
+/// second click.
 const DISCARD_ARM_TIME: Duration = Duration::from_secs(3);
 
 /// The armed-discard key of the "Discard all" button (no file is named so).
@@ -97,10 +98,9 @@ pub struct Panel {
     branches: Option<Vec<String>>,
     /// The working-copy file being edited in place of its diff.
     pub(crate) edit: Option<FileEdit>,
-    /// The force push offered after Push on a diverged branch.
+    /// The force push armed by Push on a diverged branch: the button turns
+    /// red, and a second click before [`DISCARD_ARM_TIME`] force pushes.
     force_push: Option<ForcePush>,
-    /// Focus of the force push dialog (Enter / Esc).
-    force_focus: FocusHandle,
     _subscriptions: [Subscription; 2],
 }
 
@@ -141,7 +141,6 @@ impl Panel {
             branches: None,
             edit: None,
             force_push: None,
-            force_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
     }
@@ -325,7 +324,8 @@ struct ForcePush {
 }
 
 impl ForcePush {
-    fn question(&self) -> String {
+    /// The explanation shown over the armed Force push button.
+    fn explanation(&self) -> Vec<String> {
         let commits = |n: u32| {
             if n == 1 {
                 "1 commit".to_owned()
@@ -334,15 +334,20 @@ impl ForcePush {
             }
         };
         let upstream = format!("{}/{}", self.remote, self.remote_branch);
-        format!(
-            "{branch} has diverged from {upstream} ({ahead} ahead, {behind} behind), as after a \
-             rebase: a regular push would be rejected.\n\nForce push {branch}? The {behind} only \
-             on {upstream} will be replaced. The push is refused if {upstream} moved since the \
-             last fetch.",
-            branch = self.branch,
-            ahead = commits(self.ahead),
-            behind = commits(self.behind),
-        )
+        vec![
+            format!(
+                "{} has diverged from {upstream} ({} ahead, {} behind): a regular push would be \
+                 rejected.",
+                self.branch,
+                commits(self.ahead),
+                commits(self.behind),
+            ),
+            format!(
+                "Click again to force push: the {} only on {upstream} will be replaced.",
+                commits(self.behind)
+            ),
+            format!("The push is refused if {upstream} moved since the last fetch."),
+        ]
     }
 
     fn request(&self) -> PushRequest {
@@ -363,8 +368,13 @@ fn diverged(summary: &RepoSummary) -> Option<(&str, &Upstream)> {
     diverged.then_some((summary.head.branch()?, upstream))
 }
 
-/// Push: a regular push, or on a diverged branch the force push dialog.
+/// Push: a regular push, or on a diverged branch a Force push button
+/// waiting for its confirming second click.
 fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
+    if let Some(force) = v.panel().force_push.take() {
+        force_push(v, &force, cx);
+        return;
+    }
     let Some((branch, upstream)) = v
         .panel()
         .summary
@@ -397,77 +407,42 @@ fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
     });
     cx.spawn_in(window, async move |this, cx| {
         let result = task.await;
-        let _ = this.update_in(cx, |v: &mut V, window, cx| match result {
-            Ok(force) => {
-                v.panel().force_push = Some(force);
-                v.panel().force_focus.clone().focus(window, cx);
-                cx.notify();
-            }
+        let _ = this.update(cx, |v: &mut V, cx| match result {
+            Ok(force) => arm_force_push(v, force, cx),
             Err(e) => v.report(format!("Push failed: {e}"), cx),
         });
     })
     .detach();
 }
 
-/// Closes the force push dialog, force pushing when `accept`.
-fn answer_force_push<V: Staging>(v: &mut V, accept: bool, cx: &mut Context<V>) {
-    let Some(force) = v.panel().force_push.take() else {
-        return;
-    };
-    if accept {
-        let request = force.request();
-        v.run_job_as(
-            OpClass::Network,
-            format!("Force push {}", force.branch),
-            cx,
-            Box::new(move |a, p, op| a.push(p, &request, op, op.cancel(), None)),
-        );
-    }
+/// Turns Push into a red Force push button until a second click or
+/// [`DISCARD_ARM_TIME`].
+fn arm_force_push<V: Staging>(v: &mut V, force: ForcePush, cx: &mut Context<V>) {
+    v.panel().force_push = Some(force.clone());
+    cx.spawn(async move |this, cx| {
+        cx.background_executor().timer(DISCARD_ARM_TIME).await;
+        let _ = this.update(cx, |v, cx| {
+            let armed = &mut v.panel().force_push;
+            if armed.as_ref() == Some(&force) {
+                *armed = None;
+                cx.notify();
+            }
+        });
+    })
+    .detach();
     cx.notify();
 }
 
-/// The dialog offering a force push on a diverged branch; the view places
-/// it over itself (its root must be `relative`).
-pub fn render_force_push<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
-    let question = v.panel().force_push.as_ref()?.question();
-    let focus = v.panel().force_focus.clone();
-    let dialog =
-        div()
-            .id("force-push-prompt")
-            .occlude()
-            .track_focus(&focus)
-            .on_key_down(cx.listener(|v: &mut V, e: &KeyDownEvent, _, cx| {
-                match e.keystroke.key.as_str() {
-                    "escape" => answer_force_push(v, false, cx),
-                    "enter" => answer_force_push(v, true, cx),
-                    _ => return,
-                }
-                cx.stop_propagation();
-            }))
-            .w(px(440.0))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_4()
-            .bg(color(cx, T::BgElevated))
-            .border_1()
-            .border_color(color(cx, T::Border))
-            .rounded(radius(cx))
-            .shadow_lg()
-            .child(question)
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(button("force-push-cancel", "Cancel", cx).on_click(
-                        cx.listener(|v: &mut V, _, _, cx| answer_force_push(v, false, cx)),
-                    ))
-                    .child(primary_button("force-push-ok", "Force push", cx).on_click(
-                        cx.listener(|v: &mut V, _, _, cx| answer_force_push(v, true, cx)),
-                    )),
-            );
-    Some(modal(dialog, cx))
+/// Runs the armed force push, leased on the upstream tip.
+fn force_push<V: Staging>(v: &mut V, force: &ForcePush, cx: &mut Context<V>) {
+    let request = force.request();
+    v.run_job_as(
+        OpClass::Network,
+        format!("Force push {}", force.branch),
+        cx,
+        Box::new(move |a, p, op| a.push(p, &request, op, op.cancel(), None)),
+    );
+    cx.notify();
 }
 
 /// Reads the local branches into the switcher (opening it).
@@ -551,6 +526,23 @@ pub fn small(b: Stateful<Div>) -> Stateful<Div> {
     b.py_0().text_xs()
 }
 
+/// Push, or once armed on a diverged branch a red "Force push?" like the
+/// armed Discard buttons, explained by its tooltip.
+fn push_button<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Stateful<Div> {
+    let label = match v.panel().force_push.as_ref() {
+        Some(force) => {
+            let danger = color(cx, T::StatusError);
+            let explanation = force.explanation();
+            button("st-push", "Force push?", cx)
+                .text_color(danger)
+                .border_color(danger)
+                .tooltip(move |_, cx| TextTooltip::view(&explanation, cx))
+        }
+        None => button("st-push", "Push", cx),
+    };
+    small(label).on_click(cx.listener(|v: &mut V, _, window, cx| push(v, window, cx)))
+}
+
 /// The pull request button: the open one of the branch (to review or
 /// merge it), else "Create PR…"; none when the repo is not on a forge.
 fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Option<Stateful<Div>> {
@@ -598,10 +590,7 @@ pub fn render_actions<V: Staging>(
         .child(job("st-pull", "Pull", network, cx, |a, p, op| {
             a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
         }))
-        .child(
-            small(button("st-push", "Push", cx))
-                .on_click(cx.listener(|v: &mut V, _, window, cx| push(v, window, cx))),
-        )
+        .child(push_button(v, cx))
         .children(pull_request_button(v, cx))
         .child(job("st-stash", "Stash", write, cx, |a, p, _| {
             a.stash_push(p, &StashRequest::default()).map(drop)
@@ -1075,11 +1064,11 @@ mod tests {
         assert_eq!(request.remote.as_deref(), Some("origin"));
         assert_eq!(request.refspec.as_deref(), Some("feat:feat/remote"));
         assert_eq!(request.force, ForceMode::WithLease(Some(expected)));
-        let question = force.question();
+        let explanation = force.explanation().join("\n");
         assert!(
-            question.contains("4 commits ahead, 1 commit behind"),
-            "{question}"
+            explanation.contains("4 commits ahead, 1 commit behind"),
+            "{explanation}"
         );
-        assert!(question.contains("origin/feat/remote"), "{question}");
+        assert!(explanation.contains("origin/feat/remote"), "{explanation}");
     }
 }
