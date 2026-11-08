@@ -71,9 +71,11 @@ jobs:
             coverage.json
       # Coveralls renders the README badge from the uploaded report. An
       # outage on their side (download, checksum, upload) only leaves the
-      # badge stale; it does not fail the build.
+      # badge stale; it does not fail the build. `fail-on-error` only covers
+      # the upload itself, so the reporter download needs `continue-on-error`.
       - name: Upload to Coveralls
         uses: coverallsapp/github-action@v2
+        continue-on-error: true
         with:
           file: lcov.info
           fail-on-error: false
