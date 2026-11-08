@@ -423,6 +423,8 @@ fn pull_requests_across_repos_are_linked() {
     wait_until("statuses", || {
         matches!(forge_of(&e, 0), ForgeStatus::Open(_))
             && matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. })
+            // The plan skips repos whose summary is not loaded yet.
+            && e.app.rows().iter().filter(|r| r.summary().is_some()).count() == 3
     });
     let app = e.app.clone();
     let mut plan =
