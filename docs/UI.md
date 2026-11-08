@@ -139,13 +139,14 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 | **Name Form** | Inline form under the Repo Toolbar to name a new branch, a new tag, or rename a branch. (`NameForm`, `render_name_form`) |
 | **Refs Panel** | Left pane, virtualized: sections **LOCAL**, **REMOTE**, **TAGS**, **SUBMODULES**, each collapsible. Branch rows can be dragged onto other branches. (`render_refs`) |
 | **Graph Pane** | Centre pane: the virtualized **Commit Graph**, or an Open Diff. (`render_graph`) |
+| **Graph Header** | Column titles above the Commit Graph (Message, Author, Date, Commit). Right-click shows or hides Author, Date and Commit (saved per project). (`render_graph_header`, `GraphColumn`) |
 | **WIP Row** | First row of the graph, "uncommitted changes", linked to HEAD by its own lane. Selecting it shows the Staging Panel in the Details Pane. |
 | **Stash Row** | A stash, drawn just above the commit it was made on. |
 | **Commit Row** | A commit with its lanes, **Ref Badges** (branches, tags — draggable) and metadata. |
 | **Details Pane** | Right pane, follows the selection: the **Repo Actions Bar** (+ Branch button) and the **Commit Details** (summary, author, id, changed files) or **Stash Details** (message, base commit, Apply / Pop / Drop); for the WIP Row, the Staging Panel. (`render_details`) |
 | **Open Diff** | A file clicked in the Details Pane opens its Diff View in place of the Commit Graph; Esc goes back. Either one file or all files of a commit / stash. (`OpenDiff`) |
 | **Splitter** | Draggable separator resizing the Refs Panel and the Details Pane (widths saved per project). (`widgets::splitter`, `Pane`) |
-| **Graph Menu** | Right-click on a commit, ref, stash or submodule: checkout, branch, tag, merge, rebase, cherry-pick, reset, revert, delete… (`MenuTarget`, `render_menu`) |
+| **Graph Menu** | Right-click on a commit, ref, stash, submodule or the Graph Header: checkout, branch, tag, merge, rebase, cherry-pick, reset, revert, delete… (`MenuTarget`, `render_menu`) |
 | **Drop Menu** | Shown when a branch is dropped on another: merge, rebase, fast-forward. Never a silent action. |
 | **Confirm Dialog** | Modal asking before an action that may lose work. (`render_confirm`) |
 | **Repo Status Line** | Last operation result under the panes; long messages are condensed, click dismisses. |

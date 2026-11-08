@@ -17,7 +17,7 @@ use archipel_model::summary::{
     ChangeCounts, ChangedFiles, HeadState, RepoOp, RepoSummary, Upstream,
 };
 use archipel_model::testing::{InMemoryStore, oid};
-use archipel_model::ui_state::{SortDirection, TabState, UiState};
+use archipel_model::ui_state::{GraphColumn, SortDirection, TabState, UiState};
 use archipel_model::{ProjectId, RepoId, StoreError, Timestamp};
 
 /// Runs `test` against a fresh temp-file store and a fresh in-memory store.
@@ -79,6 +79,7 @@ fn ui_state() -> UiState {
         collapsed_nodes: vec!["k".into()],
         collapsed_categories: vec!["libs".into()],
         collapsed_ref_sections: vec!["TAGS".into()],
+        hidden_graph_columns: vec![GraphColumn::Commit],
         category_filters: vec!["tools".into()],
         accent: Some("#112233".into()),
         icon: Some("🧪".into()),

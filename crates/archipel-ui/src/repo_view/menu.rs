@@ -5,6 +5,7 @@ use archipel_app::forge::pick_remote;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::requests::{CheckoutTarget, DeleteMode, MergeMode, ResetMode, StashApplyMode};
 use archipel_model::submodule::SubmoduleInfo;
+use archipel_model::ui_state::GraphColumn;
 use archipel_model::{Oid, RepoPath};
 use archipel_ops::{OpClass, OpError};
 use gpui_kit::prelude::*;
@@ -29,6 +30,9 @@ pub(super) enum MenuTarget {
     /// Branch `source` dropped on branch `target` (drag and drop of
     /// branch badges or refs panel rows).
     Drop { source: RefTip, target: RefTip },
+    /// The commit graph header: its optional columns, the hidden ones
+    /// listed.
+    Columns(Vec<GraphColumn>),
 }
 
 /// An action picked in a right-click menu.
@@ -66,6 +70,8 @@ pub(super) enum MenuAction {
         init: bool,
     },
     Copy(String),
+    /// Shows or hides a commit graph column.
+    ToggleColumn(GraphColumn),
 }
 
 impl MenuAction {
@@ -129,7 +135,22 @@ fn menu_entries(
         MenuTarget::Stash(oid) => stash_entries(*oid),
         MenuTarget::Drop { source, target } => drop_entries(source, target, current),
         MenuTarget::Submodule(sub) => submodule_entries(sub),
+        MenuTarget::Columns(hidden) => column_entries(hidden),
     }
+}
+
+/// The menu of the graph header: show or hide each optional column.
+fn column_entries(hidden: &[GraphColumn]) -> Vec<MenuEntry> {
+    GraphColumn::ALL
+        .into_iter()
+        .map(|c| {
+            let verb = if hidden.contains(&c) { "Show" } else { "Hide" };
+            item(
+                format!("{verb} {} column", c.label()),
+                MenuAction::ToggleColumn(c),
+            )
+        })
+        .collect()
 }
 
 /// The menu of commit `oid`, which `refs` point at.
@@ -483,6 +504,11 @@ impl RepoView {
                 self.status = Some(format!("Copied {text}"));
                 cx.notify();
             }
+            MenuAction::ToggleColumn(column) => {
+                self.core
+                    .update_ui_state(|ui| ui.toggle_graph_column(column));
+                cx.notify();
+            }
         }
     }
 
@@ -558,6 +584,33 @@ mod tests {
                 MenuEntry::Separator => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn column_menu_shows_hidden_columns_and_hides_shown_ones() {
+        let entries = menu_entries(&MenuTarget::Columns(vec![GraphColumn::Date]), None, |_| {
+            true
+        });
+        let labels: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Item { label, .. } => Some(label.as_str()),
+                MenuEntry::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Hide Author column",
+                "Show Date column",
+                "Hide Commit column"
+            ]
+        );
+        let toggles: Vec<MenuAction> = GraphColumn::ALL
+            .into_iter()
+            .map(MenuAction::ToggleColumn)
+            .collect();
+        assert_eq!(actions(&entries), toggles.iter().collect::<Vec<_>>());
     }
 
     #[test]
