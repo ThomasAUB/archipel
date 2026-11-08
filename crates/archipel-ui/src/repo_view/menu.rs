@@ -206,6 +206,16 @@ fn ref_entries(
             A::Rebase(name.clone()),
         ));
     }
+    if matches!(
+        tip.kind,
+        RefKind::LocalBranch | RefKind::RemoteBranch | RefKind::Tag
+    ) && !is_current
+    {
+        out.push(item(
+            format!("Cherry-pick tip of {name}"),
+            A::CherryPick(tip.target),
+        ));
+    }
     out.push(item(
         format!("New branch from {name}…"),
         A::Name(NameForm::Branch(Some(tip.target))),
@@ -617,6 +627,7 @@ mod tests {
                 !matches!(
                     a,
                     MenuAction::Checkout(_)
+                        | MenuAction::CherryPick(_)
                         | MenuAction::Merge(_)
                         | MenuAction::Rebase(_)
                         | MenuAction::DeleteBranch(..)
@@ -640,6 +651,9 @@ mod tests {
             )))
         );
         assert!(actions.contains(&&MenuAction::Merge("feat".into())));
+        assert!(actions.contains(&&MenuAction::CherryPick(
+            tip("feat", RefKind::LocalBranch).target
+        )));
         assert!(actions.contains(&&MenuAction::Name(NameForm::Rename("feat".into()))));
         assert!(actions.contains(&&MenuAction::DeleteBranch("feat".into(), DeleteMode::Force)));
     }
