@@ -26,11 +26,24 @@ const MESSAGE_BODY_HEIGHT: f32 = 160.0;
 
 impl RepoView {
     /// The details pane: the staging panel for the uncommitted changes,
-    /// else the repo actions above the selected commit or stash.
+    /// else the selected commit or stash. The repo actions are in the
+    /// toolbar.
     pub(super) fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.wip_selected {
-            return staging::render(self, cx);
+            return staging::render_body(self, cx);
         }
+        let selection = self.render_selection(cx);
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(selection)
+            .into_any_element()
+    }
+
+    /// The Repo Actions Bar of the toolbar, led by the Branch button.
+    pub(super) fn render_repo_actions(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let branch = staging::small(button("r-branch", "Branch", cx))
             .on_click(cx.listener(|v, _, window, cx| {
                 let form = match v.name_form {
@@ -40,22 +53,7 @@ impl RepoView {
                 v.open_name_form(form, window, cx);
             }))
             .into_any_element();
-        let actions = staging::render_actions(self, Some(branch), cx);
-        let selection = self.render_selection(cx);
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(color(cx, T::BorderSubtle))
-                    .child(actions),
-            )
-            .child(selection)
-            .into_any_element()
+        staging::render_actions(self, Some(branch), cx)
     }
 
     /// Details of the selected commit or stash.

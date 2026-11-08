@@ -316,11 +316,13 @@ impl RepoView {
         u32::from(!self.changes.is_empty())
     }
 
-    /// The repo name and the CI of the current branch; the repo actions are
-    /// in the details pane.
+    /// The repo name, the CI of the current branch and the repo actions,
+    /// above the panes so they stay put whatever is selected.
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let actions = self.render_repo_actions(cx);
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_3()
             .px_3()
@@ -333,6 +335,7 @@ impl RepoView {
                     .child(self.name.clone()),
             )
             .children(self.render_ci(cx))
+            .child(actions)
     }
 
     /// The CI badge, as the dashboard "CI" cell: jobs on hover, click opens
