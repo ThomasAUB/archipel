@@ -141,6 +141,36 @@ pub fn menu_item(
         .child(label.into())
 }
 
+/// An on/off entry of a [`context_menu`]: a tick left of the label when
+/// `checked`, the same room left blank otherwise so labels line up.
+pub fn check_menu_item(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    checked: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id(id)
+        .pl_2()
+        .pr_3()
+        .py_1()
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(
+            div()
+                .w(px(16.0))
+                .flex_none()
+                .flex()
+                .justify_center()
+                .when(checked, |d| d.child("✓")),
+        )
+        .child(label.into())
+}
+
 /// A rule between groups of [`menu_item`]s.
 pub fn menu_separator(cx: &App) -> Div {
     div().my_1().h(px(1.0)).bg(color(cx, T::BorderSubtle))

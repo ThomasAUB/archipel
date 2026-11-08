@@ -139,7 +139,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 | **Name Form** | Inline form under the Repo Toolbar to name a new branch, a new tag, or rename a branch. (`NameForm`, `render_name_form`) |
 | **Refs Panel** | Left pane, virtualized: sections **LOCAL**, **REMOTE**, **TAGS**, **SUBMODULES**, each collapsible. Branch rows can be dragged onto other branches. (`render_refs`) |
 | **Graph Pane** | Centre pane: the virtualized **Commit Graph**, or an Open Diff. (`render_graph`) |
-| **Graph Header** | Column titles above the Commit Graph (Message, Author, Date, Commit). Right-click shows or hides Author, Date and Commit (saved per project). (`render_graph_header`, `GraphColumn`) |
+| **Graph Header** | Column titles above the Commit Graph (Message, Author, Age, Date, Commit). Right-click opens a menu ticking the shown optional columns; clicking one shows or hides it (saved per project). Age is the commit time relative to now; Date, the exact local date and time to the minute (`08/11/2026 14:32`, day and month in the system locale's order, `DateOrder`), is hidden by default. (`render_graph_header`, `GraphColumn`) |
 | **WIP Row** | First row of the graph, "uncommitted changes", linked to HEAD by its own lane. Selecting it shows the Staging Panel in the Details Pane. |
 | **Stash Row** | A stash, drawn just above the commit it was made on. |
 | **Commit Row** | A commit with its lanes, **Ref Badges** (branches, tags — draggable) and metadata. |

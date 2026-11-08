@@ -11,7 +11,9 @@ use archipel_ops::{OpClass, OpError};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, ClipboardItem, Context, Pixels, Point, Window};
 
-use crate::widgets::{SHORT_OID, context_menu, menu_item, menu_separator, popup_at};
+use crate::widgets::{
+    SHORT_OID, check_menu_item, context_menu, menu_item, menu_separator, popup_at,
+};
 
 use super::RepoView;
 use super::dialogs::{Confirm, NameForm};
@@ -102,6 +104,9 @@ enum MenuEntry {
         label: String,
         action: MenuAction,
         danger: bool,
+        /// On/off entries: whether the tick is shown. `None`: a plain
+        /// action.
+        checked: Option<bool>,
     },
     Separator,
 }
@@ -111,6 +116,7 @@ fn item(label: impl Into<String>, action: MenuAction) -> MenuEntry {
         label: label.into(),
         action,
         danger: false,
+        checked: None,
     }
 }
 
@@ -119,6 +125,7 @@ fn danger(label: impl Into<String>, action: MenuAction) -> MenuEntry {
         label: label.into(),
         action,
         danger: true,
+        checked: None,
     }
 }
 
@@ -139,16 +146,15 @@ fn menu_entries(
     }
 }
 
-/// The menu of the graph header: show or hide each optional column.
+/// The menu of the graph header: each optional column, ticked when shown.
 fn column_entries(hidden: &[GraphColumn]) -> Vec<MenuEntry> {
     GraphColumn::ALL
         .into_iter()
-        .map(|c| {
-            let verb = if hidden.contains(&c) { "Show" } else { "Hide" };
-            item(
-                format!("{verb} {} column", c.label()),
-                MenuAction::ToggleColumn(c),
-            )
+        .map(|c| MenuEntry::Item {
+            label: c.label().into(),
+            action: MenuAction::ToggleColumn(c),
+            danger: false,
+            checked: Some(!hidden.contains(&c)),
         })
         .collect()
 }
@@ -526,11 +532,15 @@ impl RepoView {
                     label,
                     action,
                     danger,
-                } => menu_item(("repo-menu", i), label, danger, cx)
-                    .on_click(cx.listener(move |v, _, window, cx| {
-                        v.choose(action.clone(), window, cx);
-                    }))
-                    .into_any_element(),
+                    checked,
+                } => match checked {
+                    Some(on) => check_menu_item(("repo-menu", i), label, on, cx),
+                    None => menu_item(("repo-menu", i), label, danger, cx),
+                }
+                .on_click(cx.listener(move |v, _, window, cx| {
+                    v.choose(action.clone(), window, cx);
+                }))
+                .into_any_element(),
             });
         let menu = context_menu(cx)
             .on_mouse_down_out(cx.listener(|v, _, _, cx| {
@@ -587,23 +597,22 @@ mod tests {
     }
 
     #[test]
-    fn column_menu_shows_hidden_columns_and_hides_shown_ones() {
-        let entries = menu_entries(&MenuTarget::Columns(vec![GraphColumn::Date]), None, |_| {
-            true
-        });
-        let labels: Vec<&str> = entries
+    fn column_menu_ticks_the_shown_columns() {
+        let entries = menu_entries(&MenuTarget::Columns(vec![GraphColumn::Age]), None, |_| true);
+        let ticks: Vec<(&str, Option<bool>)> = entries
             .iter()
             .filter_map(|e| match e {
-                MenuEntry::Item { label, .. } => Some(label.as_str()),
+                MenuEntry::Item { label, checked, .. } => Some((label.as_str(), *checked)),
                 MenuEntry::Separator => None,
             })
             .collect();
         assert_eq!(
-            labels,
+            ticks,
             [
-                "Hide Author column",
-                "Show Date column",
-                "Hide Commit column"
+                ("Author", Some(true)),
+                ("Age", Some(false)),
+                ("Date", Some(true)),
+                ("Commit", Some(true))
             ]
         );
         let toggles: Vec<MenuAction> = GraphColumn::ALL

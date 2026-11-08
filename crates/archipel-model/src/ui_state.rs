@@ -29,6 +29,8 @@ pub enum GraphColumn {
     /// Author name.
     Author,
     /// Commit time, relative to now.
+    Age,
+    /// Commit date and time, to the minute.
     Date,
     /// Short commit id.
     Commit,
@@ -36,13 +38,14 @@ pub enum GraphColumn {
 
 impl GraphColumn {
     /// Every optional column, in display order.
-    pub const ALL: [Self; 3] = [Self::Author, Self::Date, Self::Commit];
+    pub const ALL: [Self; 4] = [Self::Author, Self::Age, Self::Date, Self::Commit];
 
     /// Title shown in the graph header and its menu.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Author => "Author",
+            Self::Age => "Age",
             Self::Date => "Date",
             Self::Commit => "Commit",
         }
@@ -98,7 +101,8 @@ pub struct UiState {
     /// Collapsed sections of a repo view's refs pane, by title (`LOCAL`,
     /// `REMOTE`, `TAGS`, `SUBMODULES`), shared by all repo views.
     pub collapsed_ref_sections: Vec<String>,
-    /// Commit graph columns hidden in the repo views.
+    /// Commit graph columns hidden in the repo views; the exact date and
+    /// time is hidden until asked for.
     pub hidden_graph_columns: Vec<GraphColumn>,
     /// Categories the dashboard is filtered on (any of them); the empty
     /// name is "Uncategorized". Empty: no category filter.
@@ -168,7 +172,7 @@ impl Default for UiState {
             collapsed_nodes: Vec::new(),
             collapsed_categories: Vec::new(),
             collapsed_ref_sections: Vec::new(),
-            hidden_graph_columns: Vec::new(),
+            hidden_graph_columns: vec![GraphColumn::Date],
             category_filters: Vec::new(),
             accent: None,
             icon: None,
@@ -188,11 +192,7 @@ mod tests {
         let state: UiState = serde_json::from_str(old).unwrap();
         assert!(state.hidden_repos.is_empty());
         assert!(!state.show_dependency_tree);
-        assert!(
-            GraphColumn::ALL
-                .iter()
-                .all(|c| state.shows_graph_column(*c))
-        );
+        assert_eq!(state.hidden_graph_columns, [GraphColumn::Date]);
     }
 
     #[test]
@@ -200,7 +200,7 @@ mod tests {
         let mut state = UiState::default();
         state.toggle_graph_column(GraphColumn::Author);
         assert!(!state.shows_graph_column(GraphColumn::Author));
-        assert!(state.shows_graph_column(GraphColumn::Date));
+        assert!(state.shows_graph_column(GraphColumn::Age));
         state.toggle_graph_column(GraphColumn::Author);
         assert!(state.shows_graph_column(GraphColumn::Author));
     }

@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 
 use crate::theme::{color, lane, mono_font, radius, row_height};
-use crate::widgets::{SHORT_OID, TextTooltip, scroll_list};
+use crate::widgets::{SHORT_OID, scroll_list};
 
 use super::details::stash_title;
 use super::menu::MenuTarget;
@@ -31,8 +31,10 @@ const NODE_RADIUS: f32 = 4.0;
 const HEAD_NODE_RADIUS: f32 = 6.0;
 /// Width of the author column of the commit rows.
 const AUTHOR_WIDTH: f32 = 140.0;
-/// Width of the date column of the commit and stash rows.
-const DATE_WIDTH: f32 = 80.0;
+/// Width of the age column of the commit and stash rows.
+const AGE_WIDTH: f32 = 80.0;
+/// Width of the exact date and time column ("08/11/2026 14:32").
+const DATE_WIDTH: f32 = 115.0;
 /// Width of the commit id column of the commit and stash rows.
 const OID_WIDTH: f32 = 70.0;
 
@@ -161,7 +163,6 @@ impl RepoView {
             .border_color(color(cx, T::BorderSubtle))
             .text_xs()
             .text_color(color(cx, T::FgSubtle))
-            .tooltip(|_, cx| TextTooltip::view(&["Right-click to choose the columns".into()], cx))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |v, e: &MouseDownEvent, _, cx| {
@@ -285,13 +286,13 @@ impl RepoView {
         // Same width on every row so the text columns line up.
         let width = px(lane_x(self.lane_count()));
         let lanes = graph_cell(row, stash_lane, wip_lane, cx);
-        let (summary, author, date) = meta.map_or_else(
-            || (String::new(), String::new(), String::new()),
+        let (summary, author, time) = meta.map_or_else(
+            || (String::new(), String::new(), None),
             |m| {
                 (
                     m.summary.clone(),
                     m.author_name.clone(),
-                    archipel_app::dashboard::relative_time(m.commit_time, Timestamp::now()),
+                    Some(m.commit_time),
                 )
             },
         );
@@ -436,7 +437,9 @@ impl RepoView {
             .children(columns.iter().map(|c| {
                 let text = match c {
                     GraphColumn::Author => author.clone(),
-                    GraphColumn::Date => date.clone(),
+                    GraphColumn::Age | GraphColumn::Date => {
+                        time.map(|t| time_text(*c, t)).unwrap_or_default()
+                    }
                     GraphColumn::Commit => oid.short(SHORT_OID),
                 };
                 column_cell(*c, cx).child(text)
@@ -462,7 +465,7 @@ impl RepoView {
         let cell = stash_cell(base, stash.lane, linked, self.wip_lane_at(stash.row), cx);
         let name = format!("stash@{{{}}}", stash.entry.index);
         let title = stash_title(&stash.entry.message).to_owned();
-        let date = archipel_app::dashboard::relative_time(stash.entry.time, Timestamp::now());
+        let time = stash.entry.time;
         let selected = self.stash_selected == Some(oid);
         let tint = color(cx, T::StatusDirty);
         let hover = color(cx, T::BgHover);
@@ -530,7 +533,7 @@ impl RepoView {
             .children(columns.iter().filter_map(|c| {
                 let text = match c {
                     GraphColumn::Author => return None,
-                    GraphColumn::Date => date.clone(),
+                    GraphColumn::Age | GraphColumn::Date => time_text(*c, time),
                     GraphColumn::Commit => oid.short(SHORT_OID),
                 };
                 Some(column_cell(*c, cx).child(text))
@@ -539,11 +542,24 @@ impl RepoView {
     }
 }
 
+/// Time `t` as shown in date column `column`: relative, or exact.
+fn time_text(column: GraphColumn, t: Timestamp) -> String {
+    if column == GraphColumn::Date {
+        archipel_app::dashboard::exact_time(t)
+    } else {
+        archipel_app::dashboard::relative_time(t, Timestamp::now())
+    }
+}
+
 /// An empty cell of optional column `column`, sized and styled for it.
 fn column_cell(column: GraphColumn, cx: &App) -> Div {
     let cell = div().flex_none().truncate();
     match column {
         GraphColumn::Author => cell.w(px(AUTHOR_WIDTH)).text_color(color(cx, T::FgMuted)),
+        GraphColumn::Age => cell
+            .w(px(AGE_WIDTH))
+            .text_xs()
+            .text_color(color(cx, T::FgSubtle)),
         GraphColumn::Date => cell
             .w(px(DATE_WIDTH))
             .text_xs()
