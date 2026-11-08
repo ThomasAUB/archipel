@@ -650,7 +650,11 @@ impl RemoteOps for FakeGit {
         cancel: &CancelToken,
     ) -> Result<(), GitError> {
         cancel.check()?;
-        self.record("fetch", repo, request.remote.clone().unwrap_or_default())?;
+        let mut detail = request.remote.clone().unwrap_or_default();
+        if request.prune {
+            detail.push_str(" --prune");
+        }
+        self.record("fetch", repo, detail)?;
         self.with_repo(repo, |r| r.summary.last_fetch = Some(Timestamp::now()));
         Ok(())
     }

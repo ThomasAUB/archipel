@@ -19,7 +19,6 @@ use archipel_model::{ForgeError, RepoId, RepoPath, Timestamp};
 use archipel_ops::{GitPorts, OpClass, OpError, OpSpec};
 
 use super::{App, AppError, AppEvent, lock};
-use crate::actions::Command;
 use crate::dashboard::DashboardRow;
 use crate::forge::{
     BranchCi, ForgeLimit, ForgePorts, ForgeRegistry, ForgeStatus, Located, linked_description,
@@ -816,10 +815,9 @@ impl App {
             })
             .wait()
             .await?;
-        // The target branch moved on the forge: show it locally.
-        if let Err(e) = self.dispatch(Command::Fetch(vec![repo])) {
-            tracing::warn!(error = %e, "cannot fetch after a merge");
-        }
+        // The target branch moved on the forge: show it locally, and drop
+        // the remote-tracking branch of a source branch deleted there.
+        self.fetch(&[repo], delete_source_branch);
         self.load_forge(repo, true);
         self.emit(AppEvent::Notice(match &report.warning {
             Some(w) => format!("Merged {} #{number} ({w})", forge_repo.path),

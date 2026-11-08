@@ -51,12 +51,7 @@ impl App {
             }
             Command::RefreshForge => self.refresh_forge_all(),
             Command::RefreshRepo(r) => self.refresh_repo(r),
-            Command::Fetch(ids) => {
-                self.auto_fetch_reset(&ids);
-                self.spawn_batch("Fetch", &ids, |b, t| async move {
-                    b.fetch_all(&t, FetchRequest::default()).await
-                });
-            }
+            Command::Fetch(ids) => self.fetch(&ids, false),
             Command::Pull(ids) => {
                 let mode = self.settings.pull_mode;
                 self.spawn_batch("Pull", &ids, move |b, t| async move {
@@ -225,6 +220,19 @@ impl App {
         for (repo, _) in &report.per_repo {
             self.refresh_repo(*repo);
         }
+    }
+
+    /// Fetches every remote of `ids`; `prune` also drops the remote-tracking
+    /// branches deleted on their remote.
+    pub(super) fn fetch(&self, ids: &[RepoId], prune: bool) {
+        self.auto_fetch_reset(ids);
+        let request = FetchRequest {
+            remote: None,
+            prune,
+        };
+        self.spawn_batch("Fetch", ids, move |b, t| async move {
+            b.fetch_all(&t, request).await
+        });
     }
 
     /// Runs a batch over the targets of `ids` on the app runtime, then

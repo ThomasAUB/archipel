@@ -417,6 +417,13 @@ fn open_pull_requests_are_listed_and_merged() {
     wait_until("status re-read after the merge", || {
         matches!(forge_of(&e, 0), ForgeStatus::NoPullRequest { .. })
     });
+    // The deleted source branch leaves the local remote-tracking refs too.
+    wait_until("pruning fetch after the merge", || {
+        e.git
+            .calls()
+            .iter()
+            .any(|c| c.op == "fetch" && c.detail.ends_with("--prune"))
+    });
 }
 
 #[test]
