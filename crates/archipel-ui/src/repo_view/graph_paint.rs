@@ -655,7 +655,11 @@ fn graph_cell(
     }
     let node = (row.column, lane(cx, row.color));
     // The checked-out commit gets a larger node.
-    let node_radius = if is_head { HEAD_NODE_RADIUS } else { NODE_RADIUS };
+    let node_radius = if is_head {
+        HEAD_NODE_RADIUS
+    } else {
+        NODE_RADIUS
+    };
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, (), window, _| {

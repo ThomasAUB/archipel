@@ -39,6 +39,9 @@ pub(super) struct Session {
     pub(super) forge_checked: HashMap<RepoId, (String, Instant)>,
     /// Repos whose forge status is being read.
     pub(super) forge_pending: HashSet<RepoId>,
+    /// Repos refreshed while a read was pending: read again once it lands,
+    /// as the pending read may predate what the refresh was asked for.
+    pub(super) forge_reread: HashSet<RepoId>,
     /// Rate-limited forge hosts, and when they accept calls again.
     pub(super) forge_backoff: HashMap<String, Timestamp>,
 }
@@ -120,6 +123,7 @@ impl App {
             tree_pending: HashSet::new(),
             forge_checked: HashMap::new(),
             forge_pending: HashSet::new(),
+            forge_reread: HashSet::new(),
             forge_backoff: HashMap::new(),
         });
         if let Err(e) = self.services.registry.mark_opened(id, Timestamp::now()) {

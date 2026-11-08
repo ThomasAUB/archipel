@@ -323,7 +323,6 @@ fn rate_limit_keeps_the_last_status_marked() {
         matches!(forge_of(&e, 0), ForgeStatus::Open(_))
             && matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. })
     });
-    let reads = e.forge.reads();
     let retry_at = Timestamp(Timestamp::now().0 + 600);
     e.forge.fail(
         "acme/r0",
@@ -346,13 +345,17 @@ fn rate_limit_keeps_the_last_status_marked() {
     assert!(ci.tooltip(&row).unwrap()[0].contains("next read in 10 min"));
 
     // The host is left alone until it accepts calls again: r1, on the same
-    // host, is not read and keeps its status, marked too.
-    wait_until("r1 read", || e.forge.reads() > reads);
-    let reads = e.forge.reads();
+    // host, keeps its status, marked too. A read of r1 started before r0
+    // hit the limit may still call the host; once r1 is marked, every later
+    // read of it (reads of one repo run one at a time) knows the limit.
     e.app.dispatch(Command::RefreshForge).unwrap();
     wait_until("r1 backed off", || limited(&e, 1));
-    assert_eq!(e.forge.reads(), reads, "no call to a rate-limited host");
     assert!(matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. }));
+    let reads = e.forge.reads();
+    e.app.dispatch(Command::RefreshForge).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(e.forge.reads(), reads, "no call to a rate-limited host");
+    assert!(limited(&e, 1));
 }
 
 #[test]

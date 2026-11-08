@@ -13,10 +13,11 @@ use archipel_app::{App as Core, Command};
 use archipel_model::changes::{FileChange, FileState};
 use archipel_model::ports::DiffSide;
 use archipel_model::requests::{
-    CheckoutTarget, CommitMode, CommitRequest, FetchRequest, PullMode, PushRequest, SequenceAction,
-    StashApplyMode, StashRequest,
+    CheckoutTarget, CommitMode, CommitRequest, FetchRequest, ForceMode, PullMode, PushRequest,
+    SequenceAction, StashApplyMode, StashRequest,
 };
-use archipel_model::{RepoOp, RepoPath, RepoSummary};
+use archipel_model::{Oid, RepoOp, RepoPath, RepoSummary, Upstream};
+use archipel_ops::actions::split_remote_ref;
 use archipel_ops::{OpClass, OpContext, OpError, RepoActions};
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
@@ -24,14 +25,14 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Div, Entity, EventEmitter, SharedString, Stateful, Subscription, Window,
-    div, px,
+    AnyElement, Context, Div, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString,
+    Stateful, Subscription, Window, div, px,
 };
 
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
-use crate::theme::{color, row_height};
-use crate::widgets::{button, icon_button, primary_button, section};
+use crate::theme::{color, radius, row_height};
+use crate::widgets::{button, icon_button, modal, primary_button, section};
 
 /// Height of the branch switcher list before it scrolls.
 const BRANCH_LIST_HEIGHT: f32 = 160.0;
@@ -96,6 +97,10 @@ pub struct Panel {
     branches: Option<Vec<String>>,
     /// The working-copy file being edited in place of its diff.
     pub(crate) edit: Option<FileEdit>,
+    /// The force push offered after Push on a diverged branch.
+    force_push: Option<ForcePush>,
+    /// Focus of the force push dialog (Enter / Esc).
+    force_focus: FocusHandle,
     _subscriptions: [Subscription; 2],
 }
 
@@ -135,6 +140,8 @@ impl Panel {
             branch_input,
             branches: None,
             edit: None,
+            force_push: None,
+            force_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
     }
@@ -302,6 +309,167 @@ pub fn push_current(a: &RepoActions, p: &RepoPath, op: &OpContext) -> Result<(),
     a.push(p, &request, op, op.cancel(), None)
 }
 
+/// A force push waiting for confirmation: the branch and its upstream
+/// diverged (rebased, amended), so a regular push would be rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ForcePush {
+    branch: String,
+    remote: String,
+    remote_branch: String,
+    /// The upstream tip when the dialog opened: the push is refused if the
+    /// remote moved since (`--force-with-lease=<branch>:<oid>`), even when
+    /// a background fetch updated the tracking ref meanwhile.
+    expected: Oid,
+    ahead: u32,
+    behind: u32,
+}
+
+impl ForcePush {
+    fn question(&self) -> String {
+        let commits = |n: u32| {
+            if n == 1 {
+                "1 commit".to_owned()
+            } else {
+                format!("{n} commits")
+            }
+        };
+        let upstream = format!("{}/{}", self.remote, self.remote_branch);
+        format!(
+            "{branch} has diverged from {upstream} ({ahead} ahead, {behind} behind), as after a \
+             rebase: a regular push would be rejected.\n\nForce push {branch}? The {behind} only \
+             on {upstream} will be replaced. The push is refused if {upstream} moved since the \
+             last fetch.",
+            branch = self.branch,
+            ahead = commits(self.ahead),
+            behind = commits(self.behind),
+        )
+    }
+
+    fn request(&self) -> PushRequest {
+        PushRequest {
+            remote: Some(self.remote.clone()),
+            refspec: Some(format!("{}:{}", self.branch, self.remote_branch)),
+            force: ForceMode::WithLease(Some(self.expected)),
+            ..PushRequest::default()
+        }
+    }
+}
+
+/// The current branch and its upstream when they diverged: a regular push
+/// would be rejected as non fast-forward.
+fn diverged(summary: &RepoSummary) -> Option<(&str, &Upstream)> {
+    let upstream = summary.upstream.as_ref()?;
+    let diverged = upstream.ahead > 0 && upstream.behind > 0 && !upstream.gone;
+    diverged.then_some((summary.head.branch()?, upstream))
+}
+
+/// Push: a regular push, or on a diverged branch the force push dialog.
+fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
+    let Some((branch, upstream)) = v
+        .panel()
+        .summary
+        .as_ref()
+        .and_then(diverged)
+        .map(|(b, u)| (b.to_owned(), u.clone()))
+    else {
+        v.run_job_as(OpClass::Network, "Push".into(), cx, Box::new(push_current));
+        return;
+    };
+    let ports = v.core().repo_actions().ports();
+    let (refs, remotes) = (ports.refs.clone(), ports.remotes.clone());
+    let path = v.repo_path().clone();
+    let task = cx.background_spawn(async move {
+        let names = remotes.remotes(&path).map_err(|e| e.to_string())?;
+        let names: Vec<&str> = names.iter().map(|r| r.name.as_str()).collect();
+        let (remote, remote_branch) = split_remote_ref(&upstream.name, &names);
+        let expected = refs
+            .resolve(&path, &format!("refs/remotes/{}", upstream.name))
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{} not found", upstream.name))?;
+        Ok::<_, String>(ForcePush {
+            branch,
+            remote: remote.to_owned(),
+            remote_branch: remote_branch.to_owned(),
+            expected,
+            ahead: upstream.ahead,
+            behind: upstream.behind,
+        })
+    });
+    cx.spawn_in(window, async move |this, cx| {
+        let result = task.await;
+        let _ = this.update_in(cx, |v: &mut V, window, cx| match result {
+            Ok(force) => {
+                v.panel().force_push = Some(force);
+                v.panel().force_focus.clone().focus(window, cx);
+                cx.notify();
+            }
+            Err(e) => v.report(format!("Push failed: {e}"), cx),
+        });
+    })
+    .detach();
+}
+
+/// Closes the force push dialog, force pushing when `accept`.
+fn answer_force_push<V: Staging>(v: &mut V, accept: bool, cx: &mut Context<V>) {
+    let Some(force) = v.panel().force_push.take() else {
+        return;
+    };
+    if accept {
+        let request = force.request();
+        v.run_job_as(
+            OpClass::Network,
+            format!("Force push {}", force.branch),
+            cx,
+            Box::new(move |a, p, op| a.push(p, &request, op, op.cancel(), None)),
+        );
+    }
+    cx.notify();
+}
+
+/// The dialog offering a force push on a diverged branch; the view places
+/// it over itself (its root must be `relative`).
+pub fn render_force_push<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
+    let question = v.panel().force_push.as_ref()?.question();
+    let focus = v.panel().force_focus.clone();
+    let dialog =
+        div()
+            .id("force-push-prompt")
+            .occlude()
+            .track_focus(&focus)
+            .on_key_down(cx.listener(|v: &mut V, e: &KeyDownEvent, _, cx| {
+                match e.keystroke.key.as_str() {
+                    "escape" => answer_force_push(v, false, cx),
+                    "enter" => answer_force_push(v, true, cx),
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
+            .w(px(440.0))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .bg(color(cx, T::BgElevated))
+            .border_1()
+            .border_color(color(cx, T::Border))
+            .rounded(radius(cx))
+            .shadow_lg()
+            .child(question)
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(button("force-push-cancel", "Cancel", cx).on_click(
+                        cx.listener(|v: &mut V, _, _, cx| answer_force_push(v, false, cx)),
+                    ))
+                    .child(primary_button("force-push-ok", "Force push", cx).on_click(
+                        cx.listener(|v: &mut V, _, _, cx| answer_force_push(v, true, cx)),
+                    )),
+            );
+    Some(modal(dialog, cx))
+}
+
 /// Reads the local branches into the switcher (opening it).
 fn load_branches<V: Staging>(v: &mut V, cx: &mut Context<V>) {
     let refs = v.core().repo_actions().ports().refs.clone();
@@ -430,7 +598,10 @@ pub fn render_actions<V: Staging>(
         .child(job("st-pull", "Pull", network, cx, |a, p, op| {
             a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
         }))
-        .child(job("st-push", "Push", network, cx, push_current))
+        .child(
+            small(button("st-push", "Push", cx))
+                .on_click(cx.listener(|v: &mut V, _, window, cx| push(v, window, cx))),
+        )
         .children(pull_request_button(v, cx))
         .child(job("st-stash", "Stash", write, cx, |a, p, _| {
             a.stash_push(p, &StashRequest::default()).map(drop)
@@ -846,4 +1017,69 @@ fn commit_box<V: Staging>(
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use archipel_model::{ChangeCounts, ChangedFiles, HeadState, Timestamp};
+
+    use super::*;
+
+    fn summary(head: HeadState, ahead: u32, behind: u32, gone: bool) -> RepoSummary {
+        RepoSummary {
+            head,
+            head_oid: None,
+            upstream: Some(Upstream {
+                name: "origin/feat".into(),
+                ahead,
+                behind,
+                gone,
+            }),
+            changes: ChangeCounts::default(),
+            changed_files: ChangedFiles::default(),
+            containing_branches: Vec::new(),
+            stash_count: 0,
+            describe: None,
+            last_fetch: None,
+            in_progress: None,
+            has_submodules: false,
+            computed_at: Timestamp(0),
+        }
+    }
+
+    #[test]
+    fn only_a_diverged_branch_offers_a_force_push() {
+        let branch = || HeadState::Branch("feat".into());
+        let rebased = summary(branch(), 4, 1, false);
+        assert_eq!(diverged(&rebased).map(|(b, _)| b), Some("feat"));
+        // Ahead only (fast-forward), behind only, upstream gone, detached.
+        assert!(diverged(&summary(branch(), 4, 0, false)).is_none());
+        assert!(diverged(&summary(branch(), 0, 1, false)).is_none());
+        assert!(diverged(&summary(branch(), 4, 1, true)).is_none());
+        let detached = HeadState::Detached(Oid::from_hex(&"a".repeat(40)).unwrap());
+        assert!(diverged(&summary(detached, 4, 1, false)).is_none());
+    }
+
+    #[test]
+    fn the_force_push_leases_the_upstream_tip() {
+        let expected = Oid::from_hex(&"5d000c8".repeat(6)[..40]).unwrap();
+        let force = ForcePush {
+            branch: "feat".into(),
+            remote: "origin".into(),
+            remote_branch: "feat/remote".into(),
+            expected,
+            ahead: 4,
+            behind: 1,
+        };
+        let request = force.request();
+        assert_eq!(request.remote.as_deref(), Some("origin"));
+        assert_eq!(request.refspec.as_deref(), Some("feat:feat/remote"));
+        assert_eq!(request.force, ForceMode::WithLease(Some(expected)));
+        let question = force.question();
+        assert!(
+            question.contains("4 commits ahead, 1 commit behind"),
+            "{question}"
+        );
+        assert!(question.contains("origin/feat/remote"), "{question}");
+    }
 }

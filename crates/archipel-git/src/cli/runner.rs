@@ -417,8 +417,19 @@ mod tests {
 
     /// A runner whose `git` is a shell script.
     fn runner_with(dir: &Path, script: &str, timeout: Duration) -> Runner {
+        // Writing the script here would leave its descriptor open while
+        // another test forks; the child inherits it until it execs, and
+        // running the script then fails with "Text file busy". So `cp`, in
+        // a process of its own, writes the file that is run.
+        let source = dir.join("fake-git.sh");
+        std::fs::write(&source, format!("#!/bin/sh\n{script}\n")).unwrap();
         let program = dir.join("fake-git");
-        std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
+        let copied = Command::new("cp")
+            .arg(&source)
+            .arg(&program)
+            .status()
+            .unwrap();
+        assert!(copied.success(), "cp failed: {copied}");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         Runner {
             program,

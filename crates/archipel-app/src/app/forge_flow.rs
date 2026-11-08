@@ -444,7 +444,13 @@ impl App {
                 .forge_checked
                 .get(&repo)
                 .is_some_and(|(b, at)| *b == branch && at.elapsed() < fresh);
-            if (recent && !even_if_fresh) || !s.forge_pending.insert(repo) {
+            if recent && !even_if_fresh {
+                return;
+            }
+            if !s.forge_pending.insert(repo) {
+                if even_if_fresh {
+                    s.forge_reread.insert(repo);
+                }
                 return;
             }
             let target = ForgeTarget {
@@ -470,10 +476,11 @@ impl App {
     }
 
     fn apply_forge(&self, repo: RepoId, branch: String, read: ForgeRead) {
-        let changed = {
+        let (changed, reread) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
             s.forge_pending.remove(&repo);
+            let reread = s.forge_reread.remove(&repo);
             let row = s.rows.iter_mut().find(|r| r.id == repo);
             // A status read for a branch the repo has left is dropped.
             let current = row
@@ -527,10 +534,13 @@ impl App {
             if current {
                 s.forge_checked.insert(repo, (branch, Instant::now()));
             }
-            changed
+            (changed, reread)
         };
         if changed {
             self.emit(AppEvent::RowsChanged(vec![repo]));
+        }
+        if reread {
+            self.load_forge(repo, true);
         }
     }
 
