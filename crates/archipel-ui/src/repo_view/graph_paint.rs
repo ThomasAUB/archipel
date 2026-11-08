@@ -26,6 +26,8 @@ use super::{Item, RepoView, lock};
 const LANE_WIDTH: f32 = 14.0;
 /// Radius of a node in the graph column.
 const NODE_RADIUS: f32 = 4.0;
+/// Radius of the checked-out commit's node, drawn larger to stand out.
+const HEAD_NODE_RADIUS: f32 = 6.0;
 /// Width of the author column of the commit rows.
 const AUTHOR_WIDTH: f32 = 140.0;
 /// Width of the date column of the commit and stash rows.
@@ -652,8 +654,8 @@ fn graph_cell(
         edges.push((kind, col, to, color(cx, T::StatusDirty)));
     }
     let node = (row.column, lane(cx, row.color));
-    // The checked-out commit gets an accent ring around its node.
-    let head_ring = is_head.then(|| color(cx, T::Accent));
+    // The checked-out commit gets a larger node.
+    let node_radius = if is_head { HEAD_NODE_RADIUS } else { NODE_RADIUS };
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, (), window, _| {
@@ -672,7 +674,7 @@ fn graph_cell(
                 };
                 stroke(window, a, b, *c, *kind != EdgeKind::Outgoing);
             }
-            let r = px(NODE_RADIUS);
+            let r = px(node_radius);
             let center = point(x(node.0), mid);
             window.paint_quad(
                 gpui_kit::fill(
@@ -684,22 +686,6 @@ fn graph_cell(
                 )
                 .corner_radii(r),
             );
-            if let Some(ring) = head_ring {
-                // An even diameter keeps the snapped ring centered on the node.
-                let r = px(LANE_WIDTH / 2.0);
-                window.paint_quad(
-                    gpui_kit::fill(
-                        Bounds::new(
-                            point(center.x - r, center.y - r),
-                            gpui_kit::size(r * 2.0, r * 2.0),
-                        ),
-                        gpui_kit::transparent_black(),
-                    )
-                    .corner_radii(r)
-                    .border_widths(px(2.0))
-                    .border_color(ring),
-                );
-            }
         },
     )
     .size_full()
