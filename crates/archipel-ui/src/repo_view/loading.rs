@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use archipel_app::dashboard::DashboardRow;
 use archipel_graph::GraphError;
 use archipel_model::refs::{RefKind, RefTip};
-use archipel_model::{CancelToken, HeadState, NoProgress, Oid, RepoSummary, Timestamp, Upstream};
+use archipel_model::{CancelToken, HeadState, NoProgress, Oid, RepoSummary, Upstream};
 use gpui_kit::Context;
 use gpui_kit::prelude::*;
 
@@ -27,7 +27,9 @@ const META_KEEP: usize = 4000;
 
 /// The parts of a repo summary the graph and refs panel depend on, and the
 /// ref tips: when they move, the graph is reloaded; a working-copy edit
-/// alone does not.
+/// alone does not. Nor does a fetch that moved no ref: the last fetch time
+/// is left out, else every background fetch of an open tab reloaded (and
+/// flashed) its graph and refs panel; a fetch that moves refs moves `tips`.
 #[derive(PartialEq, Eq)]
 pub(super) struct RefsState {
     head: HeadState,
@@ -35,7 +37,6 @@ pub(super) struct RefsState {
     upstream: Option<Upstream>,
     describe: Option<String>,
     stash_count: u32,
-    last_fetch: Option<Timestamp>,
     /// Every branch and tag: one created or deleted elsewhere (terminal,
     /// another tool) moves none of the fields above.
     tips: Option<Vec<RefTip>>,
@@ -49,7 +50,6 @@ impl RefsState {
             upstream: s.upstream.clone(),
             describe: s.describe.clone(),
             stash_count: s.stash_count,
-            last_fetch: s.last_fetch,
             tips: None,
         }
     }
