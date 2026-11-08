@@ -15,8 +15,8 @@ use archipel_model::testing::InMemoryStore;
 use archipel_model::{CancelToken, NoProgress, Oid, RepoPath};
 use archipel_ops::undo::UndoStep;
 use archipel_ops::{
-    CheckoutOutcome, Compensation, Direction, GitPorts, Journal, OpError, RepoActions, UndoPlan,
-    UndoService,
+    BranchSync, CheckoutOutcome, Compensation, Direction, GitPorts, Journal, OpError, RepoActions,
+    UndoPlan, UndoService,
 };
 
 struct Env {
@@ -651,4 +651,50 @@ fn autostash_checkout_of_a_missing_branch_leaves_changes_alone() {
     );
     assert_eq!(e.read("a.txt"), "local\n");
     assert!(e.cli.stashes(&e.path).unwrap().is_empty());
+}
+
+#[test]
+fn checkout_updated_fast_forwards_only_a_branch_behind() {
+    let e = env();
+    let base = e.head();
+    let branch = |e: &Env| {
+        e.cli
+            .summary(&e.path)
+            .unwrap()
+            .head
+            .branch()
+            .map(str::to_owned)
+    };
+    let switch = |e: &Env, b: &str| {
+        e.actions
+            .checkout(&e.path, &CheckoutTarget::Branch(b.into()), None)
+            .unwrap();
+    };
+    e.repo.git(&["branch", "behind", "HEAD"]).unwrap();
+    e.repo.git(&["branch", "side", "HEAD"]).unwrap();
+    let tip = e.commit("b.txt", "b");
+
+    // Behind: fast-forwarded, then checked out.
+    let (outcome, sync) = e.actions.checkout_updated(&e.path, "behind", tip).unwrap();
+    assert_eq!(
+        (outcome, sync),
+        (CheckoutOutcome::Switched, BranchSync::FastForwarded)
+    );
+    assert_eq!(branch(&e).as_deref(), Some("behind"));
+    assert_eq!(e.head(), tip);
+
+    // Ahead of the target: checked out as it is.
+    switch(&e, "main");
+    let (_, sync) = e.actions.checkout_updated(&e.path, "behind", base).unwrap();
+    assert_eq!(sync, BranchSync::UpToDate);
+    assert_eq!(e.head(), tip);
+
+    // Diverged: checked out as it is.
+    switch(&e, "side");
+    let side = e.commit("c.txt", "c");
+    switch(&e, "main");
+    let (_, sync) = e.actions.checkout_updated(&e.path, "side", tip).unwrap();
+    assert_eq!(sync, BranchSync::Diverged);
+    assert_eq!(branch(&e).as_deref(), Some("side"));
+    assert_eq!(e.head(), side);
 }
