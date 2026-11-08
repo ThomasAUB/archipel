@@ -189,6 +189,32 @@ impl CheckoutOutcome {
     }
 }
 
+/// Where a local branch stood against the remote tip
+/// [`RepoActions::checkout_updated`] brought it to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchSync {
+    /// Already at the remote tip, or ahead of it.
+    UpToDate,
+    /// Behind: fast-forwarded to the remote tip.
+    FastForwarded,
+    /// Diverged: left where it was.
+    Diverged,
+}
+
+impl BranchSync {
+    /// What to tell the user beyond "done", if anything.
+    #[must_use]
+    pub fn note(self, branch: &str) -> Option<String> {
+        match self {
+            Self::UpToDate => None,
+            Self::FastForwarded => Some(format!("{branch} fast-forwarded")),
+            Self::Diverged => Some(format!(
+                "{branch} diverged from the remote branch and was not updated"
+            )),
+        }
+    }
+}
+
 /// Single-repository actions with journaling.
 #[derive(Clone)]
 pub struct RepoActions {
@@ -331,6 +357,37 @@ impl RepoActions {
             };
             Ok((outcome, stash))
         })
+    }
+
+    /// Checks out local `branch` after fast-forwarding it to `target` (the
+    /// tip of its remote counterpart) when it is behind — a pull without
+    /// fetching. A branch ahead of `target`, or diverged from it, is
+    /// checked out as it is.
+    pub fn checkout_updated(
+        &self,
+        repo: &RepoPath,
+        branch: &str,
+        target: Oid,
+    ) -> Result<(CheckoutOutcome, BranchSync), OpError> {
+        let current = self
+            .git
+            .refs
+            .resolve(repo, &branch_ref(branch))?
+            .ok_or_else(|| OpError::Refused(format!("no branch {branch}")))?;
+        let history = &self.git.history;
+        let sync = if current == target || history.is_ancestor(repo, target, current)? {
+            BranchSync::UpToDate
+        } else if history.is_ancestor(repo, current, target)? {
+            // Moved before the switch: a mere ref update while the branch
+            // is not checked out, and the checkout then carries the
+            // uncommitted changes as usual.
+            self.fast_forward(repo, branch, target)?;
+            BranchSync::FastForwarded
+        } else {
+            BranchSync::Diverged
+        };
+        let outcome = self.checkout_autostash(repo, &CheckoutTarget::Branch(branch.to_owned()))?;
+        Ok((outcome, sync))
     }
 
     fn switch_autostash(

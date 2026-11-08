@@ -1,7 +1,7 @@
 //! Git writes started from the tab (checkout, stash, branch deletion),
 //! run on a background thread before the tab reloads.
 
-use archipel_model::refs::RefTip;
+use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::requests::{CheckoutTarget, DeleteMode, StashApplyMode};
 use archipel_model::{Oid, RepoPath};
 use archipel_ops::{OpClass, OpContext, OpError, RepoActions};
@@ -46,10 +46,33 @@ impl RepoView {
     }
 
     /// Checks out a ref (double click on a badge or in the refs panel).
+    /// A remote branch with a local counterpart checks out that local
+    /// branch, fast-forwarded to the remote tip when behind.
     pub(super) fn checkout_ref(&mut self, tip: &RefTip, cx: &mut Context<Self>) {
-        if let Some(target) = CheckoutTarget::for_ref(tip, |b| self.has_local(b)) {
-            self.checkout(target, cx);
+        match CheckoutTarget::for_ref(tip, |b| self.has_local(b)) {
+            Some(CheckoutTarget::Branch(branch)) if tip.kind == RefKind::RemoteBranch => {
+                self.checkout_updated(branch, tip.target, cx);
+            }
+            Some(target) => self.checkout(target, cx),
+            None => {}
         }
+    }
+
+    /// Checks out local `branch`, fast-forwarded to `target` when behind.
+    fn checkout_updated(&mut self, branch: String, target: Oid, cx: &mut Context<Self>) {
+        self.run_noted(
+            OpClass::Write,
+            format!("Checkout {branch}"),
+            cx,
+            Box::new(move |a, p, _| {
+                let (outcome, sync) = a.checkout_updated(p, &branch, target)?;
+                let notes: Vec<String> = [sync.note(&branch), outcome.note()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                Ok((!notes.is_empty()).then(|| notes.join("; ")))
+            }),
+        );
     }
 
     /// Checks out the commit of graph row `row`: through a branch pointing
@@ -63,6 +86,16 @@ impl RepoView {
         else {
             return;
         };
+        // Through a remote branch, when the row has no local one: its
+        // local counterpart is brought up to date as well.
+        let refs = &graph_row.refs;
+        if !refs.iter().any(|t| t.kind == RefKind::LocalBranch)
+            && let Some(remote) = refs.iter().find(|t| t.kind == RefKind::RemoteBranch)
+        {
+            let remote = remote.clone();
+            self.checkout_ref(&remote, cx);
+            return;
+        }
         let target =
             CheckoutTarget::for_commit(graph_row.oid, &graph_row.refs, |b| self.has_local(b));
         self.checkout(target, cx);

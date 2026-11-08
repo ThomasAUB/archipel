@@ -26,7 +26,7 @@ pub mod patch;
 pub mod scheduler;
 pub mod undo;
 
-pub use actions::{CheckoutOutcome, GitPorts, RepoActions};
+pub use actions::{BranchSync, CheckoutOutcome, GitPorts, RepoActions};
 pub use batch::{BatchOps, BatchReport, Outcome};
 pub use commit::{CommitOptions, CommitPlan, CommitTarget, MultiCommit};
 pub use error::OpError;
