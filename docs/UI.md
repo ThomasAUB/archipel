@@ -117,16 +117,16 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ libfoo   CI ✓ 12                                                         │  <- Repo Toolbar, CI Badge
+│ libfoo  CI ✓ 12  [Branch] [Fetch] [Pull] [Push] [PR #4] [Stash] [Undo] … │  <- Repo Toolbar, CI Badge, Repo Actions Bar
 │ New branch at HEAD: [__________] [OK] [Cancel]                           │  <- Name Form
 ├────────────┬───────────────────────────────────┬─────────────────────────┤
 │ REFS PANEL │ GRAPH PANE                        │ DETAILS PANE            │
-│ LOCAL (2)  │ o Uncommitted changes (4)         │ [Fetch] [Pull] [Push]   │  <- WIP Row
-│   main     │ | # stash@{0}                     ├─────────────────────────┤  <- Stash Row
-│   dev      │ * fix parser  [main]              │ Fix parser              │  <- Commit Row, Ref Badge
-│ REMOTE (2) │ * add tests                       │ Jane <jane@example.com> │
-│ TAGS (12)  │ |\                                │ 3f2a9c1...              │
-│ SUBMODULES │ * * ...                           │ changed files...        │
+│ LOCAL (2)  │ o Uncommitted changes (4)         │ Fix parser              │  <- WIP Row
+│   main     │ | # stash@{0}                     │ Jane <jane@example.com> │  <- Stash Row
+│   dev      │ * fix parser  [main]              │ 3f2a9c1...              │  <- Commit Row, Ref Badge
+│ REMOTE (2) │ * add tests                       │ changed files...        │
+│ TAGS (12)  │ |\                                │                         │
+│ SUBMODULES │ * * ...                           │                         │
 ├────────────┴───────────────────────────────────┴─────────────────────────┤
 │ Repo Status Line (click to dismiss)                                      │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -135,7 +135,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 
 | Name | What it is |
 | ---- | ---------- |
-| **Repo Toolbar** | Top line with the repo name and the **CI Badge**: the latest CI run of the current branch, as in the Dashboard's CI column (jobs on hover, click opens the run). (`render_toolbar`, `render_ci`) |
+| **Repo Toolbar** | Top line, above the panes: the repo name, the **CI Badge** (the latest CI run of the current branch, as in the Dashboard's CI column; jobs on hover, click opens the run), and the **Repo Actions Bar** led by a Branch button. It stays put whatever is selected. (`render_toolbar`, `render_ci`, `render_repo_actions`) |
 | **Name Form** | Inline form under the Repo Toolbar to name a new branch, a new tag, or rename a branch. (`NameForm`, `render_name_form`) |
 | **Refs Panel** | Left pane, virtualized: sections **LOCAL**, **REMOTE**, **TAGS**, **SUBMODULES**, each collapsible. Branch rows can be dragged onto other branches. (`render_refs`) |
 | **Graph Pane** | Centre pane: the virtualized **Commit Graph**, or an Open Diff. (`render_graph`) |
@@ -143,7 +143,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 | **WIP Row** | First row of the graph, "uncommitted changes", linked to HEAD by its own lane. Selecting it shows the Staging Panel in the Details Pane. |
 | **Stash Row** | A stash, drawn just above the commit it was made on. |
 | **Commit Row** | A commit with its lanes, **Ref Badges** (branches, tags — draggable) and metadata. |
-| **Details Pane** | Right pane, follows the selection: the **Repo Actions Bar** (+ Branch button) and the **Commit Details** (summary, author, id, changed files) or **Stash Details** (message, base commit, Apply / Pop / Drop); for the WIP Row, the Staging Panel. (`render_details`) |
+| **Details Pane** | Right pane, follows the selection: the **Commit Details** (summary, author, id, changed files) or **Stash Details** (message, base commit, Apply / Pop / Drop); for the WIP Row, the Staging Panel without its Repo Actions Bar (it is in the Repo Toolbar). (`render_details`) |
 | **Open Diff** | A file clicked in the Details Pane opens its Diff View in place of the Commit Graph; Esc goes back. Either one file or all files of a commit / stash. (`OpenDiff`) |
 | **Splitter** | Draggable separator resizing the Refs Panel and the Details Pane (widths saved per project). (`widgets::splitter`, `Pane`) |
 | **Graph Menu** | Right-click on a commit, ref, stash, submodule or the Graph Header: checkout, branch, tag, merge, rebase, cherry-pick, reset, revert, delete… (`MenuTarget`, `render_menu`) |
@@ -157,8 +157,9 @@ Panels used in more than one place.
 
 ### Staging Panel
 
-The working-copy panel, identical in the Repo View (WIP Row selected) and in
-the Quick Edit Pane. [staging.rs](../crates/archipel-ui/src/staging.rs).
+The working-copy panel, shared by the Repo View (WIP Row selected) and the
+Quick Edit Pane. In the Repo View, the Repo Actions Bar is in the Repo Toolbar
+instead. [staging.rs](../crates/archipel-ui/src/staging.rs).
 
 ```text
 ┌─ Repo Actions Bar ─────────────────────────────────┐
@@ -179,7 +180,7 @@ the Quick Edit Pane. [staging.rs](../crates/archipel-ui/src/staging.rs).
 
 | Name | What it is |
 | ---- | ---------- |
-| **Repo Actions Bar** | Fetch, Pull, Push, a pull request button (**Create PR…**, or **PR #n** when the branch has one: opens the Forge Panel on that repo; hidden when the repo is not on a forge), Stash, Pop, Undo, Redo (+ Branch in the Details Pane). (`render_actions`) |
+| **Repo Actions Bar** | Fetch, Pull, Push, a pull request button (**Create PR…**, or **PR #n** when the branch has one: opens the Forge Panel on that repo; hidden when the repo is not on a forge), Stash, Pop, Undo, Redo (+ Branch in the Repo Toolbar). (`render_actions`) |
 | **Operation Banner** | Shown while a merge, rebase, cherry-pick or revert is in progress: Continue / Abort. |
 | **Branch Section** | Switch to another local branch or create one. |
 | **Unstaged Files** | Working-tree changes, with Stage all / Discard all and per-file stage / discard. Discard asks for a second click. |
