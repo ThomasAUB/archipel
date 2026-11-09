@@ -245,6 +245,7 @@ impl RepoView {
         self.wip_selected = true;
         self.details = None;
         self.open_diff = None;
+        self.sync_browser(cx);
         cx.notify();
     }
 
@@ -316,6 +317,7 @@ impl RepoView {
         }
         staging::on_summary(self, summary, cx);
         self.load_changes(cx);
+        self.refresh_browser(cx);
         // A checkout or an update inside a submodule only shows in the
         // working copy, not in the refs.
         self.load_submodules(cx);
@@ -405,6 +407,7 @@ impl RepoView {
         self.wip_selected = false;
         self.stash_selected = None;
         self.open_diff = None;
+        self.sync_browser(cx);
         let diffs = self.core.diff_reader();
         let history = self.core.history_reader();
         let path = self.path.clone();
@@ -444,6 +447,7 @@ impl RepoView {
         self.wip_selected = false;
         self.stash_selected = Some(oid);
         self.open_diff = None;
+        self.sync_browser(cx);
         let diffs = self.core.diff_reader();
         let path = self.path.clone();
         let task = cx.background_spawn(async move {

@@ -106,11 +106,15 @@ impl RepoView {
                     self.open_worktree_file(file, side, cx);
                 }
             }
+            Some(OpenDiff::File(_)) => self.step_open_file(delta, cx),
             None => {}
         }
     }
 
     pub(super) fn close_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.open_diff, Some(OpenDiff::File(_))) {
+            self.forget_open_file();
+        }
         self.open_diff = None;
         self.focus.focus(window, cx);
         cx.notify();
@@ -265,7 +269,7 @@ impl RepoView {
                 Some(*side),
                 doc.clone(),
             ),
-            None => return div().into_any_element(),
+            Some(OpenDiff::File(_)) | None => return div().into_any_element(),
         };
         diff_view::render_open(self, title, &note, side, doc, cx)
     }

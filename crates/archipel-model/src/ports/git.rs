@@ -27,6 +27,7 @@ use crate::requests::{
 use crate::submodule::SubmoduleInfo;
 use crate::summary::RepoSummary;
 use crate::time::Timestamp;
+use crate::tree::TreeEntry;
 
 /// Reads the dashboard summary and the working copy changes.
 pub trait StatusReader: Send + Sync {
@@ -156,6 +157,18 @@ pub trait WorktreeFiles: Send + Sync {
     fn read_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError>;
     /// Replaces the bytes of `path` (an existing file).
     fn write_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError>;
+}
+
+/// Lists and reads the files of a repository at a commit or in the
+/// working copy (the repo view's file browser). Paths are relative to the
+/// repository root and `/`-separated.
+pub trait TreeReader: Send + Sync {
+    /// Every file of the tree of `commit`, or, when `None`, of the working
+    /// copy (tracked files and untracked ones not ignored), sorted by path.
+    /// Submodules are listed as entries, not walked into.
+    fn list_files(&self, repo: &RepoPath, commit: Option<Oid>) -> Result<Vec<TreeEntry>, GitError>;
+    /// The bytes of `path` in the tree of `commit`.
+    fn read_blob(&self, repo: &RepoPath, commit: Oid, path: &str) -> Result<Vec<u8>, GitError>;
 }
 
 /// Modifies the index and the worktree.

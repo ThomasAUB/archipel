@@ -29,6 +29,9 @@ impl RepoView {
     /// else the selected commit or stash. The repo actions are in the
     /// toolbar.
     pub(super) fn render_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.browser.is_some() {
+            return self.render_browser(cx);
+        }
         if self.wip_selected {
             return staging::render_body(self, cx);
         }

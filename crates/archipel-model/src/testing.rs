@@ -21,8 +21,8 @@ use crate::ports::{
     DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
     MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps,
     RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
-    SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, UiStateStore, WatchHandle,
-    WorktreeFiles, WorktreeSnapshots,
+    SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore,
+    WatchHandle, WorktreeFiles, WorktreeSnapshots,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -35,6 +35,7 @@ use crate::stats::{ActivityBucket, Hotspot, StatsDelta};
 use crate::submodule::SubmoduleInfo;
 use crate::summary::{HeadState, RepoSummary};
 use crate::time::Timestamp;
+use crate::tree::TreeEntry;
 use crate::ui_state::UiState;
 
 mod forge;
@@ -83,6 +84,8 @@ pub struct FakeRepo {
     pub submodules: Vec<SubmoduleInfo>,
     /// Worktree files (relative path → bytes), for `WorktreeFiles`.
     pub files: BTreeMap<String, Vec<u8>>,
+    /// Files of commit trees (commit → path → bytes), for `TreeReader`.
+    pub trees: HashMap<Oid, BTreeMap<String, Vec<u8>>>,
 }
 
 impl Default for FakeRepo {
@@ -101,6 +104,7 @@ impl Default for FakeRepo {
             head: HeadRef::Symbolic("refs/heads/main".into()),
             submodules: Vec::new(),
             files: BTreeMap::new(),
+            trees: HashMap::new(),
         }
     }
 }
@@ -390,6 +394,25 @@ impl CommitWriter for FakeGit {
             r.summary.changes.staged = 0;
         });
         Ok(new)
+    }
+}
+
+impl TreeReader for FakeGit {
+    fn list_files(&self, repo: &RepoPath, commit: Option<Oid>) -> Result<Vec<TreeEntry>, GitError> {
+        if let Some(err) = lock(&self.failures).get(&(repo.clone(), "list_files")) {
+            return Err(err.clone());
+        }
+        Ok(self.with_repo(repo, |r| {
+            let files = match commit {
+                Some(c) => r.trees.get(&c).cloned().unwrap_or_default(),
+                None => r.files.clone(),
+            };
+            files.into_keys().map(TreeEntry::file).collect()
+        }))
+    }
+    fn read_blob(&self, repo: &RepoPath, commit: Oid, path: &str) -> Result<Vec<u8>, GitError> {
+        self.with_repo(repo, |r| r.trees.get(&commit)?.get(path).cloned())
+            .ok_or_else(|| GitError::InvalidRequest(format!("{path} is not in {commit}")))
     }
 }
 

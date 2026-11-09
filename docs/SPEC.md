@@ -110,6 +110,7 @@ A minimal view, one row per repo:
 
 ### 5. Repo view + graph — P0
 - Commit graph, diff, staging per file / hunk / line.
+- File browser: **Files** in the toolbar swaps the details pane for the repo's file tree, at the selected commit or stash, or in the working copy (uncommitted-changes row selected, or nothing selected); it follows the selection. A filter box narrows it to the files matching fuzzily; ↑↓, Page Up / Down, Home / End move, → / ← open or close a folder, Enter opens, Esc closes. A file opens read-only in place of the graph, highlighted and searchable; a working-copy file goes to the quick file edit on **Edit** or a double-click, at that line, and shows again, reloaded, once saved or cancelled. Binary files and files over 4 MB are not shown; submodules are listed, not opened.
 - Virtualized graph: smooth even with 100k+ commits.
 - Everyday repo actions: commit / amend, branches (checkout, create, rename, delete, set upstream), tags, stashes, fetch / pull / push, reset, revert, continue / abort a merge or rebase in progress.
 - Checkout keeps uncommitted changes: when Git refuses because they touch files that differ on the target, they are stashed, the target is checked out and they are re-applied there (staged state kept). If they conflict with the target, the target stays clean, the changes stay in an `archipel: autostash` stash entry and the status line says so; undoing the checkout switches back and pops them. Batch checkout over many repos does not autostash.

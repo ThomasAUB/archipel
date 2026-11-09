@@ -12,7 +12,7 @@ use archipel_model::changes::ChangeKind;
 use archipel_model::ports::{
     BranchWriter, ChurnReader, CommitWriter, DiffReader, DiffSide, HistoryRewriter, IndexWriter,
     RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    TagWriter, WorktreeSnapshots,
+    TagWriter, TreeReader, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -595,4 +595,70 @@ fn arguments_starting_with_a_dash_are_not_options() {
         cli.checkout(&path, &CheckoutTarget::Branch("--orphan=x".into()))
             .is_err()
     );
+}
+
+#[test]
+fn lists_and_reads_files_at_a_commit_and_in_the_working_copy() {
+    let (repo, path, cli) = setup();
+    repo.write(
+        "src/lib.rs",
+        "pub fn f() {}
+",
+    )
+    .unwrap();
+    repo.write(
+        ".gitignore",
+        "target/
+",
+    )
+    .unwrap();
+    let first = commit_all(&repo, &path, &cli);
+    repo.write(
+        "a.txt", "changed
+",
+    )
+    .unwrap();
+    repo.write(
+        "new.txt",
+        "untracked
+",
+    )
+    .unwrap();
+    repo.write(
+        "target/out.bin",
+        "ignored
+",
+    )
+    .unwrap();
+    std::fs::remove_file(repo.path().join("src/lib.rs")).unwrap();
+
+    let names = |files: Vec<archipel_model::tree::TreeEntry>| -> Vec<String> {
+        files.into_iter().map(|e| e.path).collect()
+    };
+    assert_eq!(
+        names(cli.list_files(&path, Some(first)).unwrap()),
+        [".gitignore", "a.txt", "src/lib.rs"]
+    );
+    assert_eq!(
+        names(cli.list_files(&path, None).unwrap()),
+        [".gitignore", "a.txt", "new.txt"]
+    );
+    assert_eq!(
+        cli.read_blob(&path, first, "a.txt").unwrap(),
+        b"one
+two
+three
+"
+    );
+    assert_eq!(
+        cli.read_blob(&path, first, "src/lib.rs").unwrap(),
+        b"pub fn f() {}
+"
+    );
+    assert!(cli.read_blob(&path, first, "missing.txt").is_err());
+}
+
+fn commit_all(repo: &TestRepo, path: &RepoPath, cli: &GitCli) -> Oid {
+    repo.git(&["add", "-A"]).unwrap();
+    commit(cli, path, "more").unwrap()
 }
