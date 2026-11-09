@@ -20,6 +20,19 @@ impl WorktreeFiles for GitCli {
         let file = worktree_path(repo, path)?;
         write_replacing(&file, contents).map_err(|e| io_error(&file, &e))
     }
+
+    fn create_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError> {
+        let file = worktree_path(repo, path)?;
+        let create = || {
+            let mut out = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&file)?;
+            out.write_all(contents)?;
+            out.sync_all()
+        };
+        create().map_err(|e| io_error(&file, &e))
+    }
 }
 
 /// `path` under the worktree of `repo`; refused when it is absolute or
@@ -95,6 +108,18 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["a.txt"]);
+    }
+
+    #[test]
+    fn create_refuses_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = RepoPath::new(dir.path());
+        let cli = GitCli::default();
+        cli.create_file(&repo, "new.txt", b"x").unwrap();
+        assert_eq!(cli.read_file(&repo, "new.txt").unwrap(), b"x");
+        let err = cli.create_file(&repo, "new.txt", b"y").unwrap_err();
+        assert!(matches!(err, GitError::Io { .. }), "{err}");
+        assert_eq!(cli.read_file(&repo, "new.txt").unwrap(), b"x");
     }
 
     #[test]
