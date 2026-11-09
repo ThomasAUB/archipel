@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use archipel_app::forge::{ForgeStatus, pick_remote};
 use archipel_app::{App as Core, Command};
-use archipel_model::changes::{FileChange, FileState};
+use archipel_model::changes::{ChangeKind, FileChange, FileState};
 use archipel_model::ports::DiffSide;
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, FetchRequest, ForceMode, PullMode, PushRequest,
@@ -897,10 +897,20 @@ fn file_row<V: Staging>(
 ) -> AnyElement {
     let hover = color(cx, T::BgHover);
     let path = c.path.clone();
-    let (label, token) = match c.state {
-        FileState::Untracked => ("+", T::StatusAhead),
-        FileState::Conflicted => ("!", T::StatusConflict),
-        FileState::Tracked { .. } => ("✎", T::StatusDirty),
+    // The marker follows the change on the side shown: a file deleted in
+    // the worktree reads as deleted, not edited.
+    let kind = match c.state {
+        FileState::Tracked { staged, .. } if side == DiffSide::Staged => Some(staged),
+        FileState::Tracked { unstaged, .. } => Some(unstaged),
+        FileState::Untracked | FileState::Conflicted => None,
+    };
+    let deleted = kind == Some(ChangeKind::Deleted);
+    let (label, token) = match (c.state, kind) {
+        (FileState::Untracked, _) => ("+", T::StatusAhead),
+        (FileState::Conflicted, _) => ("!", T::StatusConflict),
+        (_, Some(ChangeKind::Deleted)) => ("−", T::DiffDelFg),
+        (_, Some(ChangeKind::Added | ChangeKind::Copied)) => ("+", T::DiffAddFg),
+        _ => ("✎", T::StatusDirty),
     };
     let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
     let is_open = open.is_some_and(|(f, s)| *f == path && *s == side);
@@ -930,7 +940,16 @@ fn file_row<V: Staging>(
                 .text_color(color(cx, token))
                 .child(label),
         )
-        .child(div().flex_1().min_w_0().truncate().child(path))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .when(deleted, |d| {
+                    d.line_through().text_color(color(cx, T::FgMuted))
+                })
+                .child(path),
+        )
         .when(side == DiffSide::Unstaged, |d| {
             let id = SharedString::from(format!("discard-{p3}"));
             let discard = if armed == Some(p3.as_str()) {
