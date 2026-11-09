@@ -67,13 +67,13 @@ pub const FG_HUE_LIGHTNESS_LIGHT: f64 = 0.52;
 pub const FG_HUE_CHROMA: f64 = 0.11;
 
 /// Lightness step from `bg.app` to the diff line backgrounds.
-pub const DIFF_BG_STEP: f64 = 0.07;
+pub const DIFF_BG_STEP: f64 = 0.09;
 /// Chroma of the diff line backgrounds.
-pub const DIFF_BG_CHROMA: f64 = 0.06;
+pub const DIFF_BG_CHROMA: f64 = 0.09;
 /// Lightness step from `bg.app` to the word-level diff highlights.
-pub const DIFF_WORD_STEP: f64 = 0.15;
+pub const DIFF_WORD_STEP: f64 = 0.19;
 /// Chroma of the word-level diff highlights.
-pub const DIFF_WORD_CHROMA: f64 = 0.11;
+pub const DIFF_WORD_CHROMA: f64 = 0.14;
 
 /// Graph lane palette, derived from the accent: lanes alternate between the
 /// accent's hue family and its complementary family (a split-complementary
