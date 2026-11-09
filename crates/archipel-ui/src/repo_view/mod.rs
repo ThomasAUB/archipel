@@ -518,6 +518,7 @@ impl Render for RepoView {
         let confirm = self.render_confirm(cx);
         let menu = self.render_menu(cx);
         let name_form = self.render_name_form(cx);
+        let ignore = crate::ignore::render(self, cx);
         div()
             .size_full()
             .relative()
@@ -545,6 +546,7 @@ impl Render for RepoView {
                     .child(condense_status(s))
             }))
             .children(confirm)
+            .children(ignore)
             .children(menu)
     }
 }

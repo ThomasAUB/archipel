@@ -142,6 +142,27 @@ pub fn split_remote_ref<'a>(short: &'a str, remotes: &[&str]) -> (&'a str, &'a s
         )
 }
 
+/// `existing` (a `.gitignore`) with `pattern` added as its last line, in
+/// the file's line ending; `None` when the pattern is already a line.
+fn with_ignore_line(existing: &[u8], pattern: &str) -> Option<Vec<u8>> {
+    let text = String::from_utf8_lossy(existing);
+    if text.lines().any(|l| l.trim_end_matches('\r') == pattern) {
+        return None;
+    }
+    let ending: &[u8] = if text.contains("\r\n") {
+        b"\r\n"
+    } else {
+        b"\n"
+    };
+    let mut out = existing.to_vec();
+    if !out.is_empty() && !out.ends_with(b"\n") {
+        out.extend_from_slice(ending);
+    }
+    out.extend_from_slice(pattern.as_bytes());
+    out.extend_from_slice(ending);
+    Some(out)
+}
+
 fn tag_ref(name: &str) -> String {
     format!("refs/tags/{name}")
 }
@@ -329,6 +350,38 @@ impl RepoActions {
             )));
         }
         Ok(self.git.files.write_file(repo, path, contents)?)
+    }
+
+    /// Adds `pattern` as a line of the `.gitignore` at the repo root,
+    /// creating the file when there is none. Returns `false` when the
+    /// pattern was already one of its lines (nothing written).
+    pub fn add_ignore_pattern(&self, repo: &RepoPath, pattern: &str) -> Result<bool, OpError> {
+        const FILE: &str = ".gitignore";
+        let pattern = pattern.trim_end_matches(['\r', '\n']);
+        if pattern.trim().is_empty() || pattern.contains(['\r', '\n']) {
+            return Err(OpError::Refused(
+                "an ignore pattern is a single non-empty line".into(),
+            ));
+        }
+        match self.git.files.read_file(repo, FILE) {
+            Ok(existing) => match with_ignore_line(&existing, pattern) {
+                Some(contents) => {
+                    self.save_file(repo, FILE, &existing, &contents)?;
+                    Ok(true)
+                }
+                None => Ok(false),
+            },
+            // No .gitignore yet (or unreadable: the creation then fails
+            // and the read error says why).
+            Err(read) => {
+                let contents = format!("{pattern}\n");
+                self.git
+                    .files
+                    .create_file(repo, FILE, contents.as_bytes())
+                    .map_err(|_| read)?;
+                Ok(true)
+            }
+        }
     }
 
     /// Discards worktree changes after snapshotting them (undoable).
@@ -878,5 +931,19 @@ mod tests {
         assert_eq!(push_destination("feat"), "feat");
         assert_eq!(push_destination("+feat:refs/heads/main"), "main");
         assert_eq!(push_destination("HEAD"), "HEAD");
+    }
+
+    #[test]
+    fn ignore_lines_are_appended_once_in_the_file_line_ending() {
+        assert_eq!(with_ignore_line(b"", "*.log").unwrap(), b"*.log\n");
+        assert_eq!(with_ignore_line(b"a\n", "*.log").unwrap(), b"a\n*.log\n");
+        // No final newline: one is added before the pattern.
+        assert_eq!(with_ignore_line(b"a", "*.log").unwrap(), b"a\n*.log\n");
+        assert_eq!(
+            with_ignore_line(b"a\r\nb", "*.log").unwrap(),
+            b"a\r\nb\r\n*.log\r\n"
+        );
+        assert!(with_ignore_line(b"a\r\n*.log\r\n", "*.log").is_none());
+        assert!(with_ignore_line(b"*.log", "*.log").is_none());
     }
 }

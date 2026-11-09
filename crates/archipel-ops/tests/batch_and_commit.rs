@@ -400,6 +400,37 @@ fn saving_an_edited_file_refuses_a_change_made_meanwhile() {
 }
 
 #[test]
+fn ignoring_a_file_creates_then_extends_the_gitignore() {
+    let o = ops();
+    let repo = TestRepo::new().unwrap();
+    repo.write("a.txt", "a").unwrap();
+    repo.commit_all("init").unwrap();
+    repo.write("build/out.log", "x").unwrap();
+    repo.write("notes.tmp", "x").unwrap();
+    let path = RepoPath::new(repo.path());
+    let untracked = || {
+        repo.git(&["ls-files", "--others", "--exclude-standard"])
+            .unwrap()
+    };
+
+    // No .gitignore yet: created.
+    assert!(o.actions.add_ignore_pattern(&path, "/build/").unwrap());
+    let ignore = std::fs::read(repo.path().join(".gitignore")).unwrap();
+    assert_eq!(ignore, b"/build/\n");
+    assert!(!untracked().contains("build/out.log"));
+
+    // Then extended; the same pattern twice is not added again.
+    assert!(o.actions.add_ignore_pattern(&path, "*.tmp").unwrap());
+    assert!(!o.actions.add_ignore_pattern(&path, "*.tmp").unwrap());
+    let ignore = std::fs::read(repo.path().join(".gitignore")).unwrap();
+    assert_eq!(ignore, b"/build/\n*.tmp\n");
+    assert!(!untracked().contains("notes.tmp"));
+
+    let err = o.actions.add_ignore_pattern(&path, "a\nb").unwrap_err();
+    assert!(matches!(err, OpError::Refused(_)), "{err}");
+}
+
+#[test]
 fn deleting_branches_skips_moved_ones_and_undoes_as_one_batch() {
     use archipel_model::ports::RefReader;
     use std::collections::HashMap;
