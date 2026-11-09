@@ -224,3 +224,86 @@ fn json_id_is_overridden_by_the_column() {
     assert_eq!(id, JournalId(1));
     assert_eq!(store.recent(RepoId(u64::MAX), 10).unwrap()[0].id, id);
 }
+
+#[test]
+fn invalid_utf8_text_is_reported_as_corrupt() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    raw(&store)
+        .execute(
+            "INSERT INTO summaries VALUES ('p', 0, 1, CAST(x'7b22ff227d' AS TEXT))",
+            [],
+        )
+        .unwrap();
+    assert_corrupt(store.load_summaries(&ProjectId("p".into())));
+}
+
+/// A registry entry for the recovery tests.
+fn entry(id: &str) -> archipel_model::project::RegistryEntry {
+    archipel_model::project::RegistryEntry {
+        id: ProjectId(id.into()),
+        name: id.into(),
+        location: archipel_model::project::ProjectLocation::SharedFile(
+            format!("/projects/{id}/archipel.toml").into(),
+        ),
+        last_opened: None,
+    }
+}
+
+#[test]
+fn a_file_that_is_not_a_database_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite");
+    std::fs::write(&path, vec![0x5a; 8192]).unwrap();
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SqliteStore::SCHEMA_VERSION);
+    assert!(store.list_projects().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(dir.path().join("store.sqlite.corrupt")).unwrap(),
+        vec![0x5a; 8192],
+        "the damaged file is kept aside"
+    );
+}
+
+#[test]
+fn a_damaged_database_is_replaced_and_the_registry_salvaged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite");
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        store.upsert_project(&entry("kept")).unwrap();
+        // Spread the summaries over many pages, each tagged with a marker.
+        let conn = raw(&store);
+        for i in 0..64 {
+            let data = format!("\"MARKER{}\"", "x".repeat(900));
+            conn.execute(
+                "INSERT INTO summaries VALUES ('p', ?1, 1, ?2)",
+                params![i, data],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
+            .unwrap();
+    }
+    // Overwrite the b-tree header of a page holding summaries.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let at = bytes
+        .windows(6)
+        .rposition(|w| w == b"MARKER")
+        .expect("marker on disk");
+    let page = at / 4096 * 4096;
+    assert!(page > 0, "not the header page");
+    bytes[page..page + 12].fill(0xff);
+    std::fs::write(&path, bytes).unwrap();
+
+    let store = SqliteStore::open(&path).unwrap();
+    let projects = store.list_projects().unwrap();
+    assert_eq!(projects.len(), 1, "registry salvaged: {projects:?}");
+    assert_eq!(projects[0].id, ProjectId("kept".into()));
+    assert!(
+        store
+            .load_summaries(&ProjectId("p".into()))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(dir.path().join("store.sqlite.corrupt").exists());
+}

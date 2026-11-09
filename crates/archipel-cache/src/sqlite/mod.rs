@@ -24,6 +24,7 @@
 
 mod codec;
 mod journal;
+mod recovery;
 mod registry;
 mod schema;
 mod stats;
@@ -58,6 +59,12 @@ impl SqliteStore {
 
     /// Opens the database at `path` (creating the file and its parent
     /// directories if needed), then migrates it to [`Self::SCHEMA_VERSION`].
+    ///
+    /// A damaged database (failed `PRAGMA quick_check`, or not a database at
+    /// all) is moved aside to `<path>.corrupt` and replaced by a fresh one:
+    /// everything in it is a cache or a convenience, and a damaged file would
+    /// otherwise fail every project opening. The recent-projects list is
+    /// salvaged when its rows are still readable.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -65,8 +72,19 @@ impl SqliteStore {
                 StoreError::Backend(format!("cannot create {}: {e}", parent.display()))
             })?;
         }
-        let conn = Connection::open(path).map_err(db)?;
-        Self::init(conn)
+        match Connection::open(path).map_err(db).and_then(|conn| {
+            check_integrity(&conn)?;
+            Self::init(conn)
+        }) {
+            Err(StoreError::Corrupt(reason)) => {
+                tracing::warn!(path = %path.display(), %reason, "database damaged; starting a fresh one");
+                let aside = recovery::move_aside(path)?;
+                let store = Self::init(Connection::open(path).map_err(db)?)?;
+                recovery::salvage_registry(&store.lock(), &aside);
+                Ok(store)
+            }
+            other => other,
+        }
     }
 
     /// Opens a private in-memory database (lost when dropped), already migrated.
@@ -117,8 +135,37 @@ fn write_tx(conn: &mut Connection) -> Result<Transaction<'_>, StoreError> {
         .map_err(db)
 }
 
-/// Converts a SQLite error into a store error.
+/// `PRAGMA quick_check`: [`StoreError::Corrupt`] when the file is damaged.
+/// Linear in the database size, a few milliseconds for this store.
+fn check_integrity(conn: &Connection) -> Result<(), StoreError> {
+    let verdict: String = conn
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+        .map_err(db)?;
+    if verdict == "ok" {
+        Ok(())
+    } else {
+        Err(StoreError::Corrupt(verdict))
+    }
+}
+
+/// Converts a SQLite error into a store error: a damaged file or a stored
+/// value that cannot be decoded is [`StoreError::Corrupt`], anything else
+/// [`StoreError::Backend`].
 #[allow(clippy::needless_pass_by_value)] // shaped for `map_err(db)`
 fn db(error: rusqlite::Error) -> StoreError {
-    StoreError::Backend(error.to_string())
+    use rusqlite::ErrorCode;
+    let corrupt = match &error {
+        rusqlite::Error::SqliteFailure(e, _) => {
+            matches!(e.code, ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
+        }
+        rusqlite::Error::Utf8Error(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::InvalidColumnType(..) => true,
+        _ => false,
+    };
+    if corrupt {
+        StoreError::Corrupt(error.to_string())
+    } else {
+        StoreError::Backend(error.to_string())
+    }
 }
