@@ -77,12 +77,13 @@ impl UiTheme {
             tracing::warn!(error = %e, "cannot load user themes");
         }
         let theme = registry.get(id).cloned().unwrap_or_else(builtin::dark);
-        let installed = cx
+        let mut installed = cx
             .text_system()
             .all_font_names()
             .into_iter()
             .map(|n| n.to_lowercase())
             .collect();
+        crate::fonts::register_missing(&mut installed, cx);
         let mut ui = Self {
             registry,
             selected: theme.clone(),

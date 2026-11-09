@@ -131,9 +131,10 @@ size = 14.0               # base font size in px, 8 to 32
 line_height = 1.5         # multiple of the size, 1.0 to 2.5
 ```
 
-- **Fonts** must be installed on the system. If one is missing, Archipel
-  falls back to a common system font, so a shared theme still works on a
-  machine without it.
+- **Fonts** must be installed on the system, except Jura and Hack (used by
+  Quiet Cyber), which ship with Archipel; an installed copy takes precedence.
+  If a font is missing, Archipel falls back to a common system font, so a
+  shared theme still works on a machine without it.
 - **Density** sets spacing and row heights: compact fits more rows on
   screen, spacious gives more air.
 - `radius = 0.0` gives square corners.
