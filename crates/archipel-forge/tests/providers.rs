@@ -881,6 +881,22 @@ fn github_rate_limit_is_not_a_bad_token() {
 }
 
 #[test]
+fn github_secondary_rate_limit_without_headers_is_not_a_bad_token() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls",
+        403,
+        json!({"message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}),
+    );
+    let c = client(&http, &["github.com"]);
+    assert!(matches!(
+        c.pull_request_for_branch(&github_repo(), "f"),
+        Err(ForgeError::RateLimited { .. })
+    ));
+}
+
+#[test]
 fn pages_on_another_host_are_not_followed() {
     let http = Arc::new(FakeHttp::default());
     http.on(Method::Get, "/user/orgs", 200, json!([]));

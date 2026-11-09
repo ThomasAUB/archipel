@@ -74,14 +74,27 @@ impl BranchCi {
     }
 }
 
-/// The last forge read of a row hit the forge's rate limit: its status and
-/// CI are those of an earlier read, and may be out of date.
+/// Why the last forge read of a row could not refresh it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StaleCause {
+    /// The forge's rate limit is used up.
+    #[default]
+    RateLimited,
+    /// The forge could not be reached, or failed on its side (HTTP 5xx).
+    Unreachable,
+}
+
+/// The last forge read of a row hit the forge's rate limit, or a passing
+/// failure: its status and CI are those of an earlier read, and may be out
+/// of date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForgeLimit {
     /// When the shown status and CI were read.
     pub as_of: Timestamp,
     /// When the forge accepts calls again, if it said.
     pub retry_at: Option<Timestamp>,
+    /// Why the last read failed.
+    pub cause: StaleCause,
 }
 
 impl ForgeLimit {
@@ -91,8 +104,12 @@ impl ForgeLimit {
     /// Explanation for the tooltips.
     #[must_use]
     pub fn note(&self, now: Timestamp) -> String {
+        let why = match self.cause {
+            StaleCause::RateLimited => "Rate limited by the forge",
+            StaleCause::Unreachable => "Last forge read failed",
+        };
         let mut note = format!(
-            "Rate limited by the forge: may be out of date (read {})",
+            "{why}: may be out of date (read {})",
             relative_time(self.as_of, now)
         );
         if let Some(at) = self.retry_at.filter(|at| *at > now) {

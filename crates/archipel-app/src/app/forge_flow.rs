@@ -21,8 +21,8 @@ use archipel_ops::{GitPorts, OpClass, OpError, OpSpec};
 use super::{App, AppError, AppEvent, lock};
 use crate::dashboard::DashboardRow;
 use crate::forge::{
-    BranchCi, ForgeLimit, ForgePorts, ForgeRegistry, ForgeStatus, Located, linked_description,
-    locate, pick_remote,
+    BranchCi, ForgeLimit, ForgePorts, ForgeRegistry, ForgeStatus, Located, StaleCause,
+    linked_description, locate, pick_remote,
 };
 
 /// One repository of a pull request plan.
@@ -132,10 +132,10 @@ struct ForgeTarget {
 struct ForgeRead {
     status: ForgeStatus,
     ci: BranchCi,
-    /// The status read hit the rate limit: the last known status stays.
-    status_limited: bool,
-    /// The CI read hit the rate limit: the last known CI stays.
-    ci_limited: bool,
+    /// The status read failed in passing: the last known status stays.
+    status_stale: Option<StaleCause>,
+    /// The CI read failed in passing: the last known CI stays.
+    ci_stale: Option<StaleCause>,
     /// The rate limit met: host, and when it accepts calls again.
     limit: Option<(String, Option<Timestamp>)>,
     /// A real failure, for the drawer.
@@ -145,10 +145,25 @@ struct ForgeRead {
 /// How long a rate-limited host is left alone when it did not say.
 const DEFAULT_BACKOFF_SECS: i64 = 60;
 
+/// How soon a repo whose last forge read failed in passing is read again
+/// (instead of `forge_refresh_secs`).
+const RETRY_FAILED_SECS: u64 = 30;
+
 /// The host and retry time of a rate limit error.
 fn rate_limit(error: &ForgeError) -> Option<(String, Option<Timestamp>)> {
     match error {
         ForgeError::RateLimited { host, retry_at } => Some((host.clone(), *retry_at)),
+        _ => None,
+    }
+}
+
+/// Whether `error` is a passing failure, worth keeping the last known
+/// status over: a rate limit, an unreachable host, a forge-side error.
+fn stale_cause(error: &ForgeError) -> Option<StaleCause> {
+    match error {
+        ForgeError::RateLimited { .. } => Some(StaleCause::RateLimited),
+        ForgeError::Network { .. } => Some(StaleCause::Unreachable),
+        ForgeError::Http { status, .. } if *status >= 500 => Some(StaleCause::Unreachable),
         _ => None,
     }
 }
@@ -170,8 +185,8 @@ fn read_forge(
             return ForgeRead {
                 status: ForgeStatus::Error(e.to_string()),
                 ci: BranchCi::Unknown,
-                status_limited: false,
-                ci_limited: false,
+                status_stale: None,
+                ci_stale: None,
                 limit: None,
                 error: None,
             };
@@ -193,14 +208,15 @@ fn read_forge(
             return ForgeRead {
                 status: ForgeStatus::Error(message.clone()),
                 ci: BranchCi::Error(message),
-                status_limited: true,
-                ci_limited: true,
+                status_stale: Some(StaleCause::RateLimited),
+                ci_stale: Some(StaleCause::RateLimited),
                 limit: Some((host.clone(), Some(until))),
                 error: None,
             };
         }
     }
     let mut ci_limit = None;
+    let mut ci_stale = None;
     let ci = match &located {
         Located::Repo { repo, .. } => match forge.ci.ci_for_branch(repo, branch) {
             Ok(Some(run)) => BranchCi::Run(run),
@@ -209,6 +225,7 @@ fn read_forge(
             // Reported once, by the pull request read below.
             Err(e) => {
                 ci_limit = rate_limit(&e);
+                ci_stale = stale_cause(&e);
                 BranchCi::Error(e.to_string())
             }
         },
@@ -219,8 +236,8 @@ fn read_forge(
     ForgeRead {
         status,
         ci,
-        status_limited: status_limit.is_some(),
-        ci_limited: ci_limit.is_some(),
+        status_stale: error.as_ref().and_then(stale_cause),
+        ci_stale,
         limit: status_limit.or(ci_limit),
         error,
     }
@@ -439,6 +456,13 @@ impl App {
                 return;
             };
             let preferred = upstream_remote(row);
+            // A failed read is retried sooner, so a passing failure does not
+            // stick for a whole refresh period.
+            let fresh = if s.forge_failed.contains(&repo) {
+                fresh.min(Duration::from_secs(RETRY_FAILED_SECS))
+            } else {
+                fresh
+            };
             let recent = s
                 .forge_checked
                 .get(&repo)
@@ -501,16 +525,17 @@ impl App {
                 .map(|(_, at)| {
                     Timestamp(now.0 - i64::try_from(at.elapsed().as_secs()).unwrap_or(0))
                 });
+            let failed = read.status_stale.is_some() || read.ci_stale.is_some();
             let changed = match row {
                 Some(row) if current => {
-                    // Rate limited: what an earlier read of this branch
-                    // found stays shown, marked as maybe out of date,
-                    // rather than an error.
+                    // Rate limited, or a passing failure: what an earlier
+                    // read of this branch found stays shown, marked as maybe
+                    // out of date, rather than an error.
                     let as_of = row.forge_limit.map(|l| l.as_of).or(read_at);
-                    let keep_status = read.status_limited
+                    let keep_status = read.status_stale.is_some()
                         && as_of.is_some()
                         && !matches!(row.forge, ForgeStatus::Unknown | ForgeStatus::Error(_));
-                    let keep_ci = read.ci_limited
+                    let keep_ci = read.ci_stale.is_some()
                         && as_of.is_some()
                         && !matches!(row.ci, BranchCi::Unknown | BranchCi::Error(_));
                     let status = if keep_status {
@@ -519,9 +544,14 @@ impl App {
                         read.status
                     };
                     let ci = if keep_ci { row.ci.clone() } else { read.ci };
+                    let cause = read.status_stale.or(read.ci_stale).unwrap_or_default();
                     let limit = as_of
                         .filter(|_| keep_status || keep_ci)
-                        .map(|as_of| ForgeLimit { as_of, retry_at });
+                        .map(|as_of| ForgeLimit {
+                            as_of,
+                            retry_at,
+                            cause,
+                        });
                     let changed = row.forge != status || row.ci != ci || row.forge_limit != limit;
                     row.forge = status;
                     row.ci = ci;
@@ -531,6 +561,11 @@ impl App {
                 _ => false,
             };
             if current {
+                if failed {
+                    s.forge_failed.insert(repo);
+                } else {
+                    s.forge_failed.remove(&repo);
+                }
                 s.forge_checked.insert(repo, (branch, Instant::now()));
             }
             (changed, reread)
