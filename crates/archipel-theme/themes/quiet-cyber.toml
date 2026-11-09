@@ -53,10 +53,10 @@ line_height = 1.5
 "status.warning" = "#d6a175"
 
 # Diff
-"diff.add.bg" = "#17241f"
-"diff.del.bg" = "#271a1e"
-"diff.add.word.bg" = "#243b31"
-"diff.del.word.bg" = "#43262f"
+"diff.add.bg" = "#1a3326"
+"diff.del.bg" = "#3a1d23"
+"diff.add.word.bg" = "#2a5a40"
+"diff.del.word.bg" = "#6a2d38"
 "diff.add.fg" = "#a9d1b3"
 "diff.del.fg" = "#e2a3a8"
 
