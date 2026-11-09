@@ -40,6 +40,9 @@ pub(super) struct Session {
     pub(super) tree_pending: HashSet<RepoId>,
     /// Branch and time of the last forge status read, per repo.
     pub(super) forge_checked: HashMap<RepoId, (String, Instant)>,
+    /// Repos whose last forge read failed in passing (rate limit, network,
+    /// forge-side error): read again sooner than fresh ones.
+    pub(super) forge_failed: HashSet<RepoId>,
     /// Repos whose forge status is being read.
     pub(super) forge_pending: HashSet<RepoId>,
     /// Repos refreshed while a read was pending: read again once it lands,
@@ -138,6 +141,7 @@ impl App {
             dependencies: HashMap::new(),
             tree_pending: HashSet::new(),
             forge_checked: HashMap::new(),
+            forge_failed: HashSet::new(),
             forge_pending: HashSet::new(),
             forge_reread: HashSet::new(),
             forge_backoff: HashMap::new(),
@@ -255,6 +259,7 @@ impl App {
             s.ui.selection.retain(|r| *r != repo);
             s.dependencies.remove(&repo);
             s.forge_checked.remove(&repo);
+            s.forge_failed.remove(&repo);
             Some(())
         })?;
         self.start_watching();

@@ -313,8 +313,13 @@ impl Api<'_> {
                 host: self.host.to_owned(),
                 retry_at: retry_at(&response, Timestamp::now()),
             }),
+            // Its secondary limit may come without either header, only
+            // saying so in the message.
             403 if response.header("x-ratelimit-remaining") == Some("0")
-                || response.header("retry-after").is_some() =>
+                || response.header("retry-after").is_some()
+                || error_message(&response.body)
+                    .to_ascii_lowercase()
+                    .contains("rate limit") =>
             {
                 Err(ForgeError::RateLimited {
                     host: self.host.to_owned(),

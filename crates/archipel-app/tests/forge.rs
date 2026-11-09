@@ -359,6 +359,54 @@ fn rate_limit_keeps_the_last_status_marked() {
 }
 
 #[test]
+fn passing_pull_request_failure_keeps_the_last_status() {
+    let e = env();
+    sign_in(&e);
+    wait_until("statuses", || {
+        matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. })
+    });
+    // The CI read answers, the pull request read hits a forge-side error
+    // (as a 502 on one of its calls does).
+    e.forge.fail_pull_requests(
+        "acme/r1",
+        Some(ForgeError::Http {
+            host: "github.com".into(),
+            status: 502,
+            message: "bad gateway".into(),
+        }),
+    );
+    e.app.dispatch(Command::RefreshForge).unwrap();
+    wait_until("marked stale", || limited(&e, 1));
+    assert!(
+        matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. }),
+        "the last status stays rather than \"error\""
+    );
+    let ext = e.app.extensions();
+    let col = ext.columns.get("forge").unwrap();
+    let row = e.app.rows().into_iter().nth(1).unwrap();
+    let cell = col.cell(&row, Timestamp::now());
+    assert_eq!(cell.text, "none ?");
+    assert!(cell.detail.unwrap().contains("Last forge read failed"));
+
+    // Once the forge answers again, the mark goes.
+    e.forge.fail_pull_requests("acme/r1", None);
+    e.app.dispatch(Command::RefreshForge).unwrap();
+    wait_until("fresh again", || !limited(&e, 1));
+    assert!(matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. }));
+
+    // A lasting failure still shows as an error.
+    e.forge.fail_pull_requests(
+        "acme/r1",
+        Some(ForgeError::Decode {
+            host: "github.com".into(),
+            message: "bad json".into(),
+        }),
+    );
+    e.app.dispatch(Command::RefreshForge).unwrap();
+    wait_until("error", || matches!(forge_of(&e, 1), ForgeStatus::Error(_)));
+}
+
+#[test]
 fn open_pull_requests_are_listed_and_merged() {
     let e = env();
     sign_in(&e);

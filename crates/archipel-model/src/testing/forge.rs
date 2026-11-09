@@ -55,6 +55,8 @@ struct ForgeState {
     hosts: HashMap<String, FakeHost>,
     /// Repo paths whose calls fail.
     failing: HashMap<String, ForgeError>,
+    /// Repo paths whose pull request reads alone fail.
+    failing_pull_requests: HashMap<String, ForgeError>,
     reads: usize,
 }
 
@@ -102,6 +104,16 @@ impl FakeForge {
         lock(&self.state).failing.insert(path.into(), error);
     }
 
+    /// Makes the pull request reads of repo `path` fail with `error`, or
+    /// succeed again with `None`; its CI reads still answer.
+    pub fn fail_pull_requests(&self, path: &str, error: Option<ForgeError>) {
+        let mut s = lock(&self.state);
+        match error {
+            Some(e) => s.failing_pull_requests.insert(path.into(), e),
+            None => s.failing_pull_requests.remove(path),
+        };
+    }
+
     /// Pull requests created so far.
     #[must_use]
     pub fn created(&self) -> Vec<CreatedPullRequest> {
@@ -137,6 +149,9 @@ impl PullRequestReader for FakeForge {
         self.check(repo)?;
         let mut s = lock(&self.state);
         s.reads += 1;
+        if let Some(e) = s.failing_pull_requests.get(&repo.path) {
+            return Err(e.clone());
+        }
         Ok(s.open.get(&(repo.path.clone(), branch.to_owned())).cloned())
     }
 
