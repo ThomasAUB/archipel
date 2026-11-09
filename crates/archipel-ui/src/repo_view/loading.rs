@@ -209,11 +209,16 @@ impl RepoView {
     pub(super) fn load_changes(&mut self, cx: &mut Context<Self>) {
         let status = self.core.repo_actions().ports().status.clone();
         let path = self.path.clone();
+        self.changes_read += 1;
+        let read = self.changes_read;
         let task =
             cx.background_spawn(async move { status.changes(&path).map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
+                if read != v.changes_read {
+                    return; // a later read started: it may see a newer state
+                }
                 match result {
                     Ok(c) => v.changes = c,
                     Err(e) => v.status = Some(e),

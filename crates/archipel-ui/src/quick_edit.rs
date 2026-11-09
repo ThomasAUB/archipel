@@ -36,6 +36,8 @@ pub struct QuickEdit {
     path: RepoPath,
     name: String,
     changes: Vec<FileChange>,
+    /// Counts the reads of [`Self::changes`]: only the latest one lands.
+    changes_read: u64,
     /// Actions, branch, files and commit box, as in the repo tab.
     staging: staging::Panel,
     status: Option<String>,
@@ -63,6 +65,7 @@ impl QuickEdit {
             path: row.path.clone(),
             name: row.name.clone(),
             changes: Vec::new(),
+            changes_read: 0,
             staging,
             status: None,
             open_diff: None,
@@ -86,11 +89,16 @@ impl QuickEdit {
     fn load_changes(&mut self, cx: &mut Context<Self>) {
         let status = self.core.repo_actions().ports().status.clone();
         let path = self.path.clone();
+        self.changes_read += 1;
+        let read = self.changes_read;
         let task =
             cx.background_spawn(async move { status.changes(&path).map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
+                if read != v.changes_read {
+                    return; // a later read started: it may see a newer state
+                }
                 match result {
                     Ok(c) => v.changes = c,
                     Err(e) => v.status = Some(e),

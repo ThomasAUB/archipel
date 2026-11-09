@@ -133,6 +133,8 @@ pub struct RepoView {
     /// Full message of the selected commit, shown above its files.
     message: Option<(Oid, SharedString)>,
     changes: Vec<FileChange>,
+    /// Counts the reads of [`Self::changes`]: only the latest one lands.
+    changes_read: u64,
     /// Diff shown in place of the graph.
     open_diff: Option<OpenDiff>,
     /// The file browser, while **Files** is on.
@@ -206,6 +208,7 @@ impl RepoView {
             details: None,
             message: None,
             changes: Vec::new(),
+            changes_read: 0,
             open_diff: None,
             browser: None,
             staging,
