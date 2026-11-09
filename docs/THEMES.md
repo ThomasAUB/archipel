@@ -128,6 +128,7 @@ animation = "normal"      # off | slow | normal | fast
 ui_font = "Inter"
 mono_font = "JetBrains Mono"
 size = 14.0               # base font size in px, 8 to 32
+weight = 400.0            # regular UI text, 100 to 900 (400 regular, 500 medium)
 line_height = 1.5         # multiple of the size, 1.0 to 2.5
 ```
 
@@ -185,6 +186,7 @@ accent = "#7aa2f7"
 ui_font = "Inter"
 mono_font = "JetBrains Mono"
 size = 13.0               # px, 8 to 32
+weight = 400.0            # 100 to 900
 line_height = 1.45        # 1.0 to 2.5
 
 [tokens]                  # individual color overrides by token id

@@ -281,7 +281,10 @@ fn side_status(status: &RepoStatus) -> (T, String) {
 fn text_width(text: &str, size: Pixels, window: &Window, cx: &gpui_kit::App) -> f32 {
     let run = TextRun {
         len: text.len(),
-        font: font(ui_font(cx)),
+        font: gpui_kit::Font {
+            weight: crate::theme::ui_weight(cx),
+            ..font(ui_font(cx))
+        },
         color: color(cx, T::FgDefault),
         background_color: None,
         underline: None,

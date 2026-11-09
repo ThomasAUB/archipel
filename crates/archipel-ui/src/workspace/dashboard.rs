@@ -507,6 +507,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .font_family(ui_font(cx))
+                .font_weight(crate::theme::ui_weight(cx))
                 .text_size(text_size(cx))
                 .text_color(color(cx, T::FgDefault))
                 .whitespace_nowrap()

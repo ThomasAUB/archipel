@@ -19,6 +19,7 @@
 //! ui_font = "Inter"
 //! mono_font = "JetBrains Mono"
 //! size = 13.0
+//! weight = 400.0          # regular UI text, 100 to 900
 //! line_height = 1.45
 //!
 //! [tokens]                  # individual overrides by token id
@@ -34,8 +35,8 @@ use crate::color::Color;
 use crate::derive::BaseColors;
 use crate::error::{ThemeError, ThemeWarning};
 use crate::settings::{
-    AnimationSpeed, Density, MAX_FONT_SIZE, MAX_LINE_HEIGHT, MAX_RADIUS, MIN_FONT_SIZE,
-    MIN_LINE_HEIGHT,
+    AnimationSpeed, Density, MAX_FONT_SIZE, MAX_FONT_WEIGHT, MAX_LINE_HEIGHT, MAX_RADIUS,
+    MIN_FONT_SIZE, MIN_FONT_WEIGHT, MIN_LINE_HEIGHT,
 };
 use crate::theme::Theme;
 use crate::token::ColorToken;
@@ -68,6 +69,8 @@ pub struct TypographyOverrides {
     pub mono_font: Option<String>,
     /// Base font size (px).
     pub size: Option<f32>,
+    /// Weight of regular UI text (CSS scale).
+    pub weight: Option<f32>,
     /// Line height (multiple of the size).
     pub line_height: Option<f32>,
 }
@@ -79,6 +82,7 @@ impl TypographyOverrides {
         self.ui_font.is_none()
             && self.mono_font.is_none()
             && self.size.is_none()
+            && self.weight.is_none()
             && self.line_height.is_none()
     }
 }
@@ -150,6 +154,9 @@ impl ThemeFile {
         if let Some(s) = t.size {
             theme.typography.size = s;
         }
+        if let Some(w) = t.weight {
+            theme.typography.weight = w;
+        }
         if let Some(l) = t.line_height {
             theme.typography.line_height = l;
         }
@@ -190,6 +197,7 @@ impl ThemeFile {
             ui_font: (tt.ui_font != pt.ui_font).then(|| tt.ui_font.clone()),
             mono_font: (tt.mono_font != pt.mono_font).then(|| tt.mono_font.clone()),
             size: f32_changed(tt.size, pt.size),
+            weight: f32_changed(tt.weight, pt.weight),
             line_height: f32_changed(tt.line_height, pt.line_height),
         };
         Self {
@@ -251,6 +259,9 @@ impl ThemeFile {
             }
             if let Some(s) = t.size {
                 line(&mut out, "size", &fmt_f32(s));
+            }
+            if let Some(w) = t.weight {
+                line(&mut out, "weight", &fmt_f32(w));
             }
             if let Some(l) = t.line_height {
                 line(&mut out, "line_height", &fmt_f32(l));
@@ -429,6 +440,10 @@ impl Parser {
                             "size" => {
                                 self.file.typography.size =
                                     self.number(&path, v, MIN_FONT_SIZE, MAX_FONT_SIZE);
+                            }
+                            "weight" => {
+                                self.file.typography.weight =
+                                    self.number(&path, v, MIN_FONT_WEIGHT, MAX_FONT_WEIGHT);
                             }
                             "line_height" => {
                                 self.file.typography.line_height =

@@ -13,7 +13,7 @@ use archipel_theme::{
 };
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
-use gpui_kit::{App, Global, Hsla, Pixels, Rgba, WindowAppearance, px};
+use gpui_kit::{App, FontWeight, Global, Hsla, Pixels, Rgba, WindowAppearance, px};
 
 /// The active theme, as a GPUI global.
 ///
@@ -349,6 +349,11 @@ pub fn radius(cx: &App) -> Pixels {
 /// UI font family (installed).
 pub fn ui_font(cx: &App) -> String {
     cx.global::<UiTheme>().ui_family.clone()
+}
+
+/// Weight of regular UI text.
+pub fn ui_weight(cx: &App) -> FontWeight {
+    FontWeight(cx.global::<UiTheme>().theme.typography.weight)
 }
 
 /// Monospace font family (installed).

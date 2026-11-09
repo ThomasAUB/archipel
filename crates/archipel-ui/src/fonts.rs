@@ -21,6 +21,7 @@ const BUNDLED: &[Family] = &[
         name: "Jura",
         files: &[
             include_bytes!("../fonts/Jura-Regular.ttf"),
+            include_bytes!("../fonts/Jura-Medium.ttf"),
             include_bytes!("../fonts/Jura-SemiBold.ttf"),
             include_bytes!("../fonts/Jura-Bold.ttf"),
         ],

@@ -382,6 +382,7 @@ impl Render for Workspace {
             .bg(color(cx, T::BgApp))
             .text_color(color(cx, T::FgDefault))
             .font_family(ui_font(cx))
+            .font_weight(crate::theme::ui_weight(cx))
             .text_size(text_size(cx))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 this.quick_edit_key(e, window, cx);
