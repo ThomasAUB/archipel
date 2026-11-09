@@ -267,6 +267,7 @@ fn quiet_cyber_parses_cleanly_and_keeps_its_look() {
     assert_eq!(theme.appearance(), Appearance::Dark);
     assert!(theme.radius.abs() < f32::EPSILON);
     assert_eq!(theme.typography.ui_font, "Jura");
+    assert!((theme.typography.weight - 500.0).abs() < f32::EPSILON);
     for (&token, &color) in &file.tokens {
         assert_eq!(theme.color(token), color, "{token:?}");
     }
@@ -466,6 +467,7 @@ fn export_is_minimal_and_import_round_trips() {
     theme.set_token(ColorToken::DiffDelWordBg, Color::rgba(0xff, 0, 0, 0x40));
     theme.typography.mono_font = "Fira \"Code\"".into();
     theme.typography.line_height = 1.6;
+    theme.typography.weight = 500.0;
     theme.density = Density::Spacious;
     theme.radius = 2.5;
 
@@ -475,6 +477,7 @@ fn export_is_minimal_and_import_round_trips() {
     assert!(text.contains("\"graph.lane.3\" = \"#aabbcc\""));
     assert!(text.contains("\"diff.del.word.bg\" = \"#ff000040\""));
     assert_eq!(text.matches(" = \"#").count(), 3, "{text}");
+    assert!(text.contains("weight = 500.0"), "{text}");
 
     let (file, warnings) = ThemeFile::parse(&text).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");

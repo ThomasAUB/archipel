@@ -7,14 +7,14 @@ radius = 0.0
 
 [base]
 background = "#0f1114"
-text = "#f2f4f6"
+text = "#dcdfe4"
 accent = "#88bcc1"
 
 [typography]
 ui_font = "Jura"
 mono_font = "Hack"
-# Jura is thin with a small x-height: a size up keeps it readable
-size = 14.0
+weight = 500.0
+size = 14
 line_height = 1.5
 
 [tokens]
@@ -27,8 +27,8 @@ line_height = 1.5
 "bg.selected" = "#1f3237"
 
 # Text
-"fg.default" = "#f2f4f6"
-"fg.muted" = "#cad0d8"
+"fg.default" = "#dcdfe4"
+"fg.muted" = "#c2c8d0"
 "fg.subtle" = "#adb4be"
 "fg.disabled" = "#7e858f"
 

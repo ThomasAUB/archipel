@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 pub const MIN_FONT_SIZE: f32 = 8.0;
 /// Largest accepted base font size, in logical pixels.
 pub const MAX_FONT_SIZE: f32 = 32.0;
+/// Lightest accepted UI font weight (CSS scale: 400 regular, 700 bold).
+pub const MIN_FONT_WEIGHT: f32 = 100.0;
+/// Heaviest accepted UI font weight.
+pub const MAX_FONT_WEIGHT: f32 = 900.0;
 /// Smallest accepted line height (multiple of the font size).
 pub const MIN_LINE_HEIGHT: f32 = 1.0;
 /// Largest accepted line height (multiple of the font size).
@@ -29,6 +33,9 @@ pub struct Typography {
     pub mono_font: String,
     /// Base font size in logical pixels.
     pub size: f32,
+    /// Weight of regular UI text (CSS scale, 400 is regular). Thin families
+    /// read better a step heavier.
+    pub weight: f32,
     /// Line height as a multiple of the font size.
     pub line_height: f32,
 }
@@ -39,6 +46,7 @@ impl Default for Typography {
             ui_font: "Inter".to_owned(),
             mono_font: "JetBrains Mono".to_owned(),
             size: 13.0,
+            weight: 400.0,
             line_height: 1.45,
         }
     }
