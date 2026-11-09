@@ -3,7 +3,9 @@
 //! working-copy diff, hunks have stage / unstage / discard buttons, and
 //! changed lines can be selected (click, Ctrl+click, Shift+click) to stage,
 //! unstage or discard just them, and the file can be edited in place
-//! (Edit, or a double-click on a line; see [`crate::file_edit`]).
+//! (Edit, or a double-click on a line; see [`crate::file_edit`]). An
+//! unstaged diff names the file's line ending, with a button converting
+//! it to the other (LF ↔ CRLF).
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -21,7 +23,7 @@ use gpui_kit::{
     uniform_list,
 };
 
-use crate::file_edit;
+use crate::file_edit::{self, LineEnding};
 use crate::staging::{Staging, arm_discard};
 use crate::theme::{color, mono_font, row_height};
 use crate::widgets::{button, scroll_list};
@@ -46,9 +48,58 @@ pub(crate) struct DiffDoc {
     rows: Vec<DiffRow>,
     /// Digits of the largest line number, so the gutter has one width.
     lineno_width: usize,
+    /// Per file, the line ending of its new side (from its added and
+    /// context lines), with whether the change is only line endings.
+    endings: Vec<Option<Endings>>,
     /// Selected changed lines. A reloaded diff is a new doc, so the
     /// selection never outlives the lines it names.
     selection: Mutex<LineSelection>,
+}
+
+/// The line endings a file's diff shows.
+#[derive(Clone, Copy)]
+struct Endings {
+    /// The ending most of the new side's lines have.
+    new: LineEnding,
+    /// Every removed line comes back added with only its ending changed.
+    only: bool,
+}
+
+impl Endings {
+    fn of(file: &FileDiff) -> Option<Self> {
+        let (mut crlf, mut lf) = (0usize, 0usize);
+        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        for line in file.hunks.iter().flat_map(|h| &h.lines) {
+            if line.origin != LineOrigin::Removed {
+                if line.content.ends_with('\r') {
+                    crlf += 1;
+                } else {
+                    lf += 1;
+                }
+            }
+            let text = line.content.trim_end_matches('\r');
+            match line.origin {
+                LineOrigin::Removed => removed.push((text, line.content.len())),
+                LineOrigin::Added => added.push((text, line.content.len())),
+                LineOrigin::Context => {}
+            }
+        }
+        if crlf + lf == 0 {
+            return None;
+        }
+        let only = !removed.is_empty()
+            && removed.len() == added.len()
+            && removed.iter().zip(&added).all(|(r, a)| r.0 == a.0)
+            && removed.iter().zip(&added).any(|(r, a)| r.1 != a.1);
+        Some(Self {
+            new: if crlf > lf {
+                LineEnding::Crlf
+            } else {
+                LineEnding::Lf
+            },
+            only,
+        })
+    }
 }
 
 /// Selected line indices, grouped by hunk index.
@@ -125,10 +176,19 @@ impl DiffDoc {
                     .fold(max_lineno, u32::max);
             }
         }
+        let endings = files
+            .iter()
+            .map(|f| {
+                (!f.binary && !f.truncated)
+                    .then(|| Endings::of(f))
+                    .flatten()
+            })
+            .collect();
         Self {
             files,
             rows,
             lineno_width: max_lineno.to_string().len(),
+            endings,
             selection: Mutex::default(),
         }
     }
@@ -506,6 +566,13 @@ pub(crate) fn render_open<V: Staging>(
         .filter(|_| !editing)
         .and(doc.as_ref())
         .and_then(|d| (d.files.len() == 1 && d.editable(0)).then(|| d.first_change(0)));
+    // Line-ending conversion, on an unstaged diff of a text file still in
+    // the worktree: the side whose new lines are the file's.
+    let endings = side
+        .filter(|&s| !editing && s == DiffSide::Unstaged)
+        .and(doc.as_ref())
+        .and_then(|d| (d.files.len() == 1 && d.editable(0)).then_some(d.endings[0]))
+        .flatten();
     // A one-file diff of a deleted file says so: all-red lines alone read
     // like an edit that removed everything.
     let deleted = doc
@@ -552,6 +619,9 @@ pub(crate) fn render_open<V: Staging>(
         .when_some(selection, |header, (side, (doc, (f, picks)))| {
             header.child(selection_bar(v, side, &doc, f, picks, cx))
         })
+        .when_some(endings, |header, endings| {
+            header.child(endings_bar(title.clone(), endings, cx))
+        })
         .when_some(edit_at, |header, line| {
             header.child(button("diff-edit", "Edit", cx).on_click(cx.listener(
                 move |v: &mut V, _, window, cx| {
@@ -578,6 +648,39 @@ pub(crate) fn render_open<V: Staging>(
         .child(header)
         .child(body)
         .into_any_element()
+}
+
+/// The file's line ending and a button converting it to the other one, in
+/// the open diff's header; says so when only line endings changed.
+fn endings_bar<V: Staging>(file: String, endings: Endings, cx: &mut Context<V>) -> Div {
+    let to = endings.new.other();
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .text_xs()
+        .child(
+            div()
+                .text_color(color(
+                    cx,
+                    if endings.only {
+                        T::StatusWarning
+                    } else {
+                        T::FgMuted
+                    },
+                ))
+                .child(if endings.only {
+                    format!("only line endings changed · {}", endings.new.name())
+                } else {
+                    endings.new.name().to_owned()
+                }),
+        )
+        .child(
+            button("diff-eol", format!("To {}", to.name()), cx).on_click(cx.listener(
+                move |v: &mut V, _, _, cx| file_edit::convert_file(v, file.clone(), to, cx),
+            )),
+        )
 }
 
 /// The selected lines' count and actions, in the open diff's header.
@@ -682,6 +785,61 @@ pub(crate) fn step(
     let at = i64::try_from(at).unwrap_or(0);
     let next = usize::try_from((at + delta).clamp(0, last)).unwrap_or(0);
     files.get(next).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use archipel_model::diff::Hunk;
+
+    fn file(lines: &[(LineOrigin, &str)]) -> FileDiff {
+        FileDiff {
+            old_path: Some("a".into()),
+            new_path: Some("a".into()),
+            kind: ChangeKind::Modified,
+            binary: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 0,
+                new_start: 1,
+                new_lines: 0,
+                header: String::new(),
+                lines: lines
+                    .iter()
+                    .map(|&(origin, content)| DiffLine {
+                        origin,
+                        content: content.into(),
+                        old_lineno: None,
+                        new_lineno: None,
+                        no_newline_at_eof: false,
+                    })
+                    .collect(),
+            }],
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn endings_follow_the_new_side() {
+        use LineOrigin::{Added, Context, Removed};
+        let e = Endings::of(&file(&[
+            (Removed, "a"),
+            (Removed, "b"),
+            (Added, "a\r"),
+            (Added, "b\r"),
+        ]))
+        .unwrap();
+        assert_eq!(e.new, LineEnding::Crlf);
+        assert!(e.only);
+
+        let e = Endings::of(&file(&[(Context, "x"), (Removed, "a\r"), (Added, "a")])).unwrap();
+        assert_eq!(e.new, LineEnding::Lf);
+        assert!(e.only);
+
+        let e = Endings::of(&file(&[(Context, "x\r"), (Removed, "a\r"), (Added, "b\r")])).unwrap();
+        assert_eq!(e.new, LineEnding::Crlf);
+        assert!(!e.only);
+    }
 }
 
 // Needs a headless renderer, which gpui only has on Linux and macOS.
