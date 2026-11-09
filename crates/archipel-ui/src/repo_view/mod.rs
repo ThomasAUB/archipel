@@ -13,6 +13,7 @@
 
 mod details;
 mod dialogs;
+mod files;
 mod graph_paint;
 mod loading;
 mod menu;
@@ -45,7 +46,7 @@ use gpui_kit::{
 use crate::diff_view::DiffDoc;
 use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, repo_surface, staging_surface, tone};
-use crate::widgets::{Pane, PaneDrag, TextTooltip, condense_status, resize_pane, splitter};
+use crate::widgets::{Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter};
 
 use dialogs::{Confirm, NameForm};
 use loading::RefsState;
@@ -63,6 +64,8 @@ enum OpenDiff {
     /// A working-copy file on one side, its hunks staged or unstaged from
     /// the diff; `None` while it loads.
     Worktree(String, DiffSide, Option<Arc<DiffDoc>>),
+    /// A file of the file browser, read-only.
+    File(files::OpenFile),
 }
 
 /// A stash drawn in the graph, in a row of its own just above the commit
@@ -130,8 +133,12 @@ pub struct RepoView {
     /// Full message of the selected commit, shown above its files.
     message: Option<(Oid, SharedString)>,
     changes: Vec<FileChange>,
+    /// Counts the reads of [`Self::changes`]: only the latest one lands.
+    changes_read: u64,
     /// Diff shown in place of the graph.
     open_diff: Option<OpenDiff>,
+    /// The file browser, while **Files** is on.
+    browser: Option<files::FileBrowser>,
     /// The staging panel shown for the uncommitted-changes row.
     staging: staging::Panel,
     /// Name typed in the name form, shown while `name_form` is set.
@@ -201,7 +208,9 @@ impl RepoView {
             details: None,
             message: None,
             changes: Vec::new(),
+            changes_read: 0,
             open_diff: None,
+            browser: None,
             staging,
             name_input,
             name_form: None,
@@ -335,6 +344,14 @@ impl RepoView {
                     .child(self.name.clone()),
             )
             .children(self.render_ci(cx))
+            .child(
+                staging::small(button("r-files", "Files", cx))
+                    .when(self.browser.is_some(), |b| b.bg(color(cx, T::BgSelected)))
+                    .tooltip(|_, cx| {
+                        TextTooltip::view(&["Browse the repository's files".into()], cx)
+                    })
+                    .on_click(cx.listener(|v, _, window, cx| v.toggle_browser(window, cx))),
+            )
             .child(actions)
     }
 
@@ -449,9 +466,11 @@ impl Staging for RepoView {
 }
 
 impl Render for RepoView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let refs = self.render_refs(cx);
-        let centre = if self.open_diff.is_some() {
+        let centre = if matches!(self.open_diff, Some(OpenDiff::File(_))) {
+            self.render_open_file(window, cx)
+        } else if self.open_diff.is_some() {
             self.render_open_diff(cx)
         } else {
             self.render_graph(cx)

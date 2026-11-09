@@ -139,7 +139,7 @@ fn file_bytes(text: &str, crlf: bool) -> Vec<u8> {
 
 /// The highlighting language named after the file's extension (or its
 /// name, for `Makefile`, `Dockerfile`…).
-fn language_of(file: &str) -> String {
+pub(crate) fn language_of(file: &str) -> String {
     let name = file.rsplit('/').next().unwrap_or(file);
     match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => ext.to_lowercase(),

@@ -28,6 +28,9 @@ pub(super) struct Session {
     pub(super) ui: UiState,
     pub(super) watches: Vec<WatchHandle>,
     pub(super) pending: HashSet<RepoId>,
+    /// Repos refreshed while their summary was being read: read again once
+    /// it lands, as that read may predate the change (a file saved meanwhile).
+    pub(super) reread: HashSet<RepoId>,
     pub(super) drawer_open: bool,
     /// Running folder scan (launch from a directory).
     pub(super) scan: Option<CancelToken>,
@@ -117,6 +120,7 @@ impl App {
             ui,
             watches: Vec::new(),
             pending: HashSet::new(),
+            reread: HashSet::new(),
             drawer_open: false,
             scan: None,
             dependencies: HashMap::new(),

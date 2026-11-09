@@ -209,11 +209,16 @@ impl RepoView {
     pub(super) fn load_changes(&mut self, cx: &mut Context<Self>) {
         let status = self.core.repo_actions().ports().status.clone();
         let path = self.path.clone();
+        self.changes_read += 1;
+        let read = self.changes_read;
         let task =
             cx.background_spawn(async move { status.changes(&path).map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
+                if read != v.changes_read {
+                    return; // a later read started: it may see a newer state
+                }
                 match result {
                     Ok(c) => v.changes = c,
                     Err(e) => v.status = Some(e),
@@ -245,6 +250,7 @@ impl RepoView {
         self.wip_selected = true;
         self.details = None;
         self.open_diff = None;
+        self.sync_browser(cx);
         cx.notify();
     }
 
@@ -316,6 +322,7 @@ impl RepoView {
         }
         staging::on_summary(self, summary, cx);
         self.load_changes(cx);
+        self.refresh_browser(cx);
         // A checkout or an update inside a submodule only shows in the
         // working copy, not in the refs.
         self.load_submodules(cx);
@@ -405,6 +412,7 @@ impl RepoView {
         self.wip_selected = false;
         self.stash_selected = None;
         self.open_diff = None;
+        self.sync_browser(cx);
         let diffs = self.core.diff_reader();
         let history = self.core.history_reader();
         let path = self.path.clone();
@@ -444,6 +452,7 @@ impl RepoView {
         self.wip_selected = false;
         self.stash_selected = Some(oid);
         self.open_diff = None;
+        self.sync_browser(cx);
         let diffs = self.core.diff_reader();
         let path = self.path.clone();
         let task = cx.background_spawn(async move {

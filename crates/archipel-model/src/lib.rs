@@ -29,6 +29,7 @@ pub mod stats;
 pub mod submodule;
 pub mod summary;
 pub mod time;
+pub mod tree;
 pub mod ui_state;
 
 #[cfg(feature = "testing")]

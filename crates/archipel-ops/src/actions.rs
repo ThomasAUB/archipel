@@ -8,7 +8,7 @@ use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeToolLauncher,
     RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    SubmoduleReader, SubmoduleWriter, TagWriter, WorktreeFiles, WorktreeSnapshots,
+    SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -62,6 +62,8 @@ pub struct GitPorts {
     pub remotes: Arc<dyn RemoteReader>,
     /// Worktree file contents (the diff view's file editor).
     pub files: Arc<dyn WorktreeFiles>,
+    /// Files of a commit or of the working copy (the file browser).
+    pub tree: Arc<dyn TreeReader>,
 }
 
 impl GitPorts {
@@ -86,6 +88,7 @@ impl GitPorts {
             + SubmoduleWriter
             + RemoteReader
             + WorktreeFiles
+            + TreeReader
             + 'static,
     {
         Self {
@@ -106,7 +109,8 @@ impl GitPorts {
             submodules: backend.clone(),
             submodule_writer: backend.clone(),
             remotes: backend.clone(),
-            files: backend,
+            files: backend.clone(),
+            tree: backend,
         }
     }
 }
@@ -293,6 +297,20 @@ impl RepoActions {
     /// The bytes of a worktree file (`path` relative to the repo root).
     pub fn read_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, OpError> {
         Ok(self.git.files.read_file(repo, path)?)
+    }
+
+    /// The bytes of `path` in the tree of `commit`, or in the working copy
+    /// when `None` (the file browser).
+    pub fn read_file_at(
+        &self,
+        repo: &RepoPath,
+        commit: Option<Oid>,
+        path: &str,
+    ) -> Result<Vec<u8>, OpError> {
+        Ok(match commit {
+            Some(c) => self.git.tree.read_blob(repo, c, path)?,
+            None => self.git.files.read_file(repo, path)?,
+        })
     }
 
     /// Saves an edit of a worktree file: writes `contents` over `path`,

@@ -25,13 +25,19 @@ impl App {
         }
     }
 
-    /// Recomputes one summary (coalesced: at most one pending refresh per repo).
+    /// Recomputes one summary (coalesced: at most one pending refresh per
+    /// repo; one asked meanwhile runs once it lands).
     pub fn refresh_repo(&self, repo: RepoId) {
         let path = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
             // Hidden repos are never refreshed (spec §1: saves CPU and RAM).
-            if !s.rows.iter().any(|r| r.id == repo && !r.hidden) || !s.pending.insert(repo) {
+            if !s.rows.iter().any(|r| r.id == repo && !r.hidden) {
+                return;
+            }
+            if !s.pending.insert(repo) {
+                // The pending read may already be past what changed.
+                s.reread.insert(repo);
                 return;
             }
             // Stale while the refresh is queued (the UI can show a spinner).
@@ -60,10 +66,11 @@ impl App {
     /// Stores a refreshed summary in its row; caches every summary once no
     /// refresh is pending.
     fn apply_summary(&self, repo: RepoId, path: &RepoPath, result: Result<RepoSummary, GitError>) {
-        let finished_all = {
+        let (finished_all, again) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
             s.pending.remove(&repo);
+            let again = s.reread.remove(&repo);
             if let Some(row) = s.rows.iter_mut().find(|r| r.id == repo) {
                 row.stale = false;
                 row.status = match result {
@@ -73,9 +80,14 @@ impl App {
                     Err(e) => RepoStatus::Error(e.to_string()),
                 };
             }
-            s.pending.is_empty().then(|| (s.id.clone(), s.rows.clone()))
+            let finished_all =
+                (s.pending.is_empty() && !again).then(|| (s.id.clone(), s.rows.clone()));
+            (finished_all, again)
         };
         self.emit(AppEvent::RowsChanged(vec![repo]));
+        if again {
+            self.refresh_repo(repo);
+        }
         self.load_tree(repo);
         self.load_forge(repo, false);
         if let Some((id, rows)) = finished_all {

@@ -2,12 +2,15 @@
 //! in the background, reacts to watcher invalidations, runs batches and undo.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use archipel_app::{App, AppEvent, Command, Extensions, Services};
+use archipel_model::changes::FileChange;
 use archipel_model::journal::OperationKind;
-use archipel_model::ports::{JournalStore, ProjectSource, Scope, SummaryStore, UiStateStore};
+use archipel_model::ports::{
+    JournalStore, ProjectSource, Scope, StatusReader, SummaryStore, UiStateStore,
+};
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
 use archipel_model::requests::{CommitMode, CommitRequest};
 use archipel_model::settings::Settings;
@@ -16,7 +19,7 @@ use archipel_model::testing::{
     oid,
 };
 use archipel_model::ui_state::TabState;
-use archipel_model::{HeadState, ProjectId, RepoPath, RepoSummary};
+use archipel_model::{GitError, HeadState, ProjectId, RepoPath, RepoSummary};
 use archipel_ops::GitPorts;
 
 /// Where the test project is stored (in memory: the fake source).
@@ -39,6 +42,11 @@ struct Env {
 }
 
 fn env() -> Env {
+    env_with(|_, _| {})
+}
+
+/// The test environment, with `ports` adjusted before the app is built.
+fn env_with(adjust: impl FnOnce(&mut GitPorts, &Arc<FakeGit>)) -> Env {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -62,8 +70,10 @@ fn env() -> Env {
             path
         })
         .collect();
+    let mut ports = GitPorts::from_backend(git.clone());
+    adjust(&mut ports, &git);
     let services = Services {
-        git: GitPorts::from_backend(git.clone()),
+        git: ports,
         projects: projects.clone(),
         discovery: Arc::new(FakeDiscovery::default()),
         registry: store.clone(),
@@ -176,6 +186,63 @@ fn watcher_invalidation_refreshes_one_repo() {
         .with_repo(&e.repos[1], |r| r.summary.changes.modified = 4);
     e.watcher.trigger(e.repos[1].id(), Scope::STATUS);
     wait_until(&e.app, "invalidation", |app| {
+        app.rows()[1]
+            .summary()
+            .is_some_and(|s| s.changes.modified == 4)
+    });
+}
+
+/// A status reader whose next summary read, once armed, reads the repo
+/// then waits to be released before answering.
+struct HeldSummary {
+    inner: Arc<FakeGit>,
+    armed: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl StatusReader for HeldSummary {
+    fn summary(&self, repo: &RepoPath) -> Result<RepoSummary, GitError> {
+        let summary = self.inner.summary(repo);
+        let held = self.armed.lock().unwrap().take();
+        if let Some((entered, release)) = held {
+            entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
+        summary
+    }
+    fn changes(&self, repo: &RepoPath) -> Result<Vec<FileChange>, GitError> {
+        self.inner.changes(repo)
+    }
+}
+
+/// The regression: a change made while a refresh was reading (a file saved
+/// right after the watcher saw its temporary copy) was lost, as the refresh
+/// asked for it was dropped in favor of the pending one.
+#[test]
+fn a_refresh_asked_while_one_is_reading_runs_after_it() {
+    let held = Arc::new(Mutex::new(None::<Arc<HeldSummary>>));
+    let slot = held.clone();
+    let e = env_with(move |ports, git| {
+        let reader = Arc::new(HeldSummary {
+            inner: git.clone(),
+            armed: Mutex::new(None),
+        });
+        *slot.lock().unwrap() = Some(reader.clone());
+        ports.status = reader;
+    });
+    let reader = held.lock().unwrap().clone().unwrap();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    *reader.armed.lock().unwrap() = Some((entered_tx, release_rx));
+    e.watcher.trigger(e.repos[1].id(), Scope::STATUS);
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The read in progress already saw the repo: this change is newer.
+    e.git
+        .with_repo(&e.repos[1], |r| r.summary.changes.modified = 4);
+    e.watcher.trigger(e.repos[1].id(), Scope::STATUS);
+    release.send(()).unwrap();
+    wait_until(&e.app, "the second refresh", |app| {
         app.rows()[1]
             .summary()
             .is_some_and(|s| s.changes.modified == 4)

@@ -4,6 +4,7 @@ mod files;
 mod read;
 mod runner;
 mod submodule;
+mod tree;
 mod write;
 
 use std::path::PathBuf;
