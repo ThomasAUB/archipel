@@ -86,11 +86,23 @@ impl App {
             .find(|e| &e.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
         let def = self.services.projects.load(&entry.location)?;
-        let cached = self.services.summaries.load_summaries(id)?;
+        // Both are caches: an unreadable one costs a refresh, never the opening.
+        let cached = self
+            .services
+            .summaries
+            .load_summaries(id)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "cached summaries unreadable; refreshing");
+                Vec::new()
+            });
         let ui: UiState = self
             .services
             .ui_state
-            .load_ui_state(id)?
+            .load_ui_state(id)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "saved UI state unreadable; using defaults");
+                None
+            })
             .unwrap_or_default();
         let rows = def
             .repos
