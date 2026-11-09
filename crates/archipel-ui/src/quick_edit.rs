@@ -312,6 +312,7 @@ impl Render for QuickEdit {
                     .text_color(color(cx, T::FgMuted))
                     .child(s)
             }))
+            .children(crate::ignore::render(self, cx))
     }
 }
 

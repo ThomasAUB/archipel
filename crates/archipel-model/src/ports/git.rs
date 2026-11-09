@@ -157,6 +157,8 @@ pub trait WorktreeFiles: Send + Sync {
     fn read_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError>;
     /// Replaces the bytes of `path` (an existing file).
     fn write_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError>;
+    /// Creates `path` with `contents`; refused when it already exists.
+    fn create_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError>;
 }
 
 /// Lists and reads the files of a repository at a commit or in the

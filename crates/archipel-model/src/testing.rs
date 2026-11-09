@@ -432,6 +432,24 @@ impl WorktreeFiles for FakeGit {
         self.with_repo(repo, |r| r.files.insert(path.to_owned(), contents.to_vec()));
         Ok(())
     }
+    fn create_file(&self, repo: &RepoPath, path: &str, contents: &[u8]) -> Result<(), GitError> {
+        self.record("create_file", repo, path)?;
+        let created = self.with_repo(repo, |r| {
+            if r.files.contains_key(path) {
+                return false;
+            }
+            r.files.insert(path.to_owned(), contents.to_vec());
+            true
+        });
+        if created {
+            Ok(())
+        } else {
+            Err(GitError::Io {
+                path: repo.as_path().join(path),
+                message: "file exists".into(),
+            })
+        }
+    }
 }
 
 impl IndexWriter for FakeGit {

@@ -28,6 +28,7 @@ mod diff_view;
 mod file_edit;
 mod fonts;
 mod forge_panel;
+mod ignore;
 mod instance;
 mod keys;
 mod menu;

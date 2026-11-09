@@ -31,6 +31,7 @@ use gpui_kit::{
 
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
+use crate::ignore::{self, IgnoreDialog};
 use crate::theme::{color, row_height};
 use crate::widgets::{TextTooltip, button, icon_button, primary_button, section};
 
@@ -98,6 +99,8 @@ pub struct Panel {
     branches: Option<Vec<String>>,
     /// The working-copy file being edited in place of its diff.
     pub(crate) edit: Option<FileEdit>,
+    /// The dialog adding a file to the `.gitignore`, while open.
+    pub(crate) ignore: Option<IgnoreDialog>,
     /// The force push armed by Push on a diverged branch: the button turns
     /// red, and a second click before [`DISCARD_ARM_TIME`] force pushes.
     force_push: Option<ForcePush>,
@@ -140,6 +143,7 @@ impl Panel {
             branch_input,
             branches: None,
             edit: None,
+            ignore: None,
             force_push: None,
             _subscriptions: subscriptions,
         }
@@ -888,6 +892,7 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
         .into_any_element()
 }
 
+#[allow(clippy::too_many_lines)] // declarative element tree
 fn file_row<V: Staging>(
     c: &FileChange,
     side: DiffSide,
@@ -912,7 +917,8 @@ fn file_row<V: Staging>(
         (_, Some(ChangeKind::Added | ChangeKind::Copied)) => ("+", T::DiffAddFg),
         _ => ("✎", T::StatusDirty),
     };
-    let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
+    let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
+    let tracked = matches!(c.state, FileState::Tracked { .. });
     let is_open = open.is_some_and(|(f, s)| *f == path && *s == side);
     let (action, icon) = if side == DiffSide::Staged {
         ("Unstage", IconName::Minus)
@@ -950,6 +956,20 @@ fn file_row<V: Staging>(
                 })
                 .child(path),
         )
+        .when(side == DiffSide::Unstaged, |d| {
+            d.child(
+                icon_button(
+                    SharedString::from(format!("ignore-{p4}")),
+                    IconName::EyeOff,
+                    "Add to .gitignore…",
+                    cx,
+                )
+                .on_click(cx.listener(move |v: &mut V, _, window, cx| {
+                    cx.stop_propagation();
+                    ignore::open(v, p4.clone(), tracked, window, cx);
+                })),
+            )
+        })
         .when(side == DiffSide::Unstaged, |d| {
             let id = SharedString::from(format!("discard-{p3}"));
             let discard = if armed == Some(p3.as_str()) {
