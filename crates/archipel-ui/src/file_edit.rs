@@ -137,6 +137,74 @@ fn file_bytes(text: &str, crlf: bool) -> Vec<u8> {
     }
 }
 
+/// A file's line ending.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LineEnding {
+    Lf,
+    Crlf,
+}
+
+impl LineEnding {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Lf => "LF",
+            Self::Crlf => "CRLF",
+        }
+    }
+
+    pub(crate) fn other(self) -> Self {
+        match self {
+            Self::Lf => Self::Crlf,
+            Self::Crlf => Self::Lf,
+        }
+    }
+}
+
+/// `bytes` with every line ending (LF, CRLF, or a mix) made `to`.
+fn convert_endings(bytes: &[u8], to: LineEnding) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 32);
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => {
+                i += 1;
+                continue; // the LF that follows writes the ending
+            }
+            b'\n' => {
+                if to == LineEnding::Crlf {
+                    out.push(b'\r');
+                }
+                out.push(b'\n');
+            }
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Rewrites the line endings of working-copy `file` as `to`, refused when
+/// the file changed between the read and the write.
+pub(crate) fn convert_file<V: Staging>(
+    v: &mut V,
+    file: String,
+    to: LineEnding,
+    cx: &mut Context<V>,
+) {
+    v.run_job(
+        format!("Convert {file} to {}", to.name()),
+        cx,
+        Box::new(move |a, repo, _| {
+            let original = a.read_file(repo, &file)?;
+            let converted = convert_endings(&original, to);
+            if converted == original {
+                return Ok(());
+            }
+            a.save_file(repo, &file, &original, &converted)
+        }),
+    );
+}
+
 /// The highlighting language named after the file's extension (or its
 /// name, for `Makefile`, `Dockerfile`…).
 pub(crate) fn language_of(file: &str) -> String {
@@ -326,6 +394,18 @@ mod tests {
         let (_, text, crlf) = editable_text("a", b"x\r\ny\n".to_vec()).unwrap();
         assert!(!crlf);
         assert_eq!(file_bytes(&text, crlf), b"x\r\ny\n");
+    }
+
+    #[test]
+    fn line_endings_convert_both_ways() {
+        use LineEnding::{Crlf, Lf};
+        assert_eq!(convert_endings(b"a\nb\nc", Crlf), b"a\r\nb\r\nc");
+        assert_eq!(convert_endings(b"a\r\nb\r\n", Lf), b"a\nb\n");
+        // Mixed endings all become the target; a lone CR is not an ending.
+        assert_eq!(convert_endings(b"a\r\nb\nc\rd", Crlf), b"a\r\nb\r\nc\rd");
+        assert_eq!(convert_endings(b"a\r\nb\nc\rd", Lf), b"a\nb\nc\rd");
+        assert_eq!(convert_endings(b"a\r\n", Crlf), b"a\r\n");
+        assert_eq!(convert_endings(b"", Crlf), b"");
     }
 
     #[test]
