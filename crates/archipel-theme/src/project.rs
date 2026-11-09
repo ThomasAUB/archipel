@@ -59,20 +59,59 @@ pub fn with_project_accent(theme: &Theme, accent: Color) -> Theme {
     rebased(theme, base)
 }
 
-/// `theme` re-derived with its background tinted by its accent: `percent`
-/// (0–100, clamped) of the accent's Oklab hue and chroma mixed into the
-/// background, whose lightness is kept so text contrast and the light /
-/// dark appearance are unchanged. Overrides of the tokens derived from the
-/// background are dropped, as in [`with_project_accent`].
+/// Exponent of the percentage curve of the background tint (below 1: low
+/// percentages show more than a linear mix would).
+const TINT_CURVE: f64 = 0.7;
+/// Largest lift (OKLCH lightness, towards the text) a 100 % background tint
+/// may add when the sRGB gamut cannot hold its chroma at the theme's lightness.
+/// Very dark (or very light) backgrounds hold little color: at Quiet Cyber's
+/// lightness, teal and green hues max out near chroma 0.03, so a tint kept
+/// at that lightness all but vanishes.
+pub const TINT_MAX_LIFT: f64 = 0.06;
+/// Lightness step used when searching the smallest lift that fits.
+const TINT_LIFT_STEP: f64 = 0.005;
+/// Chroma shortfall tolerated as "fits" (8-bit sRGB rounding).
+const TINT_FIT_TOLERANCE: f64 = 0.002;
+
+/// `theme` re-derived with its background tinted by its accent. `percent`
+/// (0–100, clamped) sets how far the background's Oklab hue and chroma move
+/// towards the accent's, on a curve that makes low percentages show (15 %
+/// moves about a quarter of the way). The theme's lightness is kept
+/// unless the sRGB gamut cannot hold the tint there; the background is then
+/// moved towards the text just enough to fit, at most `percent` of
+/// [`TINT_MAX_LIFT`],
+/// which keeps text contrast and the light / dark appearance. Overrides of
+/// the tokens derived from the background are dropped, as in
+/// [`with_project_accent`].
 #[must_use]
 pub fn with_background_tint(theme: &Theme, percent: u8) -> Theme {
-    let t = f64::from(percent.min(100)) / 100.0;
+    if percent == 0 {
+        return theme.clone();
+    }
+    let t = (f64::from(percent.min(100)) / 100.0).powf(TINT_CURVE);
     let mut base = *theme.base();
     let (bg, accent) = (base.background.to_oklab(), base.accent.to_oklab());
-    base.background = Oklab {
+    let target = Oklab {
         a: bg.a + (accent.a - bg.a) * t,
         b: bg.b + (accent.b - bg.b) * t,
         ..bg
+    }
+    .to_oklch();
+    let toward_text = if base.appearance() == crate::settings::Appearance::Dark {
+        1.0
+    } else {
+        -1.0
+    };
+    let fits =
+        |l: f64| Oklch { l, ..target }.to_color().to_oklch().c >= target.c - TINT_FIT_TOLERANCE;
+    let max_lift = TINT_MAX_LIFT * f64::from(percent.min(100)) / 100.0;
+    let mut lift = 0.0;
+    while lift < max_lift && !fits(target.l + toward_text * lift) {
+        lift += TINT_LIFT_STEP;
+    }
+    base.background = Oklch {
+        l: target.l + toward_text * lift.min(max_lift),
+        ..target
     }
     .to_color();
     rebased(theme, base)
@@ -142,8 +181,8 @@ mod tests {
     }
 
     #[test]
-    fn background_tint_keeps_lightness() {
-        for theme in [builtin::dark(), builtin::light()] {
+    fn background_tint_keeps_appearance() {
+        for theme in [builtin::dark(), builtin::light(), builtin::quiet_cyber()] {
             let themed = with_project_accent(&theme, accent_for_key("/x"));
             assert_eq!(with_background_tint(&themed, 0).base(), themed.base());
             let tinted = with_background_tint(&themed, 30);
@@ -151,8 +190,8 @@ mod tests {
                 themed.base().background.to_oklch(),
                 tinted.base().background.to_oklch(),
             );
-            assert!((before.l - after.l).abs() < 0.005);
-            assert!(after.c > before.c);
+            assert!((before.l - after.l).abs() <= TINT_MAX_LIFT + 0.005);
+            assert!(after.c > before.c + 0.015, "{}: {after:?}", theme.name);
             assert_eq!(tinted.appearance(), themed.appearance());
             assert_eq!(
                 tinted.color(ColorToken::Accent),
