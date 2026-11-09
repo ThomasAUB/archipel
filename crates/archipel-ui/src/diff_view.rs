@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use archipel_model::changes::FileChange;
+use archipel_model::changes::{ChangeKind, FileChange};
 use archipel_model::diff::{DiffLine, FileDiff, LineOrigin};
 use archipel_model::ports::DiffSide;
 use archipel_model::requests::PatchDirection;
@@ -506,6 +506,11 @@ pub(crate) fn render_open<V: Staging>(
         .filter(|_| !editing)
         .and(doc.as_ref())
         .and_then(|d| (d.files.len() == 1 && d.editable(0)).then(|| d.first_change(0)));
+    // A one-file diff of a deleted file says so: all-red lines alone read
+    // like an edit that removed everything.
+    let deleted = doc
+        .as_ref()
+        .is_some_and(|d| d.files.len() == 1 && d.files[0].kind == ChangeKind::Deleted);
     let edit_bar = if editing {
         file_edit::render_bar(v, cx)
     } else {
@@ -520,6 +525,20 @@ pub(crate) fn render_open<V: Staging>(
         .py_1()
         .border_b_1()
         .border_color(color(cx, T::BorderSubtle))
+        .when(deleted, |header| {
+            let del = color(cx, T::DiffDelFg);
+            header.child(
+                div()
+                    .flex_none()
+                    .px_1()
+                    .text_xs()
+                    .text_color(del)
+                    .border_1()
+                    .border_color(del)
+                    .rounded_sm()
+                    .child("deleted"),
+            )
+        })
         .child(div().flex_1().min_w_0().truncate().child(title.clone()))
         .when(!editing, |header| {
             header.child(
