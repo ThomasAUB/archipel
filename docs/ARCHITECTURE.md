@@ -77,6 +77,7 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `CommitWriter` | `commit`, `amend` | commit box, multi-repo commit |
 | `IndexWriter` | `stage`, `unstage`, `apply_patch_cached`, `discard` | working copy view |
 | `TreeReader` | `list_files` (a commit's tree, or the working copy), `read_blob` | repo view's file browser |
+| `WorktreeFiles` | `read_file`, `write_file` (raw bytes, path kept inside the worktree) | diff view's file editor |
 | `RefWriter` | `checkout`, `create/rename/delete branch`, `tag`, `reset`, `update_ref` | repo actions, undo |
 | `StashWriter` | `push`, `apply`, `pop`, `drop`, `store` | repo actions, undo |
 | `WorktreeSnapshots` | `snapshot_worktree`, `snapshot_paths`, `restore_paths` | undo journal |
