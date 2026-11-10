@@ -284,7 +284,10 @@ fn default_target(git: &GitPorts, path: &RepoPath, remote: &str) -> String {
     let remote_branch = |b| short(b, &prefix);
     // `<remote>/HEAD` only resolves to a commit: pick the remote branch at
     // that commit, preferring the usual names.
-    if let Ok(Some(head)) = git.refs.resolve(path, &format!("refs/remotes/{remote}/HEAD")) {
+    if let Ok(Some(head)) = git
+        .refs
+        .resolve(path, &format!("refs/remotes/{remote}/HEAD"))
+    {
         let mut candidates: Vec<&str> = branches
             .iter()
             .filter(|b| b.target == head)
