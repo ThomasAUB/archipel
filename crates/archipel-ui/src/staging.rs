@@ -21,7 +21,7 @@ use archipel_ops::actions::split_remote_ref;
 use archipel_ops::{OpClass, OpContext, OpError, RepoActions};
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -84,10 +84,13 @@ pub(crate) fn submit_job<V: 'static>(
 
 /// The panel's own state, held by each view showing it.
 pub struct Panel {
-    /// The commit message; Enter commits.
-    message: Entity<InputState>,
+    /// The commit message, subject then body; Ctrl+Enter commits.
+    message: Entity<TextareaState>,
     /// Whether the next commit amends.
     amend: bool,
+    /// The message of the commit to amend, pre-filled when Amend was
+    /// checked: unchecking Amend clears it again if left untouched.
+    amend_prefill: Option<String>,
     /// The Discard button clicked once ([`ALL_FILES`] for "Discard all").
     armed: Option<String>,
     /// The last summary of the repo (head, upstream, stashes, …).
@@ -113,14 +116,21 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<V>,
     ) -> Self {
-        let message = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
+        let message = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(2, 12)
+                .submit_on_enter(true)
+                .placeholder("Commit message (Shift+Enter for a new line)")
+        });
         let branch_input = cx.new(|cx| InputState::new(window, cx).placeholder("New branch name"));
         let subscriptions = [
             cx.subscribe_in(
                 &message,
                 window,
                 |v: &mut V, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
+                    // Shift+Enter breaks the line, so a body can follow the
+                    // subject.
+                    if let InputEvent::PressEnter { shift: false, .. } = event {
                         commit(v, false, window, cx);
                     }
                 },
@@ -138,6 +148,7 @@ impl Panel {
         Self {
             message,
             amend: false,
+            amend_prefill: None,
             armed: None,
             summary,
             branch_input,
@@ -261,11 +272,12 @@ pub fn commit<V: Staging>(v: &mut V, push: bool, window: &mut Window, cx: &mut C
         return;
     }
     let staged = v.changes().iter().any(FileChange::is_staged);
-    let amend = std::mem::take(&mut v.panel().amend);
-    if !amend && !staged {
+    if !v.panel().amend && !staged {
         v.report("Stage files first".into(), cx);
         return;
     }
+    let amend = std::mem::take(&mut v.panel().amend);
+    v.panel().amend_prefill = None;
     let mode = if amend {
         CommitMode::Amend
     } else {
@@ -289,6 +301,60 @@ pub fn commit<V: Staging>(v: &mut V, push: bool, window: &mut Window, cx: &mut C
             if push { push_current(a, p, op) } else { Ok(()) }
         }),
     );
+}
+
+/// Checks or unchecks Amend. Checking it with an empty message box fills
+/// it with the message of `HEAD`, the commit to amend; unchecking it clears
+/// that message again unless it was edited.
+fn toggle_amend<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
+    let panel = v.panel();
+    panel.amend = !panel.amend;
+    let message = panel.message.clone();
+    let current = message.read(cx).value().to_string();
+    if !panel.amend {
+        if panel.amend_prefill.take().is_some_and(|m| m == current) {
+            message.update(cx, |m, cx| m.set_value("", window, cx));
+        }
+        cx.notify();
+        return;
+    }
+    cx.notify();
+    if !current.trim().is_empty() {
+        return; // keeps what the user wrote
+    }
+    let refs = v.core().repo_actions().ports().refs.clone();
+    let history = v.core().history_reader();
+    let path = v.repo_path().clone();
+    let task = cx.background_spawn(async move {
+        let head = refs
+            .resolve(&path, "HEAD")
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "there is no commit to amend".to_owned())?;
+        history
+            .commit_message(&path, head)
+            .map_err(|e| e.to_string())
+    });
+    cx.spawn_in(window, async move |this, cx| {
+        let result = task.await;
+        let _ = this.update_in(cx, |v: &mut V, window, cx| match result {
+            Ok(text) => {
+                let panel = v.panel();
+                // Amend unchecked, or the user typed, meanwhile.
+                let message = panel.message.clone();
+                if !panel.amend || !message.read(cx).value().trim().is_empty() {
+                    return;
+                }
+                panel.amend_prefill = Some(text.clone());
+                message.update(cx, |m, cx| {
+                    m.set_value(text, window, cx);
+                    m.focus(window, cx);
+                });
+                cx.notify();
+            }
+            Err(e) => v.report(format!("Amend: {e}"), cx),
+        });
+    })
+    .detach();
 }
 
 /// Pushes the current branch; a branch without upstream is pushed to the
@@ -1016,7 +1082,7 @@ fn file_row<V: Staging>(
 }
 
 fn commit_box<V: Staging>(
-    message: &Entity<InputState>,
+    message: &Entity<TextareaState>,
     amend: bool,
     cx: &mut Context<V>,
 ) -> AnyElement {
@@ -1027,7 +1093,7 @@ fn commit_box<V: Staging>(
         .gap_2()
         .border_t_1()
         .border_color(color(cx, T::BorderSubtle))
-        .child(Input::new(message))
+        .child(Textarea::new(message))
         .child(
             div()
                 .flex()
@@ -1038,10 +1104,8 @@ fn commit_box<V: Staging>(
                         .id("amend")
                         .cursor_pointer()
                         .text_color(color(cx, if amend { T::Accent } else { T::FgMuted }))
-                        .on_click(cx.listener(|v: &mut V, _, _, cx| {
-                            let amend = &mut v.panel().amend;
-                            *amend = !*amend;
-                            cx.notify();
+                        .on_click(cx.listener(|v: &mut V, _, window, cx| {
+                            toggle_amend(v, window, cx);
                         }))
                         .child(if amend {
                             "☑ Amend last commit"
