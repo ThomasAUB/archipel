@@ -144,7 +144,7 @@ Easy, low-friction integration with code hosting forges:
 - Setup in a few clicks: provider auto-detected from the remote URL; sign-in by OAuth device flow or personal access token, stored in the OS keychain (never in `archipel.toml`).
 - Clone from an account / organization / group: browse and pick repos, clone several at once straight into a project.
 - Per-repo forge status in the dashboard: open PR/MR for the current branch, its CI status, review state.
-- CI status of the current branch in the dashboard, with or without a PR: overall state and job counts in a "CI" column, every job (failures first) on hover, "Open CI run" from the row menu.
+- CI status of the current branch in the dashboard, with or without a PR: overall state and job counts in a "CI" column, every job (failures first) on hover, "Open CI run" from the row menu. While a run is going, and for a few minutes after a pull request is opened from Archipel (the forge takes a moment to register the runs), the CI is re-read every `ci_poll_secs` (20 s).
 - Create a PR/MR from a branch (title, description, target branch prefilled); multi-repo: one PR per repo for the same branch, linked together.
 - List the open PRs/MRs of the selected repos (source → target, author, CI, review, mergeability) and merge one: merge commit, squash or rebase (GitHub; GitLab uses the project's method), optionally deleting the source branch. A second click confirms; the forge refuses if the head moved since the list was read. The repo is fetched afterwards.
 - Still no built-in code review (see Non-goals): reviewing happens on the forge.
