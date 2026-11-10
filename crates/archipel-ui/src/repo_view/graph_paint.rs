@@ -282,7 +282,8 @@ impl RepoView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let meta = self.meta.get(&row.row).cloned();
-        let selected = self.selected.is_some_and(|(r, _)| r == row.row);
+        let selected =
+            self.selected.is_some_and(|(r, _)| r == row.row) || self.multi.contains_key(&row.row);
         // Same width on every row so the text columns line up.
         let width = px(lane_x(self.lane_count()));
         let lanes = graph_cell(row, stash_lane, wip_lane, cx);
@@ -394,8 +395,13 @@ impl RepoView {
             .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
                 v.focus.focus(window, cx);
+                let m = e.modifiers();
                 if e.click_count() > 1 {
                     v.checkout_row(index, cx);
+                } else if m.shift {
+                    v.select_commit_span(index, oid, cx);
+                } else if m.control || m.platform {
+                    v.toggle_commit(index, oid, cx);
                 } else {
                     v.select_commit(index, oid, cx);
                 }
@@ -404,6 +410,13 @@ impl RepoView {
                 MouseButton::Right,
                 cx.listener(move |v, e: &MouseDownEvent, window, cx| {
                     v.focus.focus(window, cx);
+                    // On a commit of a multi-selection: the menu acts on
+                    // all of them.
+                    if v.multi.contains_key(&index) {
+                        let commits = v.selected_commits();
+                        v.open_menu(MenuTarget::Commits(commits), e.position, cx);
+                        return;
+                    }
                     if v.selected.is_none_or(|(r, _)| r != index) {
                         v.select_commit(index, oid, cx);
                     }

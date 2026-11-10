@@ -727,6 +727,25 @@ impl HistoryRewriter for GitCli {
             .map(drop)
     }
 
+    fn squash_preview(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+    ) -> Result<archipel_model::history::SquashPreview, GitError> {
+        self.squash_preview_impl(repo, oldest, newest)
+    }
+
+    fn squash(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+        message: &str,
+    ) -> Result<Oid, GitError> {
+        self.squash_impl(repo, oldest, newest, message)
+    }
+
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError> {
         let op = GitDirs::locate(repo.as_path())?
             .in_progress()

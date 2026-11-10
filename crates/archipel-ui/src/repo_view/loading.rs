@@ -80,6 +80,8 @@ impl RepoView {
                         v.row_count = rows;
                         v.lanes = lanes.clamp(1, MAX_LANES_SHOWN);
                         v.meta.clear();
+                        // Rows move with the new history.
+                        v.multi.clear();
                         v.stashes.clear();
                         v.head_link = None;
                         v.load_stashes(cx);
@@ -246,6 +248,7 @@ impl RepoView {
     /// staging lists.
     pub(super) fn select_wip(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
+        self.multi.clear();
         self.stash_selected = None;
         self.wip_selected = true;
         self.details = None;
@@ -409,6 +412,7 @@ impl RepoView {
 
     pub(super) fn select_commit(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
         self.selected = Some((row, oid));
+        self.multi.clear();
         self.wip_selected = false;
         self.stash_selected = None;
         self.open_diff = None;
@@ -449,6 +453,7 @@ impl RepoView {
             return;
         };
         self.selected = None;
+        self.multi.clear();
         self.wip_selected = false;
         self.stash_selected = Some(oid);
         self.open_diff = None;

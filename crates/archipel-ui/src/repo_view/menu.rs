@@ -17,12 +17,15 @@ use crate::widgets::{
 
 use super::RepoView;
 use super::dialogs::{Confirm, NameForm};
+use super::squash::SquashRange;
 
 /// What a right-click menu acts on.
 #[derive(Clone)]
 pub(super) enum MenuTarget {
     /// A commit row: its id and the refs pointing at it.
     Commit(Oid, Vec<RefTip>),
+    /// Several selected commits, newest first.
+    Commits(Vec<Oid>),
     /// A branch or tag (graph badge or refs panel).
     Ref(RefTip),
     /// A stash, by commit id.
@@ -44,6 +47,8 @@ pub(super) enum MenuAction {
     Checkout(CheckoutTarget),
     CherryPick(Oid),
     Revert(Oid),
+    /// Opens the squash dialog once the range is checked.
+    Squash(SquashRange),
     Reset(Oid, ResetMode),
     Merge(String),
     Rebase(String),
@@ -138,6 +143,7 @@ fn menu_entries(
 ) -> Vec<MenuEntry> {
     match target {
         MenuTarget::Commit(oid, refs) => commit_entries(*oid, refs, current),
+        MenuTarget::Commits(oids) => commits_entries(oids),
         MenuTarget::Ref(tip) => ref_entries(tip, current, has_local),
         MenuTarget::Stash(oid) => stash_entries(*oid),
         MenuTarget::Drop { source, target } => drop_entries(source, target, current),
@@ -173,6 +179,20 @@ fn commit_entries(oid: Oid, refs: &[RefTip], current: Option<&str>) -> Vec<MenuE
         MenuEntry::Separator,
         item("Cherry-pick", A::CherryPick(oid)),
         item("Revert", A::Revert(oid)),
+    ];
+    // Squashes rewrite the current branch: offered on any commit, refused
+    // (with the reason) off its first-parent history.
+    out.push(item(
+        "Squash into parent…",
+        A::Squash(SquashRange::IntoParent(oid)),
+    ));
+    if !refs.iter().any(|r| r.kind == RefKind::Head) {
+        out.push(item(
+            format!("Squash from here to {onto}…"),
+            A::Squash(SquashRange::UpToHead(oid)),
+        ));
+    }
+    out.extend([
         item(
             format!("Reset {onto} here (soft)"),
             A::Reset(oid, ResetMode::Soft),
@@ -185,7 +205,7 @@ fn commit_entries(oid: Oid, refs: &[RefTip], current: Option<&str>) -> Vec<MenuE
             format!("Reset {onto} here (hard)…"),
             A::Reset(oid, ResetMode::Hard),
         ),
-    ];
+    ]);
     let deletes: Vec<MenuEntry> = refs
         .iter()
         .filter_map(|r| match r.kind {
@@ -207,6 +227,20 @@ fn commit_entries(oid: Oid, refs: &[RefTip], current: Option<&str>) -> Vec<MenuE
     out.push(MenuEntry::Separator);
     out.push(item("Copy commit id", A::Copy(oid.to_hex())));
     out
+}
+
+/// The menu of several selected commits, newest first.
+fn commits_entries(oids: &[Oid]) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    let ids: Vec<String> = oids.iter().map(Oid::to_hex).collect();
+    vec![
+        item(
+            format!("Squash {} commits…", oids.len()),
+            A::Squash(SquashRange::Selected(oids.to_vec())),
+        ),
+        MenuEntry::Separator,
+        item("Copy commit ids", A::Copy(ids.join(" "))),
+    ]
 }
 
 /// The menu of a branch or tag.
@@ -415,6 +449,7 @@ impl RepoView {
                     move |a, p, _| a.revert(p, oid),
                 );
             }
+            MenuAction::Squash(range) => self.start_squash(range, window, cx),
             MenuAction::Reset(oid, mode) => {
                 self.run(
                     format!("Reset to {}", oid.short(SHORT_OID)),
@@ -674,6 +709,46 @@ mod tests {
             !actions
                 .iter()
                 .any(|a| matches!(a, MenuAction::DeleteRemoteBranch(_)))
+        );
+    }
+
+    #[test]
+    fn commit_menu_offers_squashing_up_to_head_except_on_head() {
+        let oid = Oid::from_bytes(&[4; 20]).unwrap();
+        let squashes = |refs: Vec<RefTip>| -> Vec<MenuAction> {
+            let entries = menu_entries(&MenuTarget::Commit(oid, refs), Some("main"), |_| true);
+            actions(&entries)
+                .into_iter()
+                .filter(|a| matches!(a, MenuAction::Squash(_)))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            squashes(Vec::new()),
+            [
+                MenuAction::Squash(SquashRange::IntoParent(oid)),
+                MenuAction::Squash(SquashRange::UpToHead(oid)),
+            ]
+        );
+        assert_eq!(
+            squashes(vec![
+                tip("HEAD", RefKind::Head),
+                tip("main", RefKind::LocalBranch)
+            ]),
+            [MenuAction::Squash(SquashRange::IntoParent(oid))]
+        );
+    }
+
+    #[test]
+    fn several_commits_menu_squashes_them() {
+        let oids = vec![
+            Oid::from_bytes(&[5; 20]).unwrap(),
+            Oid::from_bytes(&[6; 20]).unwrap(),
+        ];
+        let entries = menu_entries(&MenuTarget::Commits(oids.clone()), Some("main"), |_| true);
+        assert_eq!(
+            actions(&entries)[0],
+            &MenuAction::Squash(SquashRange::Selected(oids))
         );
     }
 

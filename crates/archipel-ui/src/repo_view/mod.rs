@@ -20,8 +20,9 @@ mod menu;
 mod navigation;
 mod operations;
 mod refs_panel;
+mod squash;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -119,6 +120,9 @@ pub struct RepoView {
     meta: HashMap<u32, Arc<CommitMeta>>,
     pending: Option<Range<u32>>,
     selected: Option<(u32, Oid)>,
+    /// Commits selected together (Ctrl+click, Shift+click), by graph row,
+    /// `selected` among them; empty when only `selected` is.
+    multi: BTreeMap<u32, Oid>,
     /// The uncommitted-changes row at the top of the graph is selected.
     wip_selected: bool,
     /// The HEAD commit the uncommitted-changes row is linked to, once found.
@@ -149,6 +153,8 @@ pub struct RepoView {
     menu: Option<(MenuTarget, Point<Pixels>)>,
     /// Shown while a destructive menu action waits for confirmation.
     confirm: Option<Confirm>,
+    /// The squash dialog, once the range is checked.
+    squash: Option<squash::SquashDialog>,
     prompt_focus: FocusHandle,
     status: Option<String>,
     refs: Arc<RefList>,
@@ -201,6 +207,7 @@ impl RepoView {
             meta: HashMap::new(),
             pending: None,
             selected: None,
+            multi: BTreeMap::new(),
             wip_selected: false,
             head_link: None,
             stashes: Vec::new(),
@@ -217,6 +224,7 @@ impl RepoView {
             _name_sub: name_sub,
             menu: None,
             confirm: None,
+            squash: None,
             prompt_focus: cx.focus_handle(),
             status: None,
             refs: Arc::default(),
@@ -516,6 +524,7 @@ impl Render for RepoView {
                     .child(details),
             );
         let confirm = self.render_confirm(cx);
+        let squash = self.render_squash(cx);
         let menu = self.render_menu(cx);
         let name_form = self.render_name_form(cx);
         let ignore = crate::ignore::render(self, cx);
@@ -546,6 +555,7 @@ impl Render for RepoView {
                     .child(condense_status(s))
             }))
             .children(confirm)
+            .children(squash)
             .children(ignore)
             .children(menu)
     }

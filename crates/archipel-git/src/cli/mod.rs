@@ -3,6 +3,7 @@
 mod files;
 mod read;
 mod runner;
+mod squash;
 mod submodule;
 mod tree;
 mod write;

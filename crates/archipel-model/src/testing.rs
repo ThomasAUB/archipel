@@ -755,6 +755,36 @@ impl HistoryRewriter for FakeGit {
     fn revert(&self, repo: &RepoPath, commit: Oid) -> Result<(), GitError> {
         self.record("revert", repo, commit.to_hex())
     }
+    fn squash_preview(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+    ) -> Result<crate::history::SquashPreview, GitError> {
+        self.record(
+            "squash_preview",
+            repo,
+            format!("{}..{}", oldest.to_hex(), newest.to_hex()),
+        )?;
+        Ok(crate::history::SquashPreview {
+            commits: vec![oldest, newest],
+            message: String::new(),
+        })
+    }
+    fn squash(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+        message: &str,
+    ) -> Result<Oid, GitError> {
+        self.record(
+            "squash",
+            repo,
+            format!("{}..{}:{message}", oldest.to_hex(), newest.to_hex()),
+        )?;
+        Ok(newest)
+    }
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError> {
         self.record("sequence", repo, format!("{action:?}"))
     }
