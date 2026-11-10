@@ -166,6 +166,7 @@ impl UndoService {
             | K::Amend
             | K::Merge
             | K::Rebase
+            | K::Squash
             | K::CherryPick
             | K::Revert
             | K::Reset
