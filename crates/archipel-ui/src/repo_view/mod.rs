@@ -30,6 +30,7 @@ use archipel_app::App as Core;
 use archipel_app::forge::{BranchCi, ForgeLimit, ForgeStatus, ci_cell, ci_tooltip};
 use archipel_graph::HistoryView;
 use archipel_model::changes::FileChange;
+use archipel_model::forge::PullRequestStatus;
 use archipel_model::history::CommitMeta;
 use archipel_model::ports::DiffSide;
 use archipel_model::refs::StashEntry;
@@ -167,6 +168,9 @@ pub struct RepoView {
     ci: BranchCi,
     forge: ForgeStatus,
     forge_limit: Option<ForgeLimit>,
+    /// Open pull requests of the repo: the CI marks of their branches in
+    /// the refs panel.
+    pull_requests: Arc<Vec<PullRequestStatus>>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
 }
@@ -233,6 +237,7 @@ impl RepoView {
             ci,
             forge,
             forge_limit,
+            pull_requests: Arc::default(),
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
         };
@@ -240,6 +245,7 @@ impl RepoView {
         view.load_refs(cx);
         view.load_changes(cx);
         view.load_submodules(cx);
+        view.load_pull_requests(cx);
         view
     }
 

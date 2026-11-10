@@ -234,6 +234,12 @@ fn merge_state(state: Option<&str>) -> MergeState {
 /// still shows, with no CI state.
 fn status(api: &Api<'_>, base: &str, pull: Pull) -> Result<PullRequestStatus, ForgeError> {
     let jobs = commit_ci(api, base, &pull.head.sha)?;
+    // A deleted fork has no head repository.
+    let from_fork = match (&pull.head.repo, &pull.base.repo) {
+        (Some(head), Some(base)) => !head.full_name.eq_ignore_ascii_case(&base.full_name),
+        (None, Some(_)) => true,
+        _ => false,
+    };
     let reviews: Vec<Review> = optional(api.get(
         &format!("{base}/pulls/{}/reviews?per_page=100", pull.number),
         "reviews",
@@ -251,6 +257,7 @@ fn status(api: &Api<'_>, base: &str, pull: Pull) -> Result<PullRequestStatus, Fo
         ci: overall_ci_state(&jobs),
         review: review_state(&reviews),
         merge: merge_state(pull.mergeable_state.as_deref()),
+        from_fork,
     })
 }
 
