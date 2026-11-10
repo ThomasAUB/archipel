@@ -55,7 +55,9 @@ gpui_kit::actions!(
         ToggleHide,
         ShowHidden,
         ToggleTree,
-        NewWindow
+        NewWindow,
+        NextWindow,
+        PreviousWindow
     ]
 );
 
@@ -80,6 +82,8 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         "repos.show_hidden" => Box::new(ShowHidden),
         "view.dependency_tree" => Box::new(ToggleTree),
         "window.new" => Box::new(NewWindow),
+        "window.next" => Box::new(NextWindow),
+        "window.previous" => Box::new(PreviousWindow),
         _ => return None,
     })
 }
@@ -172,8 +176,9 @@ impl Workspace {
                 }
             },
         );
-        let activation = cx.observe_window_activation(window, |this, window, _| {
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
+                crate::windows::activated(cx, window.window_handle());
                 this.core.on_focus();
             }
         });
@@ -420,6 +425,10 @@ impl Render for Workspace {
                 this.dispatch(Command::ToggleDependencyTree, cx);
             }))
             .on_action(cx.listener(|_, _: &NewWindow, _, cx| crate::windows::open(cx, None)))
+            .on_action(cx.listener(|this, _: &NextWindow, w, cx| this.cycle_window(true, w, cx)))
+            .on_action(cx.listener(|this, _: &PreviousWindow, w, cx| {
+                this.cycle_window(false, w, cx);
+            }))
             .on_action(cx.listener(|this, _: &SubmitCommit, w, cx| this.open_commit(w, cx)))
             .on_action(cx.listener(|this, _: &Undo, _, cx| {
                 let ctx = this.core.action_context();

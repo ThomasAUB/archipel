@@ -357,6 +357,8 @@ impl ActionRegistry {
             }))
         };
         r.register(ui("window.new", "New window", always));
+        r.register(ui("window.next", "Next window", always));
+        r.register(ui("window.previous", "Previous window", always));
         r.register(ui(
             "project.set_color",
             "Set the project color…",

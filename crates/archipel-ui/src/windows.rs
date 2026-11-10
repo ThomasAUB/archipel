@@ -35,7 +35,10 @@ pub struct Windows {
     base: Arc<Core>,
     /// Whether `base` is still unused (the first window takes it).
     base_free: bool,
+    /// In opening order (the order windows are cycled in).
     open: Vec<(AnyWindowHandle, Arc<Core>)>,
+    /// Most recently activated first.
+    recent: Vec<AnyWindowHandle>,
 }
 
 impl Global for Windows {}
@@ -47,6 +50,7 @@ impl Windows {
             base,
             base_free: true,
             open: Vec::new(),
+            recent: Vec::new(),
         }
     }
 
@@ -121,7 +125,9 @@ fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
         cx.new(|cx| Workspace::new(window_core, warnings, window, cx))
     }) {
         Ok((handle, _)) => {
-            cx.global_mut::<Windows>().open.push((handle, core));
+            let windows = cx.global_mut::<Windows>();
+            windows.open.push((handle, core));
+            windows.recent.insert(0, handle);
             let _ = handle.update(cx, |_, window, _| window.activate_window());
         }
         Err(e) => {
@@ -143,6 +149,59 @@ pub fn focus_project(cx: &mut App, project: &ProjectId, except: Option<AnyWindow
         .is_ok()
 }
 
+/// Records that `handle` became the active window (most recent first).
+pub fn activated(cx: &mut App, handle: AnyWindowHandle) {
+    let recent = &mut cx.global_mut::<Windows>().recent;
+    recent.retain(|h| *h != handle);
+    recent.insert(0, handle);
+}
+
+/// Activates the window after `from` in opening order (`forward`) or the one
+/// before it, wrapping around; `false` when `from` is the only window.
+pub fn cycle(cx: &mut App, from: AnyWindowHandle, forward: bool) -> bool {
+    let open: Vec<AnyWindowHandle> = cx
+        .global::<Windows>()
+        .open
+        .iter()
+        .map(|(h, _)| *h)
+        .collect();
+    let Some(target) = neighbour(&open, from, forward) else {
+        return false;
+    };
+    target
+        .update(cx, |_, window, _| window.activate_window())
+        .is_ok()
+}
+
+/// The item after (or before) `from` in `items`, wrapping around; `None`
+/// when there is no other item. An unknown `from` starts at either end.
+fn neighbour<T: Copy + PartialEq>(items: &[T], from: T, forward: bool) -> Option<T> {
+    let others = items.iter().filter(|h| **h != from).count();
+    if others == 0 {
+        return None;
+    }
+    let n = items.len();
+    let next = match items.iter().position(|h| *h == from) {
+        Some(i) if forward => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+        None if forward => 0,
+        None => n - 1,
+    };
+    Some(items[next])
+}
+
+/// Projects shown by windows other than `except`, most recently active first.
+pub fn open_projects_by_recency(cx: &App, except: AnyWindowHandle) -> Vec<ProjectId> {
+    let windows = cx.global::<Windows>();
+    windows
+        .recent
+        .iter()
+        .filter(|h| **h != except)
+        .filter_map(|h| windows.open.iter().find(|(o, _)| o == h))
+        .filter_map(|(_, core)| core.project().map(|(id, _)| id))
+        .collect()
+}
+
 /// Forgets a closing window: its project is unloaded (UI state and
 /// summaries saved); the app quits with its last window.
 pub fn closed(cx: &mut App, handle: AnyWindowHandle) {
@@ -151,6 +210,7 @@ pub fn closed(cx: &mut App, handle: AnyWindowHandle) {
         let (_, core) = windows.open.remove(i);
         core.close_project();
     }
+    windows.recent.retain(|h| *h != handle);
     if windows.open.is_empty() {
         cx.quit();
     }
@@ -180,4 +240,26 @@ pub fn is_open(window: &gpui_kit::Window, cx: &App, project: &ProjectId) -> bool
     cx.global::<Windows>()
         .showing(project, Some(window.window_handle()))
         .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::neighbour;
+
+    #[test]
+    fn neighbour_wraps_both_ways() {
+        let items = [1, 2, 3];
+        assert_eq!(neighbour(&items, 1, true), Some(2));
+        assert_eq!(neighbour(&items, 3, true), Some(1));
+        assert_eq!(neighbour(&items, 1, false), Some(3));
+        assert_eq!(neighbour(&items, 2, false), Some(1));
+    }
+
+    #[test]
+    fn neighbour_needs_another_item() {
+        assert_eq!(neighbour(&[1], 1, true), None);
+        assert_eq!(neighbour::<i32>(&[], 1, false), None);
+        assert_eq!(neighbour(&[1, 2], 9, true), Some(1));
+        assert_eq!(neighbour(&[1, 2], 9, false), Some(2));
+    }
 }
