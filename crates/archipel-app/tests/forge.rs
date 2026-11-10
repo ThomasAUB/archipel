@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use archipel_app::forge::{ForgePorts, ForgeStatus};
+use archipel_app::forge::{BranchCi, ForgePorts, ForgeStatus};
 use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, Services};
 use archipel_model::forge::{
     CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, NamespaceKind,
@@ -46,6 +46,11 @@ struct Env {
 /// * `r1` on github.com (`acme/r1`), no pull request, CI running;
 /// * `r2` on a GitLab host nobody signed in to.
 fn env() -> Env {
+    env_with(Settings::default())
+}
+
+/// [`env`] with `settings`.
+fn env_with(settings: Settings) -> Env {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -117,7 +122,7 @@ fn env() -> Env {
     };
     let app = App::new(
         services,
-        Settings::default(),
+        settings,
         Extensions::default(),
         rt.handle().clone(),
     );
@@ -202,6 +207,44 @@ fn wait_until(what: &str, cond: impl Fn() -> bool) {
 
 fn forge_of(e: &Env, i: usize) -> ForgeStatus {
     let id = e.repos[i].id();
+    e.app
+        .rows()
+        .into_iter()
+        .find(|r| r.id == id)
+        .map(|r| r.forge)
+        .unwrap()
+}
+
+fn ci_of(e: &Env, path: &RepoPath) -> BranchCi {
+    let id = path.id();
+    e.app
+        .rows()
+        .into_iter()
+        .find(|r| r.id == id)
+        .map(|r| r.ci)
+        .unwrap()
+}
+
+fn ci_run(state: CiState) -> CiRun {
+    CiRun {
+        state,
+        sha: "abc".into(),
+        url: None,
+        jobs: vec![CiJob {
+            name: "build".into(),
+            stage: None,
+            state: match state {
+                CiState::Pending => CiJobState::Running,
+                CiState::Success => CiJobState::Success,
+                CiState::Failure => CiJobState::Failed,
+            },
+            url: None,
+        }],
+    }
+}
+
+fn forge_of_path(e: &Env, path: &RepoPath) -> ForgeStatus {
+    let id = path.id();
     e.app
         .rows()
         .into_iter()
@@ -699,4 +742,76 @@ fn clone_from_urls_adds_repos_without_an_account() {
         })
         .unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(_)), "{err}");
+}
+
+#[test]
+fn running_ci_is_followed_until_it_ends() {
+    let e = env_with(Settings {
+        ci_poll_secs: 1,
+        ..Settings::default()
+    });
+    sign_in(&e);
+    let r1 = e.repos[1].clone();
+    wait_until(
+        "running CI",
+        || matches!(ci_of(&e, &r1), BranchCi::Run(r) if r.state == CiState::Pending),
+    );
+    e.forge
+        .with_ci("acme/r1", "feat/x", ci_run(CiState::Success));
+    // No focus, no refresh: the follow-up read alone shows the end.
+    wait_until(
+        "finished CI",
+        || matches!(ci_of(&e, &r1), BranchCi::Run(r) if r.state == CiState::Success),
+    );
+}
+
+#[test]
+fn ci_registered_after_a_pull_request_is_opened_shows() {
+    let e = env_with(Settings {
+        ci_poll_secs: 1,
+        ..Settings::default()
+    });
+    sign_in(&e);
+    let extra = e.dir.path().join("r3");
+    std::fs::create_dir_all(&extra).unwrap();
+    let extra = RepoPath::new(extra);
+    e.git.with_repo(&extra, |r| {
+        r.summary.head = HeadState::Branch("feat/x".into());
+        r.remotes = vec![RemoteInfo {
+            name: "origin".into(),
+            url: "git@github.com:acme/r3.git".into(),
+        }];
+    });
+    e.app.add_repos(std::slice::from_ref(&extra)).unwrap();
+    wait_until("r3 without CI", || {
+        e.app
+            .rows()
+            .iter()
+            .any(|r| r.id == extra.id() && r.summary().is_some())
+            && ci_of(&e, &extra) == BranchCi::None
+    });
+    let app = e.app.clone();
+    let ids = [extra.id()];
+    let plan =
+        e.rt.block_on(async move { app.prepare_pull_requests(&ids).await })
+            .unwrap();
+    let app = e.app.clone();
+    let outcomes =
+        e.rt.block_on(async move {
+            app.create_pull_requests(&plan, "Add x", "", None, false)
+                .await
+        })
+        .unwrap();
+    assert!(outcomes.iter().all(|o| o.result.is_ok()));
+    wait_until("pull request shown", || {
+        matches!(forge_of_path(&e, &extra), ForgeStatus::Open(_))
+    });
+    assert_eq!(ci_of(&e, &extra), BranchCi::None, "runs not registered yet");
+    // The forge registers the runs a moment later.
+    e.forge
+        .with_ci("acme/r3", "feat/x", ci_run(CiState::Pending));
+    wait_until(
+        "CI shown",
+        || matches!(ci_of(&e, &extra), BranchCi::Run(r) if r.state == CiState::Pending),
+    );
 }

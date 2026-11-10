@@ -60,6 +60,10 @@ pub struct Settings {
     /// Forge status (pull request, CI, review) older than this is re-read
     /// when the window gets focus, in seconds. Default 300.
     pub forge_refresh_secs: u64,
+    /// While a repo's CI is unsettled (running, or just after a pull request
+    /// was opened and its runs may not be registered yet), its forge status
+    /// is re-read this often, in seconds; 0 disables it. Default 20.
+    pub ci_poll_secs: u64,
     /// Base interval of the background fetch, in seconds; 0 disables it.
     /// Repos are fetched one at a time, spread over the interval; a repo
     /// whose fetches bring nothing is fetched less and less often. Default 600.
@@ -90,6 +94,7 @@ impl Default for Settings {
             merge_tool: None,
             forge_timeout_secs: 20,
             forge_refresh_secs: 300,
+            ci_poll_secs: 20,
             auto_fetch_secs: 600,
             update_check_hours: 24,
         }
