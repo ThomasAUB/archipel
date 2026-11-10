@@ -52,6 +52,8 @@ impl Workspace {
             }
             "app.copy_diagnostics" => self.copy_diagnostics(cx),
             "window.new" => crate::windows::open(cx, None),
+            "window.next" => self.cycle_window(true, window, cx),
+            "window.previous" => self.cycle_window(false, window, cx),
             "project.set_color" => self.open_palette(PaletteKind::Color, window, cx),
             "project.set_background_tint" => {
                 self.open_palette(PaletteKind::BackgroundTint, window, cx);
@@ -110,6 +112,20 @@ impl Workspace {
         match url {
             Some(url) => cx.open_url(&url),
             None => self.notice = Some("No CI run for this branch".into()),
+        }
+    }
+
+    /// Activates the next (or previous) Archipel window; says so when this
+    /// is the only one.
+    pub(super) fn cycle_window(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !crate::windows::cycle(cx, window.window_handle(), forward) {
+            self.notice = Some("No other Archipel window".into());
+            cx.notify();
         }
     }
 

@@ -97,6 +97,10 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl-shift-t", "view.dependency_tree"),
     ("ctrl-n", "window.new"),
     ("ctrl-shift-n", "window.new"),
+    ("ctrl-`", "window.next"),
+    ("ctrl-shift-`", "window.previous"),
+    ("ctrl-f6", "window.next"),
+    ("ctrl-shift-f6", "window.previous"),
 ];
 
 /// Problems found while loading a keymap file (never fatal).
@@ -199,6 +203,14 @@ mod tests {
             Some("history.redo")
         );
         assert_eq!(k.keys_for("drawer.toggle")[0].to_string(), "ctrl-j");
+        for (key, action) in [
+            ("ctrl-`", "window.next"),
+            ("ctrl-shift-`", "window.previous"),
+            ("ctrl-f6", "window.next"),
+            ("ctrl-shift-f6", "window.previous"),
+        ] {
+            assert_eq!(k.action(&Keystroke::parse(key).unwrap()), Some(action));
+        }
     }
 
     #[test]

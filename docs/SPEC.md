@@ -71,6 +71,7 @@ An `archipel.toml` written on any OS opens unchanged on Windows, Linux and macOS
 - Several projects / directories can be open at the same time, each in its own window, behaving as an independent instance (own selected repo, filters, layout, background refresh).
 - **One process, many windows:** launching `archipel <dir>` while Archipel is running hands the request to the running process (local IPC), which opens a new window. An extra window costs only its project's data, not another GPU context, font set and caches — consistent with the RAM target.
 - Opening a directory / project that is already open focuses its window instead of creating a duplicate.
+- **Going to another window from the keyboard:** the project switcher (`Ctrl+P`) lists the projects of the other windows first, most recently active first, so `Ctrl+P`, `Enter` goes back to the previous window. ``Ctrl+` `` / `Ctrl+F6` activate the next window in opening order (with `Shift`, the previous one), wrapping around; the `F6` pair works on keyboard layouts where the backquote is a dead key.
 - Shared state (settings, recent projects, on-disk caches) stays consistent when several windows write to it concurrently.
 
 **Recognizing a window at a glance — P1**

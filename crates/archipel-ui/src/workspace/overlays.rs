@@ -64,10 +64,11 @@ impl Workspace {
         })
     }
 
-    /// Items of the project switcher: new and open, then every project,
-    /// noting the ones shown by a window.
+    /// Items of the project switcher: the projects of the other windows
+    /// (most recently active first, so Enter goes back to the previous one),
+    /// new and open, then every other project, this window's last.
     fn project_items(&self, window: &Window, cx: &App) -> Vec<PaletteItem> {
-        let mut items = vec![
+        let actions = vec![
             PaletteItem {
                 id: "+folder".into(),
                 label: "New project from a folder…".into(),
@@ -80,6 +81,10 @@ impl Workspace {
             },
         ];
         let current = self.core.project().map(|(id, _)| id);
+        let in_windows = crate::windows::open_projects_by_recency(cx, window.window_handle());
+        let mut windows = Vec::new();
+        let mut others = Vec::new();
+        let mut this = Vec::new();
         for p in self.core.projects().unwrap_or_default() {
             let ProjectLocation::SharedFile(file) = &p.location;
             let mut detail = file.display().to_string();
@@ -97,13 +102,27 @@ impl Workspace {
                 Some(icon) => format!("{icon}  {}", p.name),
                 None => p.name,
             };
-            items.push(PaletteItem {
+            let rank = in_windows.iter().position(|id| id == &p.id);
+            let is_current = current.as_ref() == Some(&p.id);
+            let item = PaletteItem {
                 id: p.id.0,
                 label,
                 detail,
-            });
+            };
+            match rank {
+                Some(r) => windows.push((r, item)),
+                None if is_current => this.push(item),
+                None => others.push(item),
+            }
         }
-        items
+        windows.sort_by_key(|(r, _)| *r);
+        windows
+            .into_iter()
+            .map(|(_, item)| item)
+            .chain(actions)
+            .chain(others)
+            .chain(this)
+            .collect()
     }
 
     /// Items of the action palette: the actions available, with their keys.
