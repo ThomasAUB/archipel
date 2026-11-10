@@ -17,6 +17,16 @@ pub struct TopologyNode {
     pub parents: Vec<Oid>,
 }
 
+/// What a squash would take: the commits, oldest first, and the message
+/// proposed for the squashed commit (theirs, oldest first).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SquashPreview {
+    /// The squashed commits, oldest first.
+    pub commits: Vec<Oid>,
+    /// The proposed message.
+    pub message: String,
+}
+
 /// Display metadata of a commit, loaded only for visible rows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitMeta {

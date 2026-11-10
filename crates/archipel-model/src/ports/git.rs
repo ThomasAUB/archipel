@@ -15,7 +15,7 @@ use crate::cancel::{CancelToken, NoProgress, ProgressSink};
 use crate::changes::FileChange;
 use crate::diff::{FileDiff, NumStat};
 use crate::error::GitError;
-use crate::history::{CommitMeta, TopologyNode, WalkOrder};
+use crate::history::{CommitMeta, SquashPreview, TopologyNode, WalkOrder};
 use crate::ids::{Oid, RepoPath};
 use crate::journal::RefSnapshot;
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -322,7 +322,7 @@ pub trait RemoteOps: Send + Sync {
     ) -> Result<RepoPath, GitError>;
 }
 
-/// Merge, rebase, cherry-pick, revert and their continuation.
+/// Merge, rebase, cherry-pick, revert, squash and their continuation.
 pub trait HistoryRewriter: Send + Sync {
     /// Merges `rev` into the current branch.
     fn merge(&self, repo: &RepoPath, rev: &str, mode: MergeMode) -> Result<(), GitError>;
@@ -332,6 +332,27 @@ pub trait HistoryRewriter: Send + Sync {
     fn cherry_pick(&self, repo: &RepoPath, commits: &[Oid]) -> Result<(), GitError>;
     /// Reverts a commit.
     fn revert(&self, repo: &RepoPath, commit: Oid) -> Result<(), GitError>;
+    /// The commits [`Self::squash`] would take from `oldest` to `newest`,
+    /// and the message it proposes. Fails as the squash would.
+    fn squash_preview(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+    ) -> Result<SquashPreview, GitError>;
+    /// Squashes the commits from `oldest` to `newest` (consecutive commits
+    /// of the first-parent history of `HEAD`, no merge among them) into one
+    /// commit with `message`, authored as `oldest`. The commits after
+    /// `newest` are recreated on top with the same content. Every tree is
+    /// kept, so the index and the worktree are not touched. Returns the
+    /// new `HEAD`.
+    fn squash(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+        message: &str,
+    ) -> Result<Oid, GitError>;
     /// Continues, aborts or skips the operation in progress.
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError>;
 }

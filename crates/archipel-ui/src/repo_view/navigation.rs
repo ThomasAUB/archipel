@@ -1,6 +1,7 @@
 //! Keyboard navigation of the graph, and the diff opened in place of it
 //! from the details pane.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use archipel_model::ports::DiffSide;
@@ -120,6 +121,73 @@ impl RepoView {
         cx.notify();
     }
 
+    /// The selected commits by graph row: the multi-selection, else the
+    /// selected commit alone.
+    fn selection(&self) -> BTreeMap<u32, Oid> {
+        if self.multi.is_empty() {
+            self.selected.into_iter().collect()
+        } else {
+            self.multi.clone()
+        }
+    }
+
+    /// The commits of the multi-selection, newest first.
+    pub(super) fn selected_commits(&self) -> Vec<Oid> {
+        self.multi.values().copied().collect()
+    }
+
+    /// Ctrl+click on commit `oid` at graph row `row`: adds it to the
+    /// selection, or takes it out (the last one stays).
+    pub(super) fn toggle_commit(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
+        let mut set = self.selection();
+        if set.remove(&row).is_none() {
+            set.insert(row, oid);
+        }
+        self.set_selection(set, (row, oid), cx);
+    }
+
+    /// Shift+click on commit `oid` at graph row `row`: selects every commit
+    /// row from the selected one to it.
+    pub(super) fn select_commit_span(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
+        let Some(anchor) = self.selected else {
+            self.select_commit(row, oid, cx);
+            return;
+        };
+        let span = anchor.0.min(row)..anchor.0.max(row) + 1;
+        let set: BTreeMap<u32, Oid> = self
+            .graph
+            .as_ref()
+            .and_then(|g| lock(g).rows(span).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.row, r.oid))
+            .collect();
+        self.set_selection(set, anchor, cx);
+    }
+
+    /// Selects the commits of `set`; the details pane shows `focus`, or
+    /// the newest of `set` when `focus` is not in it.
+    fn set_selection(
+        &mut self,
+        set: BTreeMap<u32, Oid>,
+        focus: (u32, Oid),
+        cx: &mut Context<Self>,
+    ) {
+        let Some((&first, &first_oid)) = set.iter().next() else {
+            return;
+        };
+        let shown = if set.contains_key(&focus.0) {
+            focus
+        } else {
+            (first, first_oid)
+        };
+        if self.selected != Some(shown) {
+            self.select_commit(shown.0, shown.1, cx);
+        }
+        self.multi = if set.len() > 1 { set } else { BTreeMap::new() };
+        cx.notify();
+    }
+
     /// Selects graph row `row` and scrolls it into view.
     fn show_row(&mut self, row: u32, oid: Oid, strategy: ScrollStrategy, cx: &mut Context<Self>) {
         let item = self.item_of_row(row);
@@ -207,6 +275,10 @@ impl RepoView {
                 if let Some(oid) = self.stash_selected {
                     self.stash_op(oid, Some(StashApplyMode::Keep), cx);
                 }
+            }
+            "escape" if !self.multi.is_empty() => {
+                self.multi.clear();
+                cx.notify();
             }
             "enter" => match self.selected {
                 Some((row, _)) => self.checkout_row(row, cx),

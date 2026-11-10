@@ -90,6 +90,8 @@ pub enum OperationKind {
     Push,
     /// Fetch (nothing to undo).
     Fetch,
+    /// Squash of consecutive commits of the current branch.
+    Squash,
 }
 
 /// Whether an entry is currently applied or has been undone.

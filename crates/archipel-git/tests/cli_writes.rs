@@ -480,6 +480,95 @@ fn merge_rebase_cherry_pick_revert() {
 }
 
 #[test]
+fn squash_rewrites_the_branch_and_keeps_the_worktree() {
+    let (repo, path, cli) = setup();
+    let base = cli.resolve(&path, "HEAD").unwrap().unwrap();
+    let mut ids = Vec::new();
+    for (file, message) in [
+        ("b.txt", "add b"),
+        ("c.txt", "add c\n\nwith a body"),
+        ("d.txt", "add d"),
+    ] {
+        repo.write(file, "x\n").unwrap();
+        ids.push(Oid::from_hex(&repo.commit_all(message).unwrap()).unwrap());
+    }
+    // A merge after the range is recreated as a merge.
+    repo.git(&["checkout", "-q", "-b", "side", &ids[0].to_hex()])
+        .unwrap();
+    repo.write("s.txt", "s\n").unwrap();
+    let side = Oid::from_hex(&repo.commit_all("side").unwrap()).unwrap();
+    repo.git(&["checkout", "-q", "main"]).unwrap();
+    repo.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"])
+        .unwrap();
+    let tree_before = repo.git(&["rev-parse", "HEAD^{tree}"]).unwrap();
+    // Uncommitted changes stay as they are.
+    repo.write("a.txt", "dirty\n").unwrap();
+    repo.write("e.txt", "staged\n").unwrap();
+    repo.git(&["add", "e.txt"]).unwrap();
+
+    let preview = cli.squash_preview(&path, ids[0], ids[2]).unwrap();
+    assert_eq!(preview.commits, ids);
+    assert_eq!(preview.message, "add b\n\nadd c\n\nwith a body\n\nadd d");
+    cli.squash(&path, ids[0], ids[1], "add b and c\n").unwrap();
+
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD^{tree}"]).unwrap(),
+        tree_before
+    );
+    let range = format!("{}..HEAD", base.to_hex());
+    assert_eq!(
+        repo.git(&["log", "--first-parent", "--format=%s", &range])
+            .unwrap(),
+        "merge side\nadd d\nadd b and c"
+    );
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD^2"]).unwrap(),
+        side.to_hex(),
+        "the merge keeps its second parent"
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD~2^"]).unwrap(), base.to_hex());
+    assert_eq!(
+        repo.git(&["symbolic-ref", "HEAD"]).unwrap(),
+        "refs/heads/main",
+        "still on the branch"
+    );
+    let status = repo.git(&["status", "--porcelain"]).unwrap();
+    assert!(
+        status.contains(" M a.txt") && status.contains("A  e.txt"),
+        "{status}"
+    );
+
+    // Up to HEAD, through the merge: refused.
+    let head = cli.resolve(&path, "HEAD").unwrap().unwrap();
+    let squashed = cli.resolve(&path, "HEAD~2").unwrap().unwrap();
+    assert!(matches!(
+        cli.squash(&path, squashed, head, "all"),
+        Err(GitError::InvalidRequest(_))
+    ));
+    // A commit off the first-parent history: refused.
+    assert!(matches!(
+        cli.squash_preview(&path, side, head),
+        Err(GitError::InvalidRequest(_))
+    ));
+}
+
+#[test]
+fn squash_from_the_root_up_to_head() {
+    let (repo, path, cli) = setup();
+    let root = cli.resolve(&path, "HEAD").unwrap().unwrap();
+    repo.write("b.txt", "b\n").unwrap();
+    let last = Oid::from_hex(&repo.commit_all("add b").unwrap()).unwrap();
+    let tip = cli.squash(&path, root, last, "everything").unwrap();
+    assert_eq!(cli.resolve(&path, "HEAD").unwrap(), Some(tip));
+    assert_eq!(repo.git(&["rev-list", "--count", "HEAD"]).unwrap(), "1");
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%B"]).unwrap(),
+        "everything"
+    );
+    assert!(repo.path().join("b.txt").exists());
+}
+
+#[test]
 fn diffs_and_churn() {
     let (repo, path, cli) = setup();
     repo.write("a.txt", "one\n2\nthree\nfour\n").unwrap();

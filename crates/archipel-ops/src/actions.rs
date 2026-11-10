@@ -837,6 +837,39 @@ impl RepoActions {
             .record(repo, rec, || self.git.rewriter.revert(repo, commit))
     }
 
+    /// The commits a squash from `oldest` to `newest` takes and the
+    /// message it proposes; fails, with the reason, when they cannot be
+    /// squashed.
+    pub fn squash_preview(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+    ) -> Result<archipel_model::history::SquashPreview, OpError> {
+        Ok(self.git.rewriter.squash_preview(repo, oldest, newest)?)
+    }
+
+    /// Squashes the commits from `oldest` to `newest` of the current
+    /// branch into one commit with `message`.
+    pub fn squash(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+        message: &str,
+    ) -> Result<(), OpError> {
+        let rec = Recording::new(
+            OperationKind::Squash,
+            format!("Squash {}..{}", oldest.short(8), newest.short(8)),
+        );
+        self.journal.record(repo, rec, || {
+            self.git
+                .rewriter
+                .squash(repo, oldest, newest, message)
+                .map(drop)
+        })
+    }
+
     /// Merges `rev` into the current branch.
     pub fn merge(&self, repo: &RepoPath, rev: &str, mode: MergeMode) -> Result<(), OpError> {
         let rec = Recording::new(OperationKind::Merge, format!("Merge {rev}"));

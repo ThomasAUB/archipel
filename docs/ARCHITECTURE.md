@@ -82,7 +82,7 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `StashWriter` | `push`, `apply`, `pop`, `drop`, `store` | repo actions, undo |
 | `WorktreeSnapshots` | `snapshot_worktree`, `snapshot_paths`, `restore_paths` | undo journal |
 | `RemoteOps` | `fetch`, `pull`, `push`, `clone` | batch ops |
-| `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `continue/abort` | drag & drop, repo actions |
+| `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `squash` (plumbing only: `commit-tree` + `update-ref`), `continue/abort` | drag & drop, repo actions |
 | `SubmoduleReader` | `submodules` (one level: initialized, pinned and checked-out commits) | dependency tree |
 | `SubmoduleWriter` | `update_submodules` (`--init`, `--recursive`) | dependency tree actions |
 

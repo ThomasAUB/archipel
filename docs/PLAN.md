@@ -71,7 +71,7 @@ The spec asks for undo on *every* operation. That is achievable for everything *
 
 | Operation | Undo mechanism |
 |---|---|
-| commit, amend, merge, rebase, cherry-pick, reset, fast-forward, pull (local part) | restore recorded ref + `HEAD` positions (`git update-ref`, `reset --keep`) |
+| commit, amend, merge, rebase, squash, cherry-pick, reset, fast-forward, pull (local part) | restore recorded ref + `HEAD` positions (`git update-ref`, `reset --keep`) |
 | checkout / switch | switch back to the recorded previous `HEAD` |
 | branch / tag create, delete, rename | recreate or delete the ref at its recorded OID |
 | stash push / pop / drop | stash commits are recorded by OID, so a dropped stash can be restored with `git stash store` |
