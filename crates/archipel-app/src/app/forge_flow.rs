@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use archipel_model::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod, MergeOptions, MergeReport,
-    Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
+    CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod, MergeOptions,
+    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    normalize_host,
 };
 use archipel_model::ports::RemoteInfo;
 use archipel_model::requests::PushRequest;
@@ -148,6 +149,12 @@ const DEFAULT_BACKOFF_SECS: i64 = 60;
 /// How soon a repo whose last forge read failed in passing is read again
 /// (instead of `forge_refresh_secs`).
 const RETRY_FAILED_SECS: u64 = 30;
+
+/// How long the CI of a repo is followed closely after a pull request was
+/// opened from it, though it shows nothing yet or only finished runs: the
+/// forge takes a moment to register the runs the push and the pull request
+/// trigger.
+const CI_WATCH_SECS: u64 = 180;
 
 /// The host and retry time of a rate limit error.
 fn rate_limit(error: &ForgeError) -> Option<(String, Option<Timestamp>)> {
@@ -522,7 +529,7 @@ impl App {
     }
 
     fn apply_forge(&self, repo: RepoId, branch: String, read: ForgeRead) {
-        let (changed, reread) = {
+        let (changed, reread, poll) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
             s.forge_pending.remove(&repo);
@@ -549,6 +556,7 @@ impl App {
                     Timestamp(now.0 - i64::try_from(at.elapsed().as_secs()).unwrap_or(0))
                 });
             let failed = read.status_stale.is_some() || read.ci_stale.is_some();
+            let mut ci_pending = false;
             let changed = match row {
                 Some(row) if current => {
                     // Rate limited, or a passing failure: what an earlier
@@ -576,6 +584,7 @@ impl App {
                             cause,
                         });
                     let changed = row.forge != status || row.ci != ci || row.forge_limit != limit;
+                    ci_pending = matches!(&ci, BranchCi::Run(run) if run.state == CiState::Pending);
                     row.forge = status;
                     row.ci = ci;
                     row.forge_limit = limit;
@@ -591,7 +600,26 @@ impl App {
                 }
                 s.forge_checked.insert(repo, (branch, Instant::now()));
             }
-            (changed, reread)
+            // Unsettled CI is read again soon, so a run that starts or ends
+            // shows without waiting for the next refresh.
+            let watching = s
+                .ci_watch
+                .get(&repo)
+                .is_some_and(|until| *until > Instant::now());
+            if !watching {
+                s.ci_watch.remove(&repo);
+            }
+            let every = self.settings.ci_poll_secs;
+            let unsettled = current && (ci_pending || watching) && every > 0;
+            // At most one follow-up read scheduled per repo.
+            let poll = (unsettled && s.ci_poll.insert(repo)).then(|| {
+                Duration::from_secs(if failed {
+                    every.max(RETRY_FAILED_SECS)
+                } else {
+                    every
+                })
+            });
+            (changed, reread, poll)
         };
         if changed {
             self.emit(AppEvent::RowsChanged(vec![repo]));
@@ -599,6 +627,23 @@ impl App {
         if reread {
             self.load_forge(repo, true);
         }
+        if let Some(delay) = poll {
+            self.schedule_ci_poll(repo, delay);
+        }
+    }
+
+    /// Re-reads the forge status of `repo` after `delay`.
+    fn schedule_ci_poll(&self, repo: RepoId, delay: Duration) {
+        let me = self.me.clone();
+        self.scheduler.runtime().spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Some(app) = me.upgrade() {
+                if let Some(s) = lock(&app.session).as_mut() {
+                    s.ci_poll.remove(&repo);
+                }
+                app.load_forge(repo, true);
+            }
+        });
     }
 
     // ----- pull requests --------------------------------------------------
@@ -723,6 +768,12 @@ impl App {
             let link_errors = self.link_pull_requests(&created, description).await;
             for o in &mut outcomes {
                 o.link_error = link_errors.get(&o.repo).cloned();
+            }
+        }
+        if let Some(s) = lock(&self.session).as_mut() {
+            let until = Instant::now() + Duration::from_secs(CI_WATCH_SECS);
+            for o in outcomes.iter().filter(|o| o.result.is_ok()) {
+                s.ci_watch.insert(o.repo, until);
             }
         }
         for o in &outcomes {
