@@ -461,6 +461,66 @@ fn ci_status_tooltip(ci: &BranchCi, forge: &ForgeStatus) -> Option<Vec<String>> 
     }
 }
 
+/// The CI mark of a branch in the repo view's branches panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchCiMark {
+    /// `✓`, `●` or `✗`.
+    pub mark: &'static str,
+    /// Its color.
+    pub tone: Tone,
+    /// Hover lines.
+    pub tooltip: Vec<String>,
+    /// Opened on click: the CI run, else the pull request.
+    pub url: Option<String>,
+}
+
+fn state_mark(state: CiState) -> (&'static str, Tone) {
+    match state {
+        CiState::Success => ("✓", Tone::Success),
+        CiState::Pending => ("●", Tone::Warning),
+        CiState::Failure => ("✗", Tone::Error),
+    }
+}
+
+/// The CI mark of `branch` (`remote`: a remote-tracking `origin/x`): the
+/// current branch from its CI run (`ci`), any other from the CI of its open
+/// pull request in `open`. A pull request from a fork is not for the
+/// branch of the same name here.
+#[must_use]
+pub fn branch_ci_mark(
+    branch: &str,
+    remote: bool,
+    current: bool,
+    ci: &BranchCi,
+    open: &[PullRequestStatus],
+) -> Option<BranchCiMark> {
+    if current && let BranchCi::Run(run) = ci {
+        let (mark, tone) = state_mark(run.state);
+        return Some(BranchCiMark {
+            mark,
+            tone,
+            tooltip: ci_status_tooltip(ci, &ForgeStatus::Unknown).unwrap_or_default(),
+            url: run.url.clone(),
+        });
+    }
+    let name = if remote {
+        branch.split_once('/')?.1
+    } else {
+        branch
+    };
+    let pr = open.iter().find(|p| !p.from_fork && p.source == name)?;
+    let (mark, tone) = state_mark(pr.ci?);
+    Some(BranchCiMark {
+        mark,
+        tone,
+        tooltip: vec![
+            format!("#{} {}", pr.number, pr.title),
+            format!("{} · {}", ci_label(pr.ci), review_label(pr.review)),
+        ],
+        url: Some(pr.url.clone()),
+    })
+}
+
 /// Filter: repos with an open pull request.
 pub struct PullRequestOpenFilter;
 
@@ -549,6 +609,7 @@ mod tests {
             ci,
             review,
             merge: MergeState::Unknown,
+            from_fork: false,
         }
     }
 
@@ -670,5 +731,42 @@ mod tests {
         let d = linked_description("Body\n", &all);
         assert!(d.starts_with("Body\n\n---\n"));
         assert!(d.contains("- [o/a #1](ua)\n- [o/b #2](ub)\n"));
+    }
+
+    #[test]
+    fn branch_marks() {
+        let mut feat = pr(Some(CiState::Failure), ReviewState::Pending);
+        let mut fork = pr(Some(CiState::Success), ReviewState::Pending);
+        fork.source = "main".into();
+        fork.from_fork = true;
+        let open = vec![feat.clone(), fork];
+        let mark = |b: &str, remote, current, ci: &BranchCi| {
+            branch_ci_mark(b, remote, current, ci, &open).map(|m| m.mark)
+        };
+        // Other branches: from their pull request, remote ones too.
+        assert_eq!(mark("feat", false, false, &BranchCi::Unknown), Some("✗"));
+        assert_eq!(
+            mark("origin/feat", true, false, &BranchCi::Unknown),
+            Some("✗")
+        );
+        // A fork's pull request is not for our branch of the same name.
+        assert_eq!(mark("main", false, false, &BranchCi::Unknown), None);
+        assert_eq!(mark("other", false, false, &BranchCi::Unknown), None);
+        // The current branch: its own CI run first, else its pull request.
+        let run = BranchCi::Run(CiRun {
+            state: CiState::Pending,
+            sha: "abc".into(),
+            url: Some("run".into()),
+            jobs: vec![],
+        });
+        let m = branch_ci_mark("feat", false, true, &run, &open).unwrap();
+        assert_eq!((m.mark, m.url.as_deref()), ("●", Some("run")));
+        assert_eq!(mark("feat", false, true, &BranchCi::None), Some("✗"));
+        // No CI on the pull request: no mark.
+        feat.ci = None;
+        assert_eq!(
+            branch_ci_mark("feat", false, false, &BranchCi::None, &[feat]),
+            None
+        );
     }
 }

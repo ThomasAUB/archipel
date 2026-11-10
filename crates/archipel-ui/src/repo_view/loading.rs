@@ -7,6 +7,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use archipel_app::dashboard::DashboardRow;
+use archipel_app::forge::ForgeStatus;
 use archipel_graph::GraphError;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::{CancelToken, HeadState, NoProgress, Oid, RepoSummary, Upstream};
@@ -357,8 +358,43 @@ impl RepoView {
             self.ci = row.ci.clone();
             self.forge = row.forge.clone();
             self.forge_limit = row.forge_limit;
+            self.load_pull_requests(cx);
             cx.notify();
         }
+    }
+
+    /// Reads the open pull requests, for the CI marks of their branches in
+    /// the refs panel; only when the repo is on a forge the user is signed
+    /// in to. Errors leave the marks as they were (the dashboard shows them).
+    pub(super) fn load_pull_requests(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.forge,
+            ForgeStatus::NoPullRequest { .. } | ForgeStatus::Open(_)
+        ) {
+            return;
+        }
+        let core = self.core.clone();
+        let id = self.path.id();
+        let handle = self
+            .core
+            .scheduler()
+            .runtime()
+            .spawn(async move { core.open_pull_requests(&[id]).await });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(repos)) = handle.await else {
+                return;
+            };
+            let Some(Ok(open)) = repos.into_iter().next().map(|r| r.result) else {
+                return;
+            };
+            let _ = this.update(cx, |v, cx| {
+                if *v.pull_requests != open {
+                    v.pull_requests = Arc::new(open);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(super) fn load_submodules(&mut self, cx: &mut Context<Self>) {

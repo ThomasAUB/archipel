@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
+use archipel_app::forge::{BranchCiMark, branch_ci_mark};
 use archipel_model::Oid;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::submodule::SubmoduleInfo;
@@ -15,7 +16,7 @@ use gpui_kit::{
     uniform_list,
 };
 
-use crate::theme::{color, radius, row_height};
+use crate::theme::{color, radius, row_height, tone};
 use crate::widgets::{SHORT_OID, TextTooltip, scroll_list};
 
 use super::RepoView;
@@ -113,7 +114,7 @@ impl RepoView {
         let list = uniform_list(
             "refs",
             shown.len(),
-            cx.processor(move |_this: &mut Self, range: Range<usize>, _window, cx| {
+            cx.processor(move |this: &mut Self, range: Range<usize>, _window, cx| {
                 range
                     .filter_map(|r| {
                         let i = shown[r];
@@ -121,12 +122,25 @@ impl RepoView {
                             None => {
                                 let row = &refs.rows[i];
                                 let folded = matches!(row, RefRow::Header(t, _) if is_collapsed(t));
-                                Some(render_ref_row(i, row, folded, cx))
+                                let ci = match row {
+                                    RefRow::Tip { tip, current } if is_branch(tip) => {
+                                        branch_ci_mark(
+                                            &tip.name,
+                                            tip.kind == RefKind::RemoteBranch,
+                                            *current,
+                                            &this.ci,
+                                            &this.pull_requests,
+                                        )
+                                    }
+                                    _ => None,
+                                };
+                                Some(render_ref_row(i, row, folded, ci, cx))
                             }
                             Some(0) => Some(render_ref_row(
                                 i,
                                 &RefRow::Header("SUBMODULES", subs.len()),
                                 is_collapsed("SUBMODULES"),
+                                None,
                                 cx,
                             )),
                             Some(s) => subs.get(s - 1).map(|sub| render_submodule_row(i, sub, cx)),
@@ -191,6 +205,7 @@ fn render_ref_row(
     i: usize,
     row: &RefRow,
     collapsed: bool,
+    ci: Option<BranchCiMark>,
     cx: &mut Context<RepoView>,
 ) -> AnyElement {
     let base = div()
@@ -250,14 +265,36 @@ fn render_ref_row(
                 .when(is_branch(&drag_tip), |d| {
                     branch_drag_and_drop(d, &drag_tip, cx)
                 })
-                .child(div().truncate().child(if *current {
+                .child(div().min_w_0().truncate().child(if *current {
                     format!("● {name}")
                 } else {
                     name
                 }))
+                .when_some(ci, |d, ci| d.child(render_ci_mark(i, ci, cx)))
                 .into_any_element()
         }
     }
+}
+
+/// The CI mark after a branch name: its run or pull request on hover,
+/// opened on click.
+fn render_ci_mark(i: usize, ci: BranchCiMark, cx: &mut Context<RepoView>) -> AnyElement {
+    let lines = ci.tooltip;
+    div()
+        .id(SharedString::from(format!("ref-ci-{i}")))
+        .flex_none()
+        .ml_1()
+        .text_xs()
+        .text_color(tone(cx, ci.tone))
+        .child(ci.mark)
+        .tooltip(move |_, cx| TextTooltip::view(&lines, cx))
+        .when_some(ci.url, |d, url| {
+            d.cursor_pointer().on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                cx.open_url(&url);
+            })
+        })
+        .into_any_element()
 }
 
 /// One submodule of the refs panel: dimmed when not initialized, in the

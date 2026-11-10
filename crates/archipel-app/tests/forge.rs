@@ -78,6 +78,7 @@ fn env_with(settings: Settings) -> Env {
             ci: Some(CiState::Failure),
             review: ReviewState::Approved,
             merge: MergeState::Mergeable,
+            from_fork: false,
         },
     );
     forge.with_ci(

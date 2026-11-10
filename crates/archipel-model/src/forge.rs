@@ -244,6 +244,10 @@ pub struct PullRequestStatus {
     /// Mergeability; only read when listing a repo's pull requests.
     #[serde(default)]
     pub merge: MergeState,
+    /// The source branch is in another repository (a fork): it is not the
+    /// branch of the same name in this one.
+    #[serde(default)]
+    pub from_fork: bool,
 }
 
 /// How a pull request is merged.

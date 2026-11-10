@@ -52,6 +52,10 @@ struct MergeRequest {
     detailed_merge_status: Option<String>,
     #[serde(default)]
     head_pipeline: Option<Pipeline>,
+    #[serde(default)]
+    source_project_id: Option<u64>,
+    #[serde(default)]
+    target_project_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +192,10 @@ fn status(api: &Api<'_>, base: &str, iid: u64) -> Result<PullRequestStatus, Forg
         head_sha: mr.sha.unwrap_or_default(),
         author: mr.author.map(|u| u.username).unwrap_or_default(),
         review,
+        from_fork: matches!(
+            (mr.source_project_id, mr.target_project_id),
+            (Some(s), Some(t)) if s != t
+        ),
     })
 }
 

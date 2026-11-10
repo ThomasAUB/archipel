@@ -240,6 +240,7 @@ impl PullRequestWriter for FakeForge {
                 ci: None,
                 review: ReviewState::Pending,
                 merge: MergeState::Unknown,
+                from_fork: false,
             },
         );
         Ok(PullRequestRef { number, url })
