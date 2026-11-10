@@ -367,9 +367,9 @@ pub fn text_size(cx: &App) -> Pixels {
 }
 
 /// How far the repository panes sit from `bg.app`, in `bg.panel` steps.
-const REPO_SURFACE_STEP: f64 = 1.5;
+const REPO_SURFACE_STEP: f64 = 1.8;
 /// How far the staging panes sit from `bg.app`, in `bg.panel` steps.
-const STAGING_SURFACE_STEP: f64 = 1.8;
+const STAGING_SURFACE_STEP: f64 = 2.1;
 /// Share of the accent's hue given to the staging panes.
 const STAGING_ACCENT_TINT: f64 = 0.18;
 
