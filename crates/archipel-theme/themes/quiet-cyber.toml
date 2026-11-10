@@ -20,11 +20,11 @@ line_height = 1.5
 [tokens]
 # Surfaces
 "bg.app" = "#0f1114"
-"bg.panel" = "#161920"
+"bg.panel" = "#181b22"
 "bg.elevated" = "#1e2229"
 "bg.input" = "#0b0d10"
-"bg.hover" = "#232831"
-"bg.selected" = "#1f3237"
+"bg.hover" = "#2c313a"
+"bg.selected" = "#273b40"
 
 # Text
 "fg.default" = "#dcdfe4"
@@ -39,8 +39,8 @@ line_height = 1.5
 "accent.subtle" = "#1e3337"
 
 # Borders
-"border.default" = "#30353f"
-"border.subtle" = "#23272e"
+"border.default" = "#373c47"
+"border.subtle" = "#2c3037"
 "border.focus" = "#7cb2b7"
 
 # Status
