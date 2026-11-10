@@ -25,19 +25,19 @@ pub struct BaseColors {
 pub const LIGHT_BACKGROUND_THRESHOLD: f64 = 0.6;
 
 /// Lightness step from `bg.app` to `bg.panel`.
-pub const PANEL_STEP: f64 = 0.03;
+pub const PANEL_STEP: f64 = 0.04;
 /// Lightness step from `bg.app` to `bg.elevated`.
-pub const ELEVATED_STEP: f64 = 0.055;
+pub const ELEVATED_STEP: f64 = 0.07;
 /// Lightness step from `bg.app` to `bg.input` (negative: away from text).
 pub const INPUT_STEP: f64 = -0.015;
 /// Lightness step from `bg.app` to `bg.hover`.
-pub const HOVER_STEP: f64 = 0.075;
+pub const HOVER_STEP: f64 = 0.115;
 /// Lightness step from `bg.app` to `bg.selected`.
-pub const SELECTED_STEP: f64 = 0.13;
+pub const SELECTED_STEP: f64 = 0.15;
 /// Lightness step from `bg.app` to `border.subtle`.
-pub const BORDER_SUBTLE_STEP: f64 = 0.09;
+pub const BORDER_SUBTLE_STEP: f64 = 0.12;
 /// Lightness step from `bg.app` to `border.default`.
-pub const BORDER_STEP: f64 = 0.17;
+pub const BORDER_STEP: f64 = 0.19;
 /// Lightness step from `bg.app` to `accent.subtle`.
 pub const ACCENT_SUBTLE_STEP: f64 = 0.10;
 /// Lightness step from `accent` to `accent.hover`.
