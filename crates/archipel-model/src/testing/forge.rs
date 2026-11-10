@@ -2,7 +2,7 @@
 //! with its account list.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 use super::lock;
 use crate::error::ForgeError;
@@ -64,6 +64,9 @@ struct ForgeState {
 #[derive(Default)]
 pub struct FakeForge {
     state: Mutex<ForgeState>,
+    /// Repo paths whose status reads wait, with how many are waiting.
+    held: Mutex<HashMap<String, usize>>,
+    released: Condvar,
 }
 
 impl FakeForge {
@@ -126,6 +129,24 @@ impl FakeForge {
         lock(&self.state).merged.clone()
     }
 
+    /// Makes the status reads of repo `path` wait until [`Self::release`]
+    /// (a slow forge).
+    pub fn hold(&self, path: &str) {
+        lock(&self.held).insert(path.into(), 0);
+    }
+
+    /// Number of status reads of repo `path` waiting on [`Self::hold`].
+    #[must_use]
+    pub fn waiting(&self, path: &str) -> usize {
+        lock(&self.held).get(path).copied().unwrap_or(0)
+    }
+
+    /// Lets the held status reads of repo `path` go on.
+    pub fn release(&self, path: &str) {
+        lock(&self.held).remove(path);
+        self.released.notify_all();
+    }
+
     /// Number of status reads served.
     #[must_use]
     pub fn reads(&self) -> usize {
@@ -147,8 +168,19 @@ impl PullRequestReader for FakeForge {
         branch: &str,
     ) -> Result<Option<PullRequestStatus>, ForgeError> {
         self.check(repo)?;
-        let mut s = lock(&self.state);
-        s.reads += 1;
+        lock(&self.state).reads += 1;
+        let mut held = lock(&self.held);
+        if let Some(n) = held.get_mut(&repo.path) {
+            *n += 1;
+        }
+        while held.contains_key(&repo.path) {
+            held = self
+                .released
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(held);
+        let s = lock(&self.state);
         if let Some(e) = s.failing_pull_requests.get(&repo.path) {
             return Err(e.clone());
         }

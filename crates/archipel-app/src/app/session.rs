@@ -43,8 +43,8 @@ pub(super) struct Session {
     /// Repos whose last forge read failed in passing (rate limit, network,
     /// forge-side error): read again sooner than fresh ones.
     pub(super) forge_failed: HashSet<RepoId>,
-    /// Repos whose forge status is being read.
-    pub(super) forge_pending: HashSet<RepoId>,
+    /// Repos whose forge status is being read, with the branch read.
+    pub(super) forge_pending: HashMap<RepoId, String>,
     /// Repos refreshed while a read was pending: read again once it lands,
     /// as the pending read may predate what the refresh was asked for.
     pub(super) forge_reread: HashSet<RepoId>,
@@ -148,7 +148,7 @@ impl App {
             tree_pending: HashSet::new(),
             forge_checked: HashMap::new(),
             forge_failed: HashSet::new(),
-            forge_pending: HashSet::new(),
+            forge_pending: HashMap::new(),
             forge_reread: HashSet::new(),
             forge_backoff: HashMap::new(),
             ci_watch: HashMap::new(),
