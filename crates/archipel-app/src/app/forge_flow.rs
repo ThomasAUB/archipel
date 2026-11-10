@@ -463,10 +463,15 @@ impl App {
 
     /// Reads the forge status of one repo in the background, unless it was
     /// read for the same branch less than `forge_refresh_secs` ago (or
-    /// `even_if_fresh`). Coalesced: at most one pending read per repo.
+    /// `even_if_fresh`). Coalesced: at most one pending read per repo; one
+    /// asked meanwhile for another branch (a checkout) runs once it lands.
+    ///
+    /// On a branch change the status of the previous branch is cleared at
+    /// once, rather than shown until the read of the new branch lands.
     pub(super) fn load_forge(&self, repo: RepoId, even_if_fresh: bool) {
         let fresh = Duration::from_secs(self.settings.forge_refresh_secs);
-        let (target, name, backoff) = {
+        let mut cleared = false;
+        let job = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
             let Some(row) = s.rows.iter_mut().find(|r| r.id == repo && !r.hidden) else {
@@ -486,6 +491,21 @@ impl App {
                 return;
             };
             let preferred = upstream_remote(row);
+            // What was read for another branch does not describe this one.
+            let moved = s
+                .forge_checked
+                .get(&repo)
+                .is_some_and(|(b, _)| *b != branch);
+            if moved
+                && (row.forge != ForgeStatus::Unknown
+                    || row.ci != BranchCi::Unknown
+                    || row.forge_limit.is_some())
+            {
+                row.forge = ForgeStatus::Unknown;
+                row.ci = BranchCi::Unknown;
+                row.forge_limit = None;
+                cleared = true;
+            }
             // A failed read is retried sooner, so a passing failure does not
             // stick for a whole refresh period.
             let fresh = if s.forge_failed.contains(&repo) {
@@ -498,20 +518,29 @@ impl App {
                 .get(&repo)
                 .is_some_and(|(b, at)| *b == branch && at.elapsed() < fresh);
             if recent && !even_if_fresh {
-                return;
-            }
-            if !s.forge_pending.insert(repo) {
-                if even_if_fresh {
+                None
+            } else if let Some(pending) = s.forge_pending.get(&repo) {
+                // The pending read is for another branch, or may predate
+                // what this one was asked for: read again once it lands.
+                if even_if_fresh || *pending != branch {
                     s.forge_reread.insert(repo);
                 }
-                return;
+                None
+            } else {
+                s.forge_pending.insert(repo, branch.clone());
+                let target = ForgeTarget {
+                    path: row.path.clone(),
+                    branch,
+                    preferred,
+                };
+                Some((target, row.name.clone(), s.forge_backoff.clone()))
             }
-            let target = ForgeTarget {
-                path: row.path.clone(),
-                branch,
-                preferred,
-            };
-            (target, row.name.clone(), s.forge_backoff.clone())
+        };
+        if cleared {
+            self.emit(AppEvent::RowsChanged(vec![repo]));
+        }
+        let Some((target, name, backoff)) = job else {
+            return;
         };
         let git = self.services.git.clone();
         let forge = self.services.forge.clone();

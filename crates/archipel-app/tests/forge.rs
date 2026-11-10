@@ -815,3 +815,52 @@ fn ci_registered_after_a_pull_request_is_opened_shows() {
         || matches!(ci_of(&e, &extra), BranchCi::Run(r) if r.state == CiState::Pending),
     );
 }
+
+/// Releases the held reads of a repo when dropped.
+struct Release<'a>(&'a FakeForge, &'static str);
+
+impl Drop for Release<'_> {
+    fn drop(&mut self) {
+        self.0.release(self.1);
+    }
+}
+
+#[test]
+fn checkout_during_a_forge_read_shows_the_new_branch() {
+    let e = env();
+    sign_in(&e);
+    let r0 = e.repos[0].clone();
+    wait_until("pull request shown", || {
+        matches!(forge_of_path(&e, &r0), ForgeStatus::Open(_))
+    });
+    e.forge
+        .with_ci("acme/r0", "feat/y", ci_run(CiState::Success));
+    // A slow forge: a read of `feat/x` is still going when the branch
+    // changes.
+    e.forge.hold("acme/r0");
+    // Released even when an assertion fails: a held read would hang the
+    // runtime shutdown.
+    let release = Release(&e.forge, "acme/r0");
+    e.app.refresh_forge_all();
+    wait_until("read of feat/x started", || e.forge.waiting("acme/r0") == 1);
+    e.git.with_repo(&r0, |r| {
+        r.summary.head = HeadState::Branch("feat/y".into());
+    });
+    e.app.refresh_repo(r0.id());
+    // The status of `feat/x` is not shown for `feat/y`.
+    wait_until("previous branch status cleared", || {
+        forge_of_path(&e, &r0) == ForgeStatus::Unknown && ci_of(&e, &r0) == BranchCi::Unknown
+    });
+    drop(release);
+    // No refresh period waited for: `feat/y` is read once `feat/x` lands.
+    wait_until(
+        "CI of feat/y",
+        || matches!(ci_of(&e, &r0), BranchCi::Run(r) if r.state == CiState::Success),
+    );
+    assert_eq!(
+        forge_of_path(&e, &r0),
+        ForgeStatus::NoPullRequest {
+            branch: "feat/y".into()
+        }
+    );
+}
