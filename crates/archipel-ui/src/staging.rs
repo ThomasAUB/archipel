@@ -565,7 +565,8 @@ fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Option<Statefu
 }
 
 /// Fetch, pull, push, pull request, stash, pop, undo, redo, after `lead`
-/// (a button of the view's own).
+/// (a button of the view's own), then the operation in progress if any:
+/// shown whatever is selected, so a stopped rebase can always be aborted.
 pub fn render_actions<V: Staging>(
     v: &mut V,
     lead: Option<AnyElement>,
@@ -614,10 +615,12 @@ pub fn render_actions<V: Staging>(
                 cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Redo(id), cx)),
             ),
         )
+        .children(render_in_progress(v, cx))
         .into_any_element()
 }
 
-/// The merge / rebase / … in progress, with Continue and Abort.
+/// The merge / rebase / … in progress, with Continue, Skip (but for a
+/// merge) and Abort.
 fn render_in_progress<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
     let op = v.panel().summary.as_ref()?.in_progress?;
     let what = match op {
@@ -641,9 +644,8 @@ fn render_in_progress<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyE
         div()
             .flex()
             .items_center()
-            .justify_between()
+            .gap_2()
             .px_2()
-            .py_1()
             .border_1()
             .border_color(color(cx, T::StatusConflict))
             .text_color(color(cx, T::StatusConflict))
@@ -658,6 +660,9 @@ fn render_in_progress<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyE
                         SequenceAction::Continue,
                         cx,
                     ))
+                    .when(op != RepoOp::Merge, |d| {
+                        d.child(sequence("st-skip", "Skip", SequenceAction::Skip, cx))
+                    })
                     .child(sequence("st-abort", "Abort", SequenceAction::Abort, cx)),
             )
             .into_any_element(),
@@ -756,7 +761,6 @@ fn render_panel<V: Staging>(
         .gap_2()
         .p_2()
         .children(actions)
-        .children(render_in_progress(v, cx))
         .child(section("BRANCH", cx))
         .child(render_branch(v, cx));
     div()
