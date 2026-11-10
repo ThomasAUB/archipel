@@ -23,18 +23,29 @@ impl App {
         let depth = self.settings.journal_limit;
         let spec = OpSpec::new(Some(repo), OpClass::Write, label);
         let _h = self.scheduler.submit(spec, move |_| {
-            let entry: Option<JournalEntry> = match direction {
-                Direction::Undo => undo.next_undo(repo, depth)?,
-                Direction::Redo => undo.next_redo(repo, depth)?,
+            // A stopped rebase (or merge…) is undone by aborting it: it is
+            // not in the journal, and the entries before it cannot be
+            // undone while it is in progress.
+            let aborted = match direction {
+                Direction::Undo => undo.abort_in_progress(&path).transpose(),
+                Direction::Redo => None,
             };
-            let outcome = match entry {
-                None => Ok(format!("nothing to {}", label.to_lowercase())),
-                Some(e) => undo.execute(&path, &e, direction).map(|note| {
-                    note.map_or_else(
-                        || format!("{label}: {}", e.label),
-                        |n| format!("{label}: {} ({n})", e.label),
-                    )
-                }),
+            let outcome = if let Some(aborted) = aborted {
+                aborted.map(|what| format!("{label}: aborted {what}"))
+            } else {
+                let entry: Option<JournalEntry> = match direction {
+                    Direction::Undo => undo.next_undo(repo, depth)?,
+                    Direction::Redo => undo.next_redo(repo, depth)?,
+                };
+                match entry {
+                    None => Ok(format!("nothing to {}", label.to_lowercase())),
+                    Some(e) => undo.execute(&path, &e, direction).map(|note| {
+                        note.map_or_else(
+                            || format!("{label}: {}", e.label),
+                            |n| format!("{label}: {} ({n})", e.label),
+                        )
+                    }),
+                }
             };
             if let Some(app) = me.upgrade() {
                 let message = match &outcome {

@@ -170,6 +170,36 @@ fn merge_rebase_cherry_pick_revert_reset_undo() {
 }
 
 #[test]
+fn undo_aborts_a_rebase_stopped_on_conflicts() {
+    let e = env();
+    e.repo.git(&["checkout", "-q", "-b", "topic"]).unwrap();
+    e.commit(
+        "a.txt", "topic
+",
+    );
+    e.repo.git(&["checkout", "-q", "main"]).unwrap();
+    let main_tip = e.commit(
+        "a.txt", "main
+",
+    );
+
+    assert!(e.actions.rebase(&e.path, "topic").is_err());
+    let in_progress = e.cli.summary(&e.path).unwrap().in_progress;
+    assert_eq!(in_progress, Some(archipel_model::RepoOp::Rebase));
+
+    assert_eq!(
+        e.undo.abort_in_progress(&e.path).unwrap(),
+        Some("the rebase")
+    );
+    let summary = e.cli.summary(&e.path).unwrap();
+    assert_eq!(summary.in_progress, None);
+    assert_eq!(summary.head.branch(), Some("main"));
+    assert_eq!(e.head(), main_tip);
+    // Nothing left to abort.
+    assert_eq!(e.undo.abort_in_progress(&e.path).unwrap(), None);
+}
+
+#[test]
 fn checkout_and_branch_and_tag_undo() {
     let e = env();
     e.actions
