@@ -268,16 +268,36 @@ fn pull_request_status(
     }
 }
 
-/// The remote's usual default branch: `main`, else `master`, else `main`.
+/// The remote's default branch: the one `<remote>/HEAD` points to, else
+/// `main`, else `master`, else `main`.
 fn default_target(git: &GitPorts, path: &RepoPath, remote: &str) -> String {
+    const USUAL: [&str; 2] = ["main", "master"];
+    /// Short name of a branch of the remote (`main` for `origin/main`).
+    fn short<'a>(b: &'a archipel_model::refs::BranchInfo, prefix: &str) -> Option<&'a str> {
+        b.is_remote
+            .then(|| b.name.strip_prefix(prefix))
+            .flatten()
+            .filter(|n| *n != "HEAD")
+    }
     let branches = git.refs.branches(path).unwrap_or_default();
-    ["main", "master"]
+    let prefix = format!("{remote}/");
+    let remote_branch = |b| short(b, &prefix);
+    // `<remote>/HEAD` only resolves to a commit: pick the remote branch at
+    // that commit, preferring the usual names.
+    if let Ok(Some(head)) = git.refs.resolve(path, &format!("refs/remotes/{remote}/HEAD")) {
+        let mut candidates: Vec<&str> = branches
+            .iter()
+            .filter(|b| b.target == head)
+            .filter_map(remote_branch)
+            .collect();
+        candidates.sort_by_key(|n| (USUAL.iter().position(|u| u == n).unwrap_or(USUAL.len()), *n));
+        if let Some(name) = candidates.first() {
+            return (*name).to_owned();
+        }
+    }
+    USUAL
         .into_iter()
-        .find(|b| {
-            branches
-                .iter()
-                .any(|i| i.is_remote && i.name == format!("{remote}/{b}"))
-        })
+        .find(|u| branches.iter().filter_map(remote_branch).any(|n| n == *u))
         .unwrap_or("main")
         .to_owned()
 }
