@@ -5,9 +5,10 @@
 //! unstage or discard just them, and the file can be edited in place
 //! (Edit, or a double-click on a line; see [`crate::file_edit`]). An
 //! unstaged diff names the file's line ending, with a button converting
-//! it to the other (LF ↔ CRLF).
+//! it to the other (LF ↔ CRLF). Lines are syntax highlighted after the
+//! file's extension (see [`crate::syntax`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -19,12 +20,13 @@ use archipel_ops::patch::selection_patch;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, SharedString, UniformListScrollHandle, div, px,
-    uniform_list,
+    AnyElement, App, ClickEvent, Context, Div, HighlightStyle, SharedString, StyledText,
+    UniformListScrollHandle, div, px, uniform_list,
 };
 
 use crate::file_edit::{self, LineEnding};
 use crate::staging::{Staging, arm_discard};
+use crate::syntax::{self, LineHighlighter, Spans};
 use crate::theme::{color, mono_font, row_height};
 use crate::widgets::{button, scroll_list};
 
@@ -54,6 +56,19 @@ pub(crate) struct DiffDoc {
     /// Selected changed lines. A reloaded diff is a new doc, so the
     /// selection never outlives the lines it names.
     selection: Mutex<LineSelection>,
+    /// Syntax colors, per `(file, hunk)`, computed as the hunk's lines are
+    /// first shown; `None` for a file shown as plain text.
+    colors: Mutex<HashMap<(usize, usize), Option<HunkColors>>>,
+}
+
+/// The syntax colors of one hunk, as far as its lines were highlighted.
+struct HunkColors {
+    /// The old side: context and removed lines.
+    old: LineHighlighter,
+    /// The new side: context and added lines.
+    new: LineHighlighter,
+    /// Spans of the hunk's first lines.
+    lines: Vec<Spans>,
 }
 
 /// The line endings a file's diff shows.
@@ -190,7 +205,41 @@ impl DiffDoc {
             lineno_width: max_lineno.to_string().len(),
             endings,
             selection: Mutex::default(),
+            colors: Mutex::default(),
         }
+    }
+
+    /// The syntax colors of line `l` of hunk `h` of file `f`. A hunk is
+    /// highlighted from its first line up to the one asked, once.
+    fn spans(&self, f: usize, h: usize, l: usize) -> Spans {
+        let mut colors = self.colors.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = colors.entry((f, h)).or_insert_with(|| {
+            syntax::find(self.files[f].display_path()).map(|s| HunkColors {
+                old: LineHighlighter::new(s),
+                new: LineHighlighter::new(s),
+                lines: Vec::new(),
+            })
+        });
+        let Some(hunk) = entry else {
+            return Spans::new();
+        };
+        let lines = &self.files[f].hunks[h].lines;
+        while hunk.lines.len() <= l {
+            let Some(line) = lines.get(hunk.lines.len()) else {
+                return Spans::new();
+            };
+            let text = line.content.trim_end_matches('\r');
+            let spans = match line.origin {
+                LineOrigin::Context => {
+                    hunk.old.line(text);
+                    hunk.new.line(text)
+                }
+                LineOrigin::Removed => hunk.old.line(text),
+                LineOrigin::Added => hunk.new.line(text),
+            };
+            hunk.lines.push(spans);
+        }
+        hunk.lines[l].clone()
     }
 
     fn selection(&self) -> std::sync::MutexGuard<'_, LineSelection> {
@@ -458,7 +507,8 @@ fn render_diff_row<V: Staging>(
             let line = &doc.files[f].hunks[h].lines[l];
             let selectable = side.is_some() && line.origin != LineOrigin::Context;
             let selected = selectable && doc.is_selected(f, h, l);
-            let row = diff_line_row(line, doc.lineno_width, selected, cx);
+            let spans = doc.spans(f, h, l);
+            let row = diff_line_row(line, &spans, doc.lineno_width, selected, cx);
             let editable = side.is_some() && doc.editable(f);
             if !selectable && !editable {
                 return row.into_any_element();
@@ -486,8 +536,15 @@ fn render_diff_row<V: Staging>(
 }
 
 /// One line of a hunk: line-number gutter, +/- marker, then the file's
-/// text. A `selected` line has its gutter in the accent color.
-fn diff_line_row(line: &DiffLine, lineno_width: usize, selected: bool, cx: &App) -> Div {
+/// text, colored by `spans`. A `selected` line has its gutter in the accent
+/// color.
+fn diff_line_row(
+    line: &DiffLine,
+    spans: &[(Range<usize>, T)],
+    lineno_width: usize,
+    selected: bool,
+    cx: &App,
+) -> Div {
     let base = div()
         .w_full()
         .h(row_height(cx))
@@ -532,11 +589,17 @@ fn diff_line_row(line: &DiffLine, lineno_width: usize, selected: bool, cx: &App)
                         .child(marker),
                 ),
         )
-        .child(
-            div()
-                .pl_2()
-                .child(line.content.trim_end_matches('\r').to_owned()),
-        )
+        .child(div().pl_2().child(
+            StyledText::new(line.content.trim_end_matches('\r').to_owned()).with_highlights(
+                spans.iter().map(|(range, token)| {
+                    let style = HighlightStyle {
+                        color: Some(color(cx, *token)),
+                        ..HighlightStyle::default()
+                    };
+                    (range.clone(), style)
+                }),
+            ),
+        ))
 }
 
 /// An open diff with its header (title, note, keys), in place of the

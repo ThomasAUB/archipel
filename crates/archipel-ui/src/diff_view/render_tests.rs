@@ -66,7 +66,7 @@ impl Render for Lines {
             .children(
                 self.0
                     .iter()
-                    .map(|l| diff_line_row(l, LINENO_WIDTH, false, cx)),
+                    .map(|l| diff_line_row(l, &[], LINENO_WIDTH, false, cx)),
             )
     }
 }

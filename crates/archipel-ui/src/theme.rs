@@ -5,12 +5,14 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use archipel_app::dashboard::Tone;
 use archipel_app::settings::{load_theme_selection, save_theme_selection};
 use archipel_theme::{
     Appearance, Color, ColorToken, Oklab, Theme, ThemeRegistry, ThemeSelection, builtin,
 };
+use gpui_kit::component::highlighter::{HighlightTheme, SyntaxColors};
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
 use gpui_kit::{App, FontWeight, Global, Hsla, Pixels, Rgba, WindowAppearance, px};
@@ -197,6 +199,7 @@ pub fn sync_toolkit_theme(cx: &mut App) {
         c(ColorToken::StatusSuccess),
         c(ColorToken::StatusWarning),
     );
+    let syntax = syntax_colors(&c);
     if KitTheme::global(cx).is_dark() != dark {
         KitTheme::change(
             if dark {
@@ -214,6 +217,11 @@ pub fn sync_toolkit_theme(cx: &mut App) {
         k.radius = radius;
         // Shown whenever a list overflows, not only on hover or scroll.
         k.scrollbar_mode = ScrollbarMode::Always;
+        // Code in the editor and the file viewer takes the theme's syntax
+        // colors, as diffs do.
+        if let Some(syntax) = syntax {
+            k.highlight_theme = Arc::new(highlight_theme(&k.highlight_theme, syntax));
+        }
         let k = &mut k.colors;
         k.background = bg_app;
         k.foreground = fg;
@@ -259,6 +267,48 @@ pub fn sync_toolkit_theme(cx: &mut App) {
         k.sidebar_foreground = fg;
         k.sidebar_border = border_subtle;
     });
+}
+
+/// `base` with `syntax` colors.
+fn highlight_theme(base: &HighlightTheme, syntax: SyntaxColors) -> HighlightTheme {
+    let mut theme = base.clone();
+    theme.style.syntax = syntax;
+    theme
+}
+
+/// The toolkit's highlight names in the theme's syntax colors; the names
+/// left out stay plain, as they do in a diff (see [`crate::syntax`]).
+fn syntax_colors(c: &impl Fn(ColorToken) -> Hsla) -> Option<SyntaxColors> {
+    use ColorToken as T;
+    const NAMES: [(&str, ColorToken); 20] = [
+        ("keyword", T::SyntaxKeyword),
+        ("preproc", T::SyntaxKeyword),
+        ("tag", T::SyntaxKeyword),
+        ("string", T::SyntaxString),
+        ("string.escape", T::SyntaxString),
+        ("string.regex", T::SyntaxString),
+        ("string.special", T::SyntaxString),
+        ("comment", T::SyntaxComment),
+        ("comment.doc", T::SyntaxComment),
+        ("function", T::SyntaxFunction),
+        ("attribute", T::SyntaxFunction),
+        ("type", T::SyntaxType),
+        ("constructor", T::SyntaxType),
+        ("enum", T::SyntaxType),
+        ("number", T::SyntaxNumber),
+        ("boolean", T::SyntaxConstant),
+        ("constant", T::SyntaxConstant),
+        ("variant", T::SyntaxConstant),
+        ("variable.special", T::SyntaxConstant),
+        ("operator", T::SyntaxOperator),
+    ];
+    // The toolkit's style type cannot be built field by field outside it,
+    // but it reads from the theme file format.
+    let map = NAMES
+        .iter()
+        .map(|&(name, token)| (name.to_owned(), serde_json::json!({ "color": c(token) })))
+        .collect();
+    serde_json::from_value(serde_json::Value::Object(map)).ok()
 }
 
 /// Re-derives the theme with the accent and background tint of the window
