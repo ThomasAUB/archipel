@@ -12,7 +12,10 @@
 use archipel_model::journal::{
     BatchId, EntryState, HeadRef, JournalEntry, OperationKind, RefSnapshot, StashRecord,
 };
-use archipel_model::requests::{CheckoutTarget, ForceMode, PushRequest, ResetMode, StashApplyMode};
+use archipel_model::requests::{
+    CheckoutTarget, ForceMode, PushRequest, ResetMode, SequenceAction, StashApplyMode,
+};
+use archipel_model::summary::RepoOp;
 use archipel_model::{CancelToken, Oid, ProgressSink, RepoId, RepoPath};
 
 use crate::actions::{GitPorts, split_remote_ref};
@@ -118,6 +121,22 @@ impl UndoService {
     #[must_use]
     pub fn new(git: GitPorts, journal: Journal) -> Self {
         Self { git, journal }
+    }
+
+    /// Aborts the merge, rebase, cherry-pick or revert that stopped in
+    /// `repo` (conflicts, failed step): undoing it means going back to
+    /// before it started, and a failed operation is never journaled.
+    /// Returns what was aborted, `None` when nothing is in progress.
+    pub fn abort_in_progress(&self, repo: &RepoPath) -> Result<Option<&'static str>, OpError> {
+        let what = match self.git.status.summary(repo)?.in_progress {
+            Some(RepoOp::Merge) => "the merge",
+            Some(RepoOp::Rebase) => "the rebase",
+            Some(RepoOp::CherryPick) => "the cherry-pick",
+            Some(RepoOp::Revert) => "the revert",
+            Some(RepoOp::Bisect | RepoOp::ApplyMailbox) | None => return Ok(None),
+        };
+        self.git.rewriter.sequence(repo, SequenceAction::Abort)?;
+        Ok(Some(what))
     }
 
     /// The entry `Ctrl+Z` would undo: the newest entry still in effect.
