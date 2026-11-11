@@ -14,6 +14,25 @@ same change in several repos with a clear per-repo report.
 
 Runs on Windows, Linux (Wayland and X11) and macOS.
 
+![The dashboard: every repo of the project with its branch, sync state and local changes](docs/screenshots/dashboard.png)
+
+## A quick look
+
+**Quick edit pane.** Click a repo to fetch, pull, push, branch, stage files or
+hunks and commit without leaving the dashboard. Diffs are syntax-highlighted.
+
+![Quick edit pane with a syntax-highlighted diff](docs/screenshots/quick-edit.png)
+
+**Repo tab.** Double-click a repo for its branches, tags, commit graph and
+commit details.
+
+![Repo tab: branches, commit graph and commit details](docs/screenshots/repo.png)
+
+**Action palette.** `Ctrl+Shift+P` lists every action, including the batch ones
+that apply to all selected repos.
+
+![Action palette](docs/screenshots/palette.png)
+
 ## Try it
 
 ### Download
