@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use archipel_model::ports::{Coverage, Invalidation, InvalidationSink, Scope, WatchHandle};
+use archipel_model::ports::{Coverage, Invalidation, InvalidationSink, Scope};
 use archipel_model::{GitError, ProjectId, RepoId, RepoPath, RepoSummary};
 use archipel_ops::{OpClass, OpSpec};
 
@@ -95,23 +95,37 @@ impl App {
         }
     }
 
-    /// (Re)starts watching the shown repos of the open project; tells the
-    /// UI which ones are only partly watched.
+    /// (Re)starts watching the shown repos of the open project, in the
+    /// background: on Linux a recursive watch walks the whole worktree
+    /// (one inotify watch per directory), seconds for large projects on a
+    /// cold disk cache, which must not hold up opening (spec §2).
     pub(super) fn start_watching(&self) {
-        // Watch handles unwatch on drop (syscalls): they are dropped after
-        // the session lock is released.
-        let (project, targets, old): (ProjectId, Vec<(RepoId, RepoPath)>, Vec<WatchHandle>) = {
-            let mut guard = lock(&self.session);
-            let Some(s) = guard.as_mut() else { return };
+        let me = self.me.clone();
+        self.scheduler.runtime().spawn_blocking(move || {
+            if let Some(app) = me.upgrade() {
+                app.watch_shown_repos();
+            }
+        });
+    }
+
+    /// Watches the shown repos of the open project; tells the UI which ones
+    /// are only partly watched.
+    ///
+    /// Runs are serialized, and each reads what to watch once it holds the
+    /// lock: the last run to finish always matches the latest rows.
+    fn watch_shown_repos(&self) {
+        let _serial = lock(&self.watching);
+        let (project, targets): (ProjectId, Vec<(RepoId, RepoPath)>) = {
+            let guard = lock(&self.session);
+            let Some(s) = guard.as_ref() else { return };
             let targets = s
                 .rows
                 .iter()
                 .filter(|r| !r.hidden && r.path.as_path().exists())
                 .map(|r| (r.id, r.path.clone()))
                 .collect();
-            (s.id.clone(), targets, std::mem::take(&mut s.watches))
+            (s.id.clone(), targets)
         };
-        drop(old);
         let me = self.me.clone();
         let sink: Arc<dyn InvalidationSink> = Arc::new(move |inv: Invalidation| {
             let Some(app) = me.upgrade() else { return };
@@ -138,8 +152,11 @@ impl App {
                 }
             }
         }
-        // The project may have been switched while watching: the handles
-        // then belong to no session and are dropped (outside the lock).
+        // The old handles are dropped only now, so the OS watches still
+        // wanted by the new ones are kept rather than removed and re-added.
+        // The project may have been switched while watching: the new handles
+        // then belong to no session and are dropped. Either way, dropping
+        // (unwatch syscalls) happens outside the session lock.
         let stale = match lock(&self.session).as_mut() {
             Some(s) if s.id == project => std::mem::replace(&mut s.watches, handles),
             _ => return,

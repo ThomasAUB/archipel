@@ -134,6 +134,12 @@ fn wait_until(app: &App, what: &str, cond: impl Fn(&App) -> bool) {
     }
 }
 
+/// Waits until the 3 repos are watched (watches are registered in the
+/// background).
+fn wait_watched(e: &Env) {
+    wait_until(&e.app, "watching", |_| e.watcher.watch_count() == 3);
+}
+
 fn all_fresh(app: &App) -> bool {
     let rows = app.rows();
     !rows.is_empty() && rows.iter().all(|r| !r.stale)
@@ -169,7 +175,7 @@ fn opening_paints_from_cache_then_refreshes() {
         rows[0].summary().unwrap().head,
         HeadState::Branch("main".into())
     );
-    assert_eq!(e.watcher.watch_count(), 3);
+    wait_watched(&e);
     // Summaries were cached for the next session.
     wait_until(&e.app, "persisted", |_| {
         e.store.load_summaries(&id).unwrap().len() == 3
@@ -182,6 +188,7 @@ fn watcher_invalidation_refreshes_one_repo() {
     let e = env();
     e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
+    wait_watched(&e);
     e.git
         .with_repo(&e.repos[1], |r| r.summary.changes.modified = 4);
     e.watcher.trigger(e.repos[1].id(), Scope::STATUS);
@@ -232,6 +239,7 @@ fn a_refresh_asked_while_one_is_reading_runs_after_it() {
     let reader = held.lock().unwrap().clone().unwrap();
     e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
+    wait_watched(&e);
     let (entered_tx, entered) = mpsc::channel();
     let (release, release_rx) = mpsc::channel();
     *reader.armed.lock().unwrap() = Some((entered_tx, release_rx));
@@ -450,6 +458,7 @@ fn fetch_head_alone_only_updates_the_last_fetch_time() {
     let e = env();
     e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
+    wait_watched(&e);
     e.git
         .with_repo(&e.repos[1], |r| r.summary.changes.modified = 4);
     e.watcher.trigger(e.repos[1].id(), Scope::FETCH);
