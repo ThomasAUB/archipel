@@ -191,6 +191,8 @@ pub struct App {
     commit: Arc<MultiCommit>,
     undo: UndoService,
     session: Mutex<Option<Session>>,
+    /// Serializes the background (re)registrations of the file watches.
+    watching: Mutex<()>,
     events: broadcast::Sender<AppEvent>,
     /// Background fetch plan (per window, like the session).
     auto_fetch: Mutex<auto_fetch::AutoFetch>,
@@ -251,6 +253,7 @@ impl App {
             commit,
             undo,
             session: Mutex::new(None),
+            watching: Mutex::new(()),
             events,
             auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
                 settings_auto_fetch,
@@ -302,6 +305,7 @@ impl App {
             commit: self.commit.clone(),
             undo: self.undo.clone(),
             session: Mutex::new(None),
+            watching: Mutex::new(()),
             events,
             auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
                 settings_auto_fetch,

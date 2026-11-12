@@ -142,6 +142,8 @@ fn wait_until(what: &str, cond: impl Fn() -> bool) {
 fn open_fresh(e: &Env) {
     e.app.open_project(&p1()).unwrap();
     wait_until("refresh", || e.app.rows().iter().all(|r| !r.stale));
+    // Watches are registered in the background.
+    wait_until("watching", || e.watcher.watch_count() >= e.repos.len());
 }
 
 #[test]
