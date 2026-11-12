@@ -708,7 +708,6 @@ fn conflict_forecast_checks_upstream_and_default_branch_once_per_commits() {
     assert_eq!(calls, 2);
 
     // A working-copy change does not recompute anything.
-    wait_watched(&e);
     e.git
         .with_repo(&e.repos[0], |r| r.summary.changes.modified = 3);
     e.watcher.trigger(e.repos[0].id(), Scope::STATUS);
