@@ -10,8 +10,9 @@
 
 use crate::error::ForgeError;
 use crate::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, Namespace,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo,
+    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
+    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, Release,
+    RemoteRepo,
 };
 
 /// Reads open pull / merge requests (dashboard column, review list).
@@ -33,6 +34,17 @@ pub trait CiReader: Send + Sync {
     /// The latest CI run of `branch` on the forge with its jobs; `None` when
     /// the branch is not on the forge or has no CI.
     fn ci_for_branch(&self, repo: &ForgeRepo, branch: &str) -> Result<Option<CiRun>, ForgeError>;
+    /// The end of the log of a job (one with an `id`), reduced to its error
+    /// lines. Only the end of the log is kept.
+    fn ci_job_log(&self, repo: &ForgeRepo, job: &CiJob) -> Result<CiJobLog, ForgeError>;
+}
+
+/// Runs CI again.
+pub trait CiWriter: Send + Sync {
+    /// Reruns the failed (and canceled) jobs of `run`. Returns how many
+    /// runs were restarted. A token without write access to the CI fails
+    /// with a message naming the scope to add.
+    fn rerun_failed_ci(&self, repo: &ForgeRepo, run: &CiRun) -> Result<usize, ForgeError>;
 }
 
 /// Creates and merges pull / merge requests.

@@ -333,6 +333,7 @@ mod tests {
             forge: crate::forge::ForgeStatus::Unknown,
             ci: crate::forge::BranchCi::Unknown,
             forge_limit: None,
+            forecast: crate::forecast::ConflictForecast::default(),
         }
     }
 

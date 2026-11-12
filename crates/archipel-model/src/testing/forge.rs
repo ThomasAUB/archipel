@@ -7,13 +7,13 @@ use std::sync::{Condvar, Mutex};
 use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, MergeState,
-    Namespace, NamespaceKind, PullRequestDraft, PullRequestRef, PullRequestStatus, Release,
-    RemoteRepo, ReviewState,
+    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
+    MergeReport, MergeState, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef,
+    PullRequestStatus, Release, RemoteRepo, ReviewState,
 };
 use crate::ports::{
-    CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
-    PullRequestWriter, ReleaseFeed,
+    CiReader, CiWriter, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn,
+    PullRequestReader, PullRequestWriter, ReleaseFeed,
 };
 
 /// A pull request created through the fake.
@@ -49,6 +49,11 @@ struct ForgeState {
     open: HashMap<(String, String), PullRequestStatus>,
     /// `(repo path, branch)` → CI run of the branch head.
     ci: HashMap<(String, String), CiRun>,
+    /// `(repo path, job id)` → log of the job.
+    logs: HashMap<(String, u64), CiJobLog>,
+    log_reads: usize,
+    /// `(repo path, run sha)` of every rerun asked.
+    reruns: Vec<(String, String)>,
     created: Vec<CreatedPullRequest>,
     merged: Vec<MergedPullRequest>,
     repos: HashMap<String, Vec<RemoteRepo>>,
@@ -95,6 +100,23 @@ impl FakeForge {
         lock(&self.state)
             .ci
             .insert((path.into(), branch.into()), run);
+    }
+
+    /// Declares the log of job `job` of repo `path`.
+    pub fn with_ci_log(&self, path: &str, job: u64, log: CiJobLog) {
+        lock(&self.state).logs.insert((path.into(), job), log);
+    }
+
+    /// Number of job logs served.
+    #[must_use]
+    pub fn log_reads(&self) -> usize {
+        lock(&self.state).log_reads
+    }
+
+    /// `(repo path, run sha)` of every rerun asked so far.
+    #[must_use]
+    pub fn reruns(&self) -> Vec<(String, String)> {
+        lock(&self.state).reruns.clone()
     }
 
     /// Declares the repositories of a namespace.
@@ -207,6 +229,32 @@ impl CiReader for FakeForge {
             .ci
             .get(&(repo.path.clone(), branch.to_owned()))
             .cloned())
+    }
+
+    fn ci_job_log(&self, repo: &ForgeRepo, job: &CiJob) -> Result<CiJobLog, ForgeError> {
+        self.check(repo)?;
+        let mut s = lock(&self.state);
+        s.log_reads += 1;
+        job.id
+            .and_then(|id| s.logs.get(&(repo.path.clone(), id)).cloned())
+            .ok_or_else(|| ForgeError::NotFound {
+                host: repo.account.host.clone(),
+                what: format!("log of job {}", job.name),
+            })
+    }
+}
+
+impl CiWriter for FakeForge {
+    /// Refuses a run without a failed job, as the forges do.
+    fn rerun_failed_ci(&self, repo: &ForgeRepo, run: &CiRun) -> Result<usize, ForgeError> {
+        self.check(repo)?;
+        if run.failed_jobs().next().is_none() {
+            return Err(ForgeError::Unsupported("no failed job to rerun".into()));
+        }
+        lock(&self.state)
+            .reruns
+            .push((repo.path.clone(), run.sha.clone()));
+        Ok(1)
     }
 }
 

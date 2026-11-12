@@ -81,6 +81,44 @@ impl Workspace {
         )
     }
 
+    /// Row menu entry: rerun the failed CI jobs of the targeted repos whose
+    /// CI fails, when there are any.
+    fn ci_rerun_menu_item(&self, targets: &[RepoId], cx: &mut Context<Self>) -> Option<AnyElement> {
+        let failing: Vec<RepoId> = self
+            .core
+            .rows()
+            .into_iter()
+            .filter(|r| targets.contains(&r.id))
+            .filter(|r| {
+                r.ci.run()
+                    .is_some_and(|run| run.failed_jobs().next().is_some())
+            })
+            .map(|r| r.id)
+            .collect();
+        if failing.is_empty() {
+            return None;
+        }
+        let label = match failing.len() {
+            1 => "Rerun failed jobs".to_owned(),
+            n => format!("Rerun failed jobs of {n} repos"),
+        };
+        let hover = color(cx, T::BgHover);
+        Some(
+            div()
+                .id("menu-ci-rerun")
+                .px_3()
+                .py_1()
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.row_menu = None;
+                    this.dispatch(Command::RerunFailedCi(failing.clone()), cx);
+                }))
+                .child(label)
+                .into_any_element(),
+        )
+    }
+
     /// Right-click menu of a sidebar category header: rename, remove.
     pub(super) fn render_category_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (category, position) = self.category_menu.clone()?;
@@ -253,8 +291,9 @@ impl Workspace {
                 Command::Fetch(targets.clone()),
                 cx,
             ))
-            .child(self.forge_menu_item(id, targets, cx))
             .children(self.ci_menu_item(id, cx))
+            .children(self.ci_rerun_menu_item(&targets, cx))
+            .child(self.forge_menu_item(id, targets, cx))
             .child(
                 div()
                     .id("menu-remove")

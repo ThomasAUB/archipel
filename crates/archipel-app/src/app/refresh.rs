@@ -90,6 +90,7 @@ impl App {
         }
         self.load_tree(repo);
         self.load_forge(repo, false);
+        self.load_forecast(repo);
         if let Some((id, rows)) = finished_all {
             self.persist_rows(&id, &rows);
         }

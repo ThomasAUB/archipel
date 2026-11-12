@@ -10,7 +10,7 @@ use archipel_model::forge::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode, optional, permission};
+use crate::http::{Api, Auth, Method, encode, optional, permission, scoped};
 use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitLab provider.
@@ -73,6 +73,8 @@ struct BranchPipeline {
 
 #[derive(Deserialize)]
 struct Job {
+    #[serde(default)]
+    id: u64,
     name: String,
     stage: Option<String>,
     status: String,
@@ -109,6 +111,13 @@ struct Project {
     #[serde(default)]
     archived: bool,
 }
+
+/// What a token needs to read job logs.
+const LOG_SCOPE: &str = "the token needs the read_api scope";
+
+/// What a token needs to retry a pipeline.
+const RETRY_SCOPE: &str = "the token needs the api scope (read_api is not enough), and the \
+                           Developer role on the project";
 
 fn ci_state(pipeline: Option<&Pipeline>) -> Option<CiState> {
     match pipeline?.status.as_str() {
@@ -374,12 +383,14 @@ impl CiApi for GitLab {
         .unwrap_or_default();
         jobs.reverse();
         Ok(Some(CiRun {
+            id: Some(pipeline.id),
             state,
             sha: pipeline.sha,
             url: pipeline.web_url,
             jobs: jobs
                 .into_iter()
                 .map(|j| CiJob {
+                    id: Some(j.id).filter(|id| *id != 0),
                     state: job_state(&j),
                     name: j.name,
                     stage: j.stage,
@@ -387,6 +398,35 @@ impl CiApi for GitLab {
                 })
                 .collect(),
         }))
+    }
+
+    fn job_log(&self, at: &Endpoint, repo: &str, job: u64) -> Result<String, ForgeError> {
+        scoped(
+            api(at).get_text(
+                &format!("{}/jobs/{job}/trace", project(repo)),
+                &format!("log of job {job}"),
+            ),
+            "read the CI log",
+            LOG_SCOPE,
+        )
+    }
+
+    fn rerun_failed(&self, at: &Endpoint, repo: &str, run: &CiRun) -> Result<usize, ForgeError> {
+        let Some(id) = run.id else {
+            return Err(ForgeError::Unsupported("no pipeline to retry".into()));
+        };
+        // Retrying a pipeline reruns its failed and canceled jobs.
+        scoped(
+            api(at).write_unit(
+                Method::Post,
+                &format!("{}/pipelines/{id}/retry", project(repo)),
+                json!({}),
+                &format!("pipeline {id}"),
+            ),
+            "rerun the CI",
+            RETRY_SCOPE,
+        )?;
+        Ok(1)
     }
 }
 

@@ -23,10 +23,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod branches_panel;
+mod ci_tooltip;
 mod commit_panel;
 mod diff_view;
 mod file_edit;
 mod fonts;
+mod forecast_badge;
 mod forge_panel;
 mod ignore;
 mod instance;

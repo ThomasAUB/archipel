@@ -9,7 +9,7 @@ use archipel_model::forge::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode, encode_path, optional, permission};
+use crate::http::{Api, Auth, Method, encode, encode_path, optional, permission, scoped};
 use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
 
 /// The GitHub provider.
@@ -69,12 +69,30 @@ struct Pull {
 
 #[derive(Deserialize)]
 struct CheckRun {
+    /// The job id, for a GitHub Actions check run.
+    #[serde(default)]
+    id: u64,
+    /// The app that posted it (`github-actions`).
+    #[serde(default)]
+    app: Option<CheckApp>,
     #[serde(default)]
     name: String,
     status: String,
     conclusion: Option<String>,
     #[serde(default)]
     html_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CheckApp {
+    #[serde(default)]
+    slug: String,
+}
+
+/// A GitHub Actions job (only its run is read).
+#[derive(Deserialize)]
+struct ActionsJob {
+    run_id: u64,
 }
 
 #[derive(Deserialize)]
@@ -129,6 +147,17 @@ struct Repo {
     archived: bool,
 }
 
+/// The app slug of GitHub Actions check runs.
+const ACTIONS_APP: &str = "github-actions";
+
+/// What a token needs to read Actions logs.
+const LOG_SCOPE: &str = "the token needs Actions: read (fine-grained token) or the repo scope \
+                         (classic token)";
+
+/// What a token needs to rerun Actions jobs.
+const RERUN_SCOPE: &str = "the token needs Actions: read and write (fine-grained token) or the \
+                           repo scope (classic token)";
+
 /// State of one check run.
 fn check_run_state(run: &CheckRun) -> CiJobState {
     match (run.status.as_str(), run.conclusion.as_deref()) {
@@ -156,6 +185,14 @@ fn ci_jobs(runs: Vec<CheckRun>, combined: Option<CombinedStatus>) -> Vec<CiJob> 
     let mut jobs: Vec<CiJob> = runs
         .into_iter()
         .map(|r| CiJob {
+            // Only GitHub Actions serves the log of a check run and reruns
+            // it; other apps' checks are theirs.
+            id: r
+                .app
+                .as_ref()
+                .is_some_and(|a| a.slug == ACTIONS_APP)
+                .then_some(r.id)
+                .filter(|id| *id != 0),
             state: check_run_state(&r),
             name: r.name,
             stage: None,
@@ -167,6 +204,7 @@ fn ci_jobs(runs: Vec<CheckRun>, combined: Option<CombinedStatus>) -> Vec<CiJob> 
             .into_iter()
             .flat_map(|c| c.statuses)
             .map(|s| CiJob {
+                id: None,
                 state: commit_status_state(&s.state),
                 name: s.context,
                 stage: None,
@@ -444,11 +482,64 @@ impl CiApi for GitHub {
             return Ok(None);
         };
         Ok(Some(CiRun {
+            id: None,
             state,
             url: Some(format!("https://{}/{repo}/commit/{head}", at.host)),
             sha: head,
             jobs,
         }))
+    }
+
+    fn job_log(&self, at: &Endpoint, repo: &str, job: u64) -> Result<String, ForgeError> {
+        // Answered by a redirect to the log file, which the transport
+        // follows (without the token).
+        scoped(
+            api(at).get_text(
+                &format!("/repos/{}/actions/jobs/{job}/logs", encode_path(repo)),
+                &format!("log of job {job}"),
+            ),
+            "read the CI log",
+            LOG_SCOPE,
+        )
+    }
+
+    fn rerun_failed(&self, at: &Endpoint, repo: &str, run: &CiRun) -> Result<usize, ForgeError> {
+        let api = api(at);
+        let base = format!("/repos/{}", encode_path(repo));
+        let jobs: Vec<u64> = run.failed_jobs().filter_map(|j| j.id).collect();
+        if jobs.is_empty() {
+            return Err(ForgeError::Unsupported(
+                "none of the failed checks is a GitHub Actions job: rerun them on the CI that \
+                 posted them"
+                    .into(),
+            ));
+        }
+        // A commit has one workflow run per workflow: rerun each one with a
+        // failed job, once.
+        let mut runs: Vec<u64> = Vec::new();
+        for job in jobs {
+            let found: ActionsJob = scoped(
+                api.get(&format!("{base}/actions/jobs/{job}"), &format!("job {job}")),
+                "read the CI",
+                LOG_SCOPE,
+            )?;
+            if !runs.contains(&found.run_id) {
+                runs.push(found.run_id);
+            }
+        }
+        for id in &runs {
+            scoped(
+                api.write_unit(
+                    Method::Post,
+                    &format!("{base}/actions/runs/{id}/rerun-failed-jobs"),
+                    json!({}),
+                    &format!("workflow run {id}"),
+                ),
+                "rerun the CI",
+                RERUN_SCOPE,
+            )?;
+        }
+        Ok(runs.len())
     }
 }
 

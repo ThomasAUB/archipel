@@ -311,7 +311,12 @@ impl Workspace {
                     if let Some((pane, _)) = &self.quick_edit
                         && pane.read(cx).repo() == id
                     {
-                        pane.update(cx, |p, cx| p.on_summary(summary, cx));
+                        pane.update(cx, |p, cx| {
+                            p.on_summary(summary, cx);
+                            if let Some(row) = row {
+                                p.on_forecast(&row.forecast, cx);
+                            }
+                        });
                     }
                 }
             }

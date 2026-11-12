@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, Namespace,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
+    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 use archipel_model::ports::{
-    CiReader, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
-    PullRequestWriter,
+    CiReader, CiWriter, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn,
+    PullRequestReader, PullRequestWriter,
 };
 
 /// Forge access, each a narrow trait object (spec §8).
@@ -17,8 +17,10 @@ use archipel_model::ports::{
 pub struct ForgePorts {
     /// Open pull requests (dashboard column, review list).
     pub pull_requests: Arc<dyn PullRequestReader>,
-    /// CI of a branch head (dashboard "CI" column).
+    /// CI of a branch head (dashboard "CI" column) and job logs.
     pub ci: Arc<dyn CiReader>,
+    /// CI reruns.
+    pub ci_writer: Arc<dyn CiWriter>,
     /// Pull request creation, linking and merge.
     pub pull_request_writer: Arc<dyn PullRequestWriter>,
     /// Namespaces and repositories of an account (clone from an account).
@@ -37,6 +39,7 @@ impl ForgePorts {
     where
         F: PullRequestReader
             + CiReader
+            + CiWriter
             + PullRequestWriter
             + ForgeDirectory
             + ForgeSignIn
@@ -46,6 +49,7 @@ impl ForgePorts {
         Self {
             pull_requests: forge.clone(),
             ci: forge.clone(),
+            ci_writer: forge.clone(),
             pull_request_writer: forge.clone(),
             directory: forge.clone(),
             sign_in: forge,
@@ -85,6 +89,15 @@ impl PullRequestReader for NoForge {
 
 impl CiReader for NoForge {
     fn ci_for_branch(&self, repo: &ForgeRepo, _branch: &str) -> Result<Option<CiRun>, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+    fn ci_job_log(&self, repo: &ForgeRepo, _job: &CiJob) -> Result<CiJobLog, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+}
+
+impl CiWriter for NoForge {
+    fn rerun_failed_ci(&self, repo: &ForgeRepo, _run: &CiRun) -> Result<usize, ForgeError> {
         Err(refused(&repo.account.host))
     }
 }

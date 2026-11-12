@@ -593,6 +593,7 @@ mod tests {
             forge,
             ci: BranchCi::Unknown,
             forge_limit: None,
+            forecast: crate::forecast::ConflictForecast::default(),
         }
     }
 
@@ -651,6 +652,7 @@ mod tests {
 
     fn job(name: &str, state: CiJobState) -> CiJob {
         CiJob {
+            id: None,
             name: name.into(),
             stage: Some("test".into()),
             state,
@@ -663,6 +665,7 @@ mod tests {
             branch: "main".into(),
         });
         r.ci = BranchCi::Run(CiRun {
+            id: None,
             state,
             sha: "0123456789abcdef".into(),
             url: None,
@@ -754,6 +757,7 @@ mod tests {
         assert_eq!(mark("other", false, false, &BranchCi::Unknown), None);
         // The current branch: its own CI run first, else its pull request.
         let run = BranchCi::Run(CiRun {
+            id: None,
             state: CiState::Pending,
             sha: "abc".into(),
             url: Some("run".into()),

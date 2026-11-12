@@ -71,6 +71,10 @@ pub struct Settings {
     /// Interval between two checks for a new Archipel release, in hours;
     /// 0 disables the check. Default 24.
     pub update_check_hours: u64,
+    /// Whether each repo's current branch is checked, in the background after
+    /// every refresh, for conflicts with its upstream and with the target of
+    /// its pull request (the default branch without one). Default on.
+    pub conflict_forecast: bool,
 }
 
 impl Default for Settings {
@@ -97,6 +101,7 @@ impl Default for Settings {
             ci_poll_secs: 20,
             auto_fetch_secs: 600,
             update_check_hours: 24,
+            conflict_forecast: true,
         }
     }
 }

@@ -133,6 +133,7 @@ pub fn forge_ports(settings: &Settings, dirs: &AppDirs) -> ForgePorts {
     ForgePorts {
         pull_requests: client.clone(),
         ci: client.clone(),
+        ci_writer: client.clone(),
         pull_request_writer: client.clone(),
         directory: client.clone(),
         sign_in: client,

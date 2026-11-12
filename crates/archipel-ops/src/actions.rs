@@ -6,9 +6,10 @@ use std::sync::Arc;
 use archipel_model::changes::FileState;
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
-    BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeToolLauncher,
-    RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles, WorktreeSnapshots,
+    BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeForecaster,
+    MergeToolLauncher, RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter,
+    StatusReader, SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles,
+    WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -64,6 +65,8 @@ pub struct GitPorts {
     pub files: Arc<dyn WorktreeFiles>,
     /// Files of a commit or of the working copy (the file browser).
     pub tree: Arc<dyn TreeReader>,
+    /// In-memory merges (the conflict forecast).
+    pub forecaster: Arc<dyn MergeForecaster>,
 }
 
 impl GitPorts {
@@ -89,6 +92,7 @@ impl GitPorts {
             + RemoteReader
             + WorktreeFiles
             + TreeReader
+            + MergeForecaster
             + 'static,
     {
         Self {
@@ -110,7 +114,8 @@ impl GitPorts {
             submodule_writer: backend.clone(),
             remotes: backend.clone(),
             files: backend.clone(),
-            tree: backend,
+            tree: backend.clone(),
+            forecaster: backend,
         }
     }
 }
