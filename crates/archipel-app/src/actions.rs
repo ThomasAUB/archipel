@@ -17,6 +17,9 @@ pub enum Command {
     RefreshRepo(RepoId),
     /// Re-read the forge status (pull request, CI, review) of every repo.
     RefreshForge,
+    /// Rerun the failed CI jobs of the current branch of the given repos
+    /// (all when empty).
+    RerunFailedCi(Vec<RepoId>),
     /// Fetch the given repos (all when empty).
     Fetch(Vec<RepoId>),
     /// Pull the given repos (all when empty).
@@ -455,6 +458,12 @@ impl ActionRegistry {
             "Open the CI run of the branch in the browser",
             with_repo,
         ));
+        r.register(Arc::new(SimpleAction::new(
+            "forge.rerun_failed_ci",
+            "Rerun failing CI of selected repos (all when none)",
+            with_project,
+            |c| Some(Command::RerunFailedCi(c.selected.clone())),
+        )));
         r.register(Arc::new(SimpleAction::new(
             "forge.refresh",
             "Refresh pull request and CI status",

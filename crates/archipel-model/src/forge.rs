@@ -152,6 +152,11 @@ impl CiJobState {
 /// One job of a CI run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiJob {
+    /// Forge id of the job, when the forge serves its log and can run it
+    /// again (GitHub Actions job, GitLab job); `None` for a check or status
+    /// posted by another CI.
+    #[serde(default)]
+    pub id: Option<u64>,
     /// Job name (GitHub check run name or status context).
     pub name: String,
     /// GitLab stage, when the forge has stages.
@@ -165,6 +170,11 @@ pub struct CiJob {
 /// The CI of a branch head on the forge: its overall state and its jobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiRun {
+    /// Forge id of the run, when the forge reruns a whole run at once
+    /// (GitLab pipeline); `None` when the jobs carry what a rerun needs
+    /// (GitHub: one commit has several workflow runs).
+    #[serde(default)]
+    pub id: Option<u64>,
     /// Overall state.
     pub state: CiState,
     /// Commit the run is for (the branch head on the forge).
@@ -173,6 +183,32 @@ pub struct CiRun {
     pub url: Option<String>,
     /// Jobs, in the forge's order.
     pub jobs: Vec<CiJob>,
+}
+
+impl CiRun {
+    /// The failed or canceled jobs, in the forge's order.
+    pub fn failed_jobs(&self) -> impl Iterator<Item = &CiJob> {
+        self.jobs.iter().filter(|j| j.state.is_failure())
+    }
+}
+
+/// The end of a CI job's log, reduced to what explains a failure.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CiJobLog {
+    /// The error lines with the lines around them, groups separated by
+    /// [`CiJobLog::GAP`]; the last lines of the log when no line looks like
+    /// an error.
+    pub excerpt: Vec<String>,
+    /// Whether `excerpt` comes from the error rules (`false`: the raw end
+    /// of the log).
+    pub matched: bool,
+    /// Web page of the full log.
+    pub url: Option<String>,
+}
+
+impl CiJobLog {
+    /// Line separating two groups of the excerpt.
+    pub const GAP: &'static str = "…";
 }
 
 /// Overall state of a set of jobs: any failure wins, then anything still to

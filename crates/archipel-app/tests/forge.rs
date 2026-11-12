@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use archipel_app::forge::{BranchCi, ForgePorts, ForgeStatus};
 use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, Services};
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, NamespaceKind,
+    CiJob, CiJobLog, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, NamespaceKind,
     PullRequestStatus, RemoteRepo, ReviewState,
 };
 use archipel_model::ports::{CredentialStore, ForgeAccountStore, RemoteInfo};
@@ -50,6 +50,7 @@ fn env() -> Env {
 }
 
 /// [`env`] with `settings`.
+#[allow(clippy::too_many_lines)] // the fixture, declared in one place
 fn env_with(settings: Settings) -> Env {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -85,17 +86,20 @@ fn env_with(settings: Settings) -> Env {
         "acme/r1",
         "feat/x",
         CiRun {
+            id: None,
             state: CiState::Pending,
             sha: "abc".into(),
             url: Some("https://github.com/acme/r1/commit/abc".into()),
             jobs: vec![
                 CiJob {
+                    id: None,
                     name: "build".into(),
                     stage: None,
                     state: CiJobState::Success,
                     url: None,
                 },
                 CiJob {
+                    id: None,
                     name: "test".into(),
                     stage: None,
                     state: CiJobState::Running,
@@ -228,10 +232,12 @@ fn ci_of(e: &Env, path: &RepoPath) -> BranchCi {
 
 fn ci_run(state: CiState) -> CiRun {
     CiRun {
+        id: None,
         state,
         sha: "abc".into(),
         url: None,
         jobs: vec![CiJob {
+            id: None,
             name: "build".into(),
             stage: None,
             state: match state {
@@ -864,4 +870,67 @@ fn checkout_during_a_forge_read_shows_the_new_branch() {
             branch: "feat/y".into()
         }
     );
+}
+
+#[test]
+fn failed_ci_log_is_read_once_and_failing_ci_reruns() {
+    let e = env();
+    let failed = CiJob {
+        id: Some(41),
+        name: "test".into(),
+        stage: None,
+        state: CiJobState::Failed,
+        url: Some("https://github.com/acme/r0/actions/runs/1/job/41".into()),
+    };
+    e.forge.with_ci(
+        "acme/r0",
+        "feat/x",
+        CiRun {
+            id: None,
+            state: CiState::Failure,
+            sha: "f00".into(),
+            url: None,
+            jobs: vec![failed.clone()],
+        },
+    );
+    e.forge.with_ci_log(
+        "acme/r0",
+        41,
+        CiJobLog {
+            excerpt: vec!["error: boom".into()],
+            matched: true,
+            url: failed.url.clone(),
+        },
+    );
+    sign_in(&e);
+    wait_until(
+        "failing CI",
+        || matches!(ci_of(&e, &e.repos[0]), BranchCi::Run(r) if r.state == CiState::Failure),
+    );
+    let r0 = e.repos[0].id();
+
+    // The excerpt is read once, then served from the cache.
+    assert_eq!(e.app.cached_ci_log(r0, 41), None);
+    for _ in 0..2 {
+        let app = e.app.clone();
+        let job = failed.clone();
+        let log =
+            e.rt.block_on(async move { app.ci_job_log(r0, &job).await })
+                .unwrap();
+        assert_eq!(log.excerpt, ["error: boom"]);
+    }
+    assert_eq!(e.forge.log_reads(), 1);
+    assert!(e.app.cached_ci_log(r0, 41).is_some());
+    // A check posted by another CI has no log to read.
+    let app = e.app.clone();
+    let other = CiJob { id: None, ..failed };
+    assert!(
+        e.rt.block_on(async move { app.ci_job_log(r0, &other).await })
+            .is_err()
+    );
+
+    // Rerun on every repo: only r0 fails, the others are skipped.
+    e.app.dispatch(Command::RerunFailedCi(Vec::new())).unwrap();
+    wait_until("rerun", || !e.forge.reruns().is_empty());
+    assert_eq!(e.forge.reruns(), [("acme/r0".to_owned(), "f00".to_owned())]);
 }

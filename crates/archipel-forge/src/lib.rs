@@ -5,7 +5,7 @@
 //! `archipel-model`.
 //!
 //! * [`ForgeClient`] implements `PullRequestReader`, `PullRequestWriter`,
-//!   `ForgeDirectory` and `ForgeSignIn` by dispatching to the registered
+//!   `CiReader`, `CiWriter`, `ForgeDirectory` and `ForgeSignIn` by dispatching to the registered
 //!   [`provider::Provider`] of each account's kind. A fork adds a forge
 //!   (Gitea, Bitbucket…) with [`ForgeClient::register`].
 //! * Providers only build HTTP requests and parse answers through the
@@ -24,6 +24,7 @@
 // Provider labels are literals behind the trait's `&str` signature.
 #![allow(clippy::unnecessary_literal_bound)]
 
+pub mod ci_log;
 pub mod client;
 pub mod credentials;
 pub mod git_credential;

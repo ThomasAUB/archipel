@@ -13,6 +13,7 @@ use archipel_model::{
     ContainingBranch, HeadState, Oid, RepoId, RepoOp, RepoPath, RepoSummary, Timestamp,
 };
 
+use crate::forecast::{ConflictForecast, WillConflictFilter};
 use crate::forge::{
     BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeLimit, ForgeStatus,
     PullRequestOpenFilter,
@@ -52,6 +53,9 @@ pub struct DashboardRow {
     pub ci: BranchCi,
     /// Set when `forge` and `ci` may be out of date (rate limited).
     pub forge_limit: Option<ForgeLimit>,
+    /// Whether the current branch would conflict with its upstream or its
+    /// pull request target (spec §3); empty until computed.
+    pub forecast: ConflictForecast,
 }
 
 impl DashboardRow {
@@ -110,6 +114,15 @@ impl Cell {
     }
 }
 
+/// A short label drawn as a pill after a cell's text (e.g. "will conflict").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellBadge {
+    /// Text.
+    pub text: String,
+    /// Tone.
+    pub tone: Tone,
+}
+
 /// Sort key of a cell.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SortKey {
@@ -133,6 +146,10 @@ pub trait DashboardColumn: Send + Sync {
     fn sort_key(&self, row: &DashboardRow) -> SortKey;
     /// Lines shown when hovering the cell of a row (none by default).
     fn tooltip(&self, _row: &DashboardRow) -> Option<Vec<String>> {
+        None
+    }
+    /// A badge drawn after the cell's text (none by default).
+    fn badge(&self, _row: &DashboardRow) -> Option<CellBadge> {
         None
     }
 }
@@ -375,6 +392,15 @@ impl DashboardColumn for SyncColumn {
                 }
             }
         }
+    }
+    /// "will conflict · n" (spec §3), or "touches n modified".
+    fn badge(&self, row: &DashboardRow) -> Option<CellBadge> {
+        row.forecast.badge(row.summary())
+    }
+    /// The files of the badge.
+    fn tooltip(&self, row: &DashboardRow) -> Option<Vec<String>> {
+        let lines = row.forecast.tooltip(row.summary());
+        (!lines.is_empty()).then_some(lines)
     }
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
         row.summary().map_or(SortKey::None, |s| {
@@ -650,7 +676,8 @@ pub struct FilterRegistry {
 }
 
 impl FilterRegistry {
-    /// Built-in filters: dirty, behind, ahead, detached, in progress, problems.
+    /// Built-in filters: dirty, behind, ahead, detached, in progress,
+    /// problems, then the forge ones and "will conflict".
     #[must_use]
     pub fn with_builtins() -> Self {
         let mut r = Self::default();
@@ -676,6 +703,7 @@ impl FilterRegistry {
         }));
         r.register(Arc::new(PullRequestOpenFilter));
         r.register(Arc::new(CiFailingFilter));
+        r.register(Arc::new(WillConflictFilter));
         r
     }
 
@@ -796,6 +824,7 @@ mod tests {
             forge: ForgeStatus::Unknown,
             ci: BranchCi::Unknown,
             forge_limit: None,
+            forecast: ConflictForecast::default(),
         }
     }
 

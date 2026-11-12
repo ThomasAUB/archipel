@@ -105,7 +105,7 @@ impl Workspace {
                     });
                 match node.repo.and_then(|id| by_id.get(&id)) {
                     Some(row) => {
-                        let cells = row_cells(&ext, row, now, 1, cx);
+                        let cells = row_cells(&ext, &self.core, row, now, 1, cx);
                         let actions = Self::node_actions(i, node, true, opening, cx);
                         let group = SharedString::from(format!("tree-row-{i}"));
                         let hover = color(cx, T::BgHover);

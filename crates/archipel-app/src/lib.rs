@@ -14,6 +14,8 @@
 //! * [`forge`]: forge integration (spec §8): the "Pull request" dashboard
 //!   column, sign-in, pull requests across repos and clone from an account,
 //!   through the forge ports of [`forge::ForgePorts`].
+//! * [`forecast`]: the conflict forecast of each row (spec §3): would the
+//!   current branch conflict with its upstream or its pull request target.
 //! * [`deptree`]: the repo dependency tree view-model (spec §9), with the
 //!   [`deptree::DependencySource`] extension point.
 //! * [`groups`]: sidebar grouping of repos by category (spec §1).
@@ -30,6 +32,7 @@ pub mod actions;
 mod app;
 pub mod dashboard;
 pub mod deptree;
+pub mod forecast;
 pub mod forge;
 pub mod fuzzy;
 pub mod groups;

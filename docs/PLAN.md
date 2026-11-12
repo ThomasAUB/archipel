@@ -350,6 +350,8 @@ The largest phase.
 
 - Import from submodules, `repo` manifest, VS Code `.code-workspace`.
 - Forge integration (PR list, CI status) behind `ForgeProvider`.
+- CI failure excerpt and rerun (spec §8) — done: `CiReader::ci_job_log` and `CiWriter` ports, provider methods `CiApi::job_log` / `log_excerpt` / `rerun_failed`, error rules in `archipel-forge::ci_log`, `App::ci_job_log` (cached per session) and `Command::RerunFailedCi`, the hoverable CI Tooltip.
+- Conflict forecast (spec §3) — done: the `MergeForecaster` port (`git merge-tree --write-tree`, rebase replayed commit by commit), `App::load_forecast` (background, one at a time, cached by commit ids), `DashboardRow::forecast`, the Sync column badge (`DashboardColumn::badge`), the "Will conflict" filter, the Forecast Badge in the Quick Edit Header and the Repo Toolbar.
 - macOS packaging and notarization.
 - Worktrees as first-class project members.
 

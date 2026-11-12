@@ -352,8 +352,13 @@ impl RepoView {
         .detach();
     }
 
-    /// The forge status of the repo was read again (or its branch changed).
+    /// The forge status or the conflict forecast of the repo was read again
+    /// (or its branch changed).
     pub fn on_forge(&mut self, row: &DashboardRow, cx: &mut Context<Self>) {
+        if self.forecast != row.forecast {
+            self.forecast = row.forecast.clone();
+            cx.notify();
+        }
         if self.ci != row.ci || self.forge != row.forge || self.forge_limit != row.forge_limit {
             self.ci = row.ci.clone();
             self.forge = row.forge.clone();

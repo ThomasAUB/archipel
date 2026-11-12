@@ -15,6 +15,7 @@ use crate::cancel::{CancelToken, NoProgress, ProgressSink};
 use crate::changes::FileChange;
 use crate::diff::{FileDiff, NumStat};
 use crate::error::GitError;
+use crate::forecast::{MergeForecast, MergeStrategy};
 use crate::history::{CommitMeta, SquashPreview, TopologyNode, WalkOrder};
 use crate::ids::{Oid, RepoPath};
 use crate::journal::RefSnapshot;
@@ -355,6 +356,34 @@ pub trait HistoryRewriter: Send + Sync {
     ) -> Result<Oid, GitError>;
     /// Continues, aborts or skips the operation in progress.
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError>;
+}
+
+/// Forecasts whether bringing a commit into another would conflict, in
+/// memory (`git merge-tree`): the worktree, the index and the refs are never
+/// touched (objects may be written, as dangling ones).
+pub trait MergeForecaster: Send + Sync {
+    /// The strategy `git pull` uses on `branch`: `branch.<name>.rebase`,
+    /// else `pull.rebase`; a merge when neither is set.
+    fn pull_strategy(&self, repo: &RepoPath, branch: &str) -> Result<MergeStrategy, GitError>;
+    /// What bringing `theirs` into `ours` with `strategy` would conflict on
+    /// (for a rebase: `ours`' own commits replayed onto `theirs`). Fails on
+    /// unrelated histories.
+    fn forecast(
+        &self,
+        repo: &RepoPath,
+        ours: Oid,
+        theirs: Oid,
+        strategy: MergeStrategy,
+        cancel: &CancelToken,
+    ) -> Result<MergeForecast, GitError>;
+    /// The paths changed on `theirs` since it forked from `ours` (what a
+    /// pull would bring), sorted.
+    fn incoming_paths(
+        &self,
+        repo: &RepoPath,
+        ours: Oid,
+        theirs: Oid,
+    ) -> Result<Vec<String>, GitError>;
 }
 
 /// Launches the user's external merge tool.

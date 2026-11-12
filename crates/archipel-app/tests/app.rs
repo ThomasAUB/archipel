@@ -629,3 +629,102 @@ fn update_check_ignores_older_releases() {
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(e.app.available_update(), None);
 }
+
+fn forecast_calls(e: &Env) -> usize {
+    e.git.calls().iter().filter(|c| c.op == "forecast").count()
+}
+
+#[test]
+fn conflict_forecast_checks_upstream_and_default_branch_once_per_commits() {
+    use archipel_app::forecast::ForecastBase;
+    use archipel_model::Timestamp;
+    use archipel_model::Upstream;
+    use archipel_model::forecast::MergeStrategy;
+    use archipel_model::refs::BranchInfo;
+
+    let e = env();
+    let upstream = |behind| Upstream {
+        name: "origin/main".into(),
+        ahead: 1,
+        behind,
+        gone: false,
+    };
+    // r0: on main, diverged from origin/main; pull rebases.
+    e.git.with_repo(&e.repos[0], |r| {
+        r.summary.upstream = Some(upstream(2));
+        r.refs.insert("origin/main".into(), oid(50));
+        r.pull_strategy = MergeStrategy::Rebase;
+        r.conflicts.insert((oid(0), oid(50)), vec!["a.rs".into()]);
+        r.incoming
+            .insert((oid(0), oid(50)), vec!["a.rs".into(), "b.rs".into()]);
+    });
+    // r1: on a feature branch without upstream: checked against the
+    // remote's default branch.
+    e.git.with_repo(&e.repos[1], |r| {
+        r.summary.head = HeadState::Branch("feat".into());
+        r.refs.insert("origin/main".into(), oid(60));
+        r.branches.push(BranchInfo {
+            name: "origin/main".into(),
+            is_remote: true,
+            target: oid(60),
+            is_head: false,
+            upstream: None,
+            tip_time: Timestamp(0),
+        });
+        r.conflicts.insert((oid(1), oid(60)), vec!["x.rs".into()]);
+    });
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "forecasts", |app| {
+        let rows = app.rows();
+        rows[0].forecast.will_conflict() && rows[1].forecast.will_conflict()
+    });
+    let rows = e.app.rows();
+    let up = rows[0].forecast.upstream.as_ref().unwrap();
+    assert_eq!(up.against, "origin/main");
+    assert_eq!(up.strategy, MergeStrategy::Rebase);
+    assert_eq!(up.conflicts, ["a.rs"]);
+    assert_eq!(up.incoming, ["a.rs", "b.rs"]);
+    // On main: no separate check against the default branch.
+    assert_eq!(rows[0].forecast.target, None);
+    let target = rows[1].forecast.target.as_ref().unwrap();
+    assert_eq!(target.base, ForecastBase::DefaultBranch);
+    assert_eq!(target.against, "origin/main");
+    assert_eq!(target.strategy, MergeStrategy::Merge);
+    assert!(!rows[2].forecast.will_conflict());
+    let filters = &e.app.extensions().filters;
+    let shown =
+        archipel_app::dashboard::visible_rows(&rows, filters, &["will-conflict".into()], None);
+    assert_eq!(shown.len(), 2);
+    let calls = forecast_calls(&e);
+    assert_eq!(calls, 2);
+
+    // A working-copy change does not recompute anything.
+    wait_watched(&e);
+    e.git
+        .with_repo(&e.repos[0], |r| r.summary.changes.modified = 3);
+    e.watcher.trigger(e.repos[0].id(), Scope::STATUS);
+    wait_until(&e.app, "refresh", |app| {
+        app.rows()[0]
+            .summary()
+            .is_some_and(|s| s.changes.modified == 3)
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(forecast_calls(&e), calls);
+
+    // A fetch moving the upstream does: now clean.
+    e.git.with_repo(&e.repos[0], |r| {
+        r.refs.insert("origin/main".into(), oid(51));
+        r.summary.upstream = Some(upstream(3));
+        r.summary.last_fetch = Some(Timestamp(1));
+    });
+    e.watcher.trigger(e.repos[0].id(), Scope::REFS);
+    wait_until(&e.app, "new forecast", |app| {
+        app.rows()[0]
+            .forecast
+            .upstream
+            .as_ref()
+            .is_some_and(|f| f.theirs == oid(51))
+    });
+    assert!(!e.app.rows()[0].forecast.will_conflict());
+    assert_eq!(forecast_calls(&e), calls + 1);
+}

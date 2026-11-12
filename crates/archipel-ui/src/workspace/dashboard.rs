@@ -2,8 +2,11 @@
 //! the column header and the repo rows, and the quick edit pane lying over
 //! their right edge.
 
-use archipel_app::dashboard::{Cell, DashboardRow};
-use archipel_app::{Command, Extensions};
+use std::sync::Arc;
+
+use archipel_app::dashboard::{Cell, CellBadge, DashboardRow};
+use archipel_app::{App as Core, Command, Extensions};
+use archipel_model::forge::CiRun;
 use archipel_model::ui_state::{SortDirection, TabState, UiState};
 use archipel_model::{RepoId, Timestamp};
 use archipel_theme::ColorToken as T;
@@ -14,6 +17,8 @@ use gpui_kit::{
     MouseDownEvent, Pixels, SharedString, StyleRefinement, WeakEntity, Window, div, px,
 };
 
+use crate::ci_tooltip::CiTooltip;
+use crate::forecast_badge::pill;
 use crate::quick_edit::{QuickEdit, QuickEditEvent};
 use crate::theme::{color, radius, row_height, staging_surface, text_size, tone, ui_font};
 use crate::widgets::{
@@ -361,7 +366,12 @@ impl Workspace {
         }
         let id = content.id;
         let workspace = cx.weak_entity();
-        let view = cx.new(|_| DashRow { workspace, content });
+        let core = self.core.clone();
+        let view = cx.new(|_| DashRow {
+            workspace,
+            core,
+            content,
+        });
         self.dash_rows.insert(id, view.clone());
         view
     }
@@ -595,6 +605,7 @@ impl RowContent {
 /// reused from the last frame.
 pub(super) struct DashRow {
     workspace: WeakEntity<Workspace>,
+    core: Arc<Core>,
     content: RowContent,
 }
 
@@ -611,7 +622,11 @@ impl Render for DashRow {
             .on_mouse_down(MouseButton::Right, move |e, _, cx| {
                 let _ = on_menu.update(cx, |this, cx| this.open_row_menu(id, e, cx));
             })
-            .children(c.cells.iter().map(|cell| cell_element(cell, cx)))
+            .children(
+                c.cells
+                    .iter()
+                    .map(|cell| cell_element(cell, id, &self.core, cx)),
+            )
     }
 }
 
@@ -635,11 +650,17 @@ struct CellContent {
     column: usize,
     cell: Cell,
     tooltip: Option<Vec<String>>,
+    /// Pill after the text (the Sync column's conflict forecast).
+    badge: Option<CellBadge>,
+    /// The failing CI run of the "CI" cell: its tooltip shows the logs of
+    /// the failed jobs and offers to rerun them.
+    failing_ci: Option<CiRun>,
 }
 
 /// The dashboard cells of a row, from column `from` on.
 pub(super) fn row_cells(
     ext: &Extensions,
+    core: &Arc<Core>,
     row: &DashboardRow,
     now: Timestamp,
     from: usize,
@@ -647,7 +668,7 @@ pub(super) fn row_cells(
 ) -> Vec<AnyElement> {
     cell_contents(ext, row, now, from)
         .iter()
-        .map(|cell| cell_element(cell, cx))
+        .map(|cell| cell_element(cell, row.id, core, cx))
         .collect()
 }
 
@@ -670,16 +691,28 @@ fn cell_contents(
                         .map_or_else(|| "hidden".to_owned(), |d| format!("hidden · {d}")),
                 );
             }
+            let failing_ci = (col.id() == "ci")
+                .then(|| row.ci.run())
+                .flatten()
+                .filter(|run| run.failed_jobs().next().is_some())
+                .cloned();
             CellContent {
                 column: i,
                 cell,
                 tooltip: col.tooltip(row),
+                badge: col.badge(row),
+                failing_ci,
             }
         })
         .collect()
 }
 
-fn cell_element(content: &CellContent, cx: &gpui_kit::App) -> AnyElement {
+fn cell_element(
+    content: &CellContent,
+    repo: RepoId,
+    core: &Arc<Core>,
+    cx: &gpui_kit::App,
+) -> AnyElement {
     let i = content.column;
     let cell = &content.cell;
     div()
@@ -691,9 +724,17 @@ fn cell_element(content: &CellContent, cx: &gpui_kit::App) -> AnyElement {
         .flex_col()
         .child(
             div()
-                .truncate()
-                .text_color(tone(cx, cell.tone))
-                .child(cell.text.clone()),
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(tone(cx, cell.tone))
+                        .child(cell.text.clone()),
+                )
+                .children(content.badge.as_ref().map(|b| pill(b, cx))),
         )
         .when(i == 0, |d| {
             d.children(cell.detail.clone().map(|t| {
@@ -705,7 +746,15 @@ fn cell_element(content: &CellContent, cx: &gpui_kit::App) -> AnyElement {
             }))
         })
         .when_some(content.tooltip.clone(), |d, lines| {
-            d.tooltip(move |_, cx| TextTooltip::view(&lines, cx))
+            match content.failing_ci.clone() {
+                Some(run) => {
+                    let core = core.clone();
+                    d.hoverable_tooltip(move |_, cx| {
+                        CiTooltip::view(core.clone(), repo, &lines, Some(&run), cx)
+                    })
+                }
+                None => d.tooltip(move |_, cx| TextTooltip::view(&lines, cx)),
+            }
         })
         .into_any_element()
 }

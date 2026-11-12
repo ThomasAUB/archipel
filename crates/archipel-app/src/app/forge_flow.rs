@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use archipel_model::forge::{
-    CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod, MergeOptions,
-    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
-    normalize_host,
+    CiJob, CiJobLog, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod,
+    MergeOptions, MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    RemoteRepo, normalize_host,
 };
 use archipel_model::ports::RemoteInfo;
 use archipel_model::requests::PushRequest;
@@ -156,6 +156,28 @@ const RETRY_FAILED_SECS: u64 = 30;
 /// trigger.
 const CI_WATCH_SECS: u64 = 180;
 
+/// Most job logs kept per window; the cache is emptied when full.
+const MAX_CACHED_LOGS: usize = 256;
+
+/// The forge repository of a repo (blocking), or why there is none.
+fn forge_repo(
+    git: &GitPorts,
+    forge: &ForgePorts,
+    links: &ForgeRegistry,
+    path: &RepoPath,
+    preferred: Option<&str>,
+) -> Result<ForgeRepo, OpError> {
+    let remotes = git.remotes.remotes(path)?;
+    let accounts = forge.accounts.accounts()?;
+    match locate(&remotes, preferred, &accounts, links) {
+        Located::Repo { repo, .. } => Ok(repo),
+        Located::SignedOut { host } => Err(OpError::Forge(ForgeError::NotSignedIn { host })),
+        Located::NotOnForge => Err(OpError::Forge(ForgeError::UnknownForge(
+            "no remote on a known forge".into(),
+        ))),
+    }
+}
+
 /// The host and retry time of a rate limit error.
 fn rate_limit(error: &ForgeError) -> Option<(String, Option<Timestamp>)> {
     match error {
@@ -277,7 +299,7 @@ fn pull_request_status(
 
 /// The remote's default branch: the one `<remote>/HEAD` points to, else
 /// `main`, else `master`, else `main`.
-fn default_target(git: &GitPorts, path: &RepoPath, remote: &str) -> String {
+pub(super) fn default_target(git: &GitPorts, path: &RepoPath, remote: &str) -> String {
     const USUAL: [&str; 2] = ["main", "master"];
     /// Short name of a branch of the remote (`main` for `origin/main`).
     fn short<'a>(b: &'a archipel_model::refs::BranchInfo, prefix: &str) -> Option<&'a str> {
@@ -313,7 +335,7 @@ fn default_target(git: &GitPorts, path: &RepoPath, remote: &str) -> String {
 }
 
 /// Remote name of an upstream like `origin/main`.
-fn upstream_remote(row: &DashboardRow) -> Option<String> {
+pub(super) fn upstream_remote(row: &DashboardRow) -> Option<String> {
     let upstream = row.summary()?.upstream.as_ref()?;
     upstream.name.split_once('/').map(|(r, _)| r.to_owned())
 }
@@ -659,6 +681,8 @@ impl App {
         if let Some(delay) = poll {
             self.schedule_ci_poll(repo, delay);
         }
+        // The pull request's target may have changed.
+        self.load_forecast(repo);
     }
 
     /// Re-reads the forge status of `repo` after `delay`.
@@ -962,6 +986,126 @@ impl App {
             None => format!("Merged {} #{number}", forge_repo.path),
         }));
         Ok(report)
+    }
+
+    // ----- CI logs and reruns -------------------------------------------------
+
+    /// The error excerpt of a job's log, if it was already read.
+    #[must_use]
+    pub fn cached_ci_log(&self, repo: RepoId, job: u64) -> Option<CiJobLog> {
+        lock(&self.session)
+            .as_ref()
+            .and_then(|s| s.ci_logs.get(&(repo, job)).cloned())
+    }
+
+    /// The error excerpt of the log of `job` (a failed job of the current
+    /// branch's CI of `repo`), read once then kept.
+    pub async fn ci_job_log(&self, repo: RepoId, job: &CiJob) -> Result<CiJobLog, AppError> {
+        let Some(id) = job.id else {
+            return Err(AppError::InvalidInput(format!(
+                "{}: its log is on the CI that posted it",
+                job.name
+            )));
+        };
+        if let Some(log) = self.cached_ci_log(repo, id) {
+            return Ok(log);
+        }
+        let row = self
+            .rows()
+            .into_iter()
+            .find(|r| r.id == repo)
+            .ok_or_else(|| AppError::InvalidInput("unknown repository".into()))?;
+        let git = self.services.git.clone();
+        let forge = self.services.forge.clone();
+        let links = self.ext.forges.clone();
+        let (path, preferred, job) = (row.path.clone(), upstream_remote(&row), job.clone());
+        let spec = OpSpec::new(
+            Some(repo),
+            OpClass::Network,
+            format!("CI log of {} ({})", row.name, job.name),
+        );
+        let log = self
+            .scheduler
+            .submit(spec, move |_| {
+                let target = forge_repo(&git, &forge, &links, &path, preferred.as_deref())?;
+                Ok(forge.ci.ci_job_log(&target, &job)?)
+            })
+            .wait()
+            .await?;
+        if let Some(s) = lock(&self.session).as_mut() {
+            if s.ci_logs.len() >= MAX_CACHED_LOGS {
+                s.ci_logs.clear();
+            }
+            s.ci_logs.insert((repo, id), log.clone());
+        }
+        Ok(log)
+    }
+
+    /// Reruns the failed CI jobs of the current branch of `ids` (every
+    /// shown repo when empty), in the background; repos whose CI does not
+    /// fail are skipped. Reported like the other batches, failures in the
+    /// drawer; the CI of each rerun repo is then followed closely.
+    pub(super) fn rerun_failed_ci(&self, ids: &[RepoId]) {
+        let rows: Vec<DashboardRow> = self
+            .rows()
+            .into_iter()
+            .filter(|r| !r.hidden && (ids.is_empty() || ids.contains(&r.id)))
+            .collect();
+        let mut skipped = 0;
+        let mut jobs = Vec::new();
+        for row in rows {
+            let Some(run) = row
+                .ci
+                .run()
+                .filter(|run| run.failed_jobs().next().is_some())
+                .cloned()
+            else {
+                skipped += 1;
+                continue;
+            };
+            let git = self.services.git.clone();
+            let forge = self.services.forge.clone();
+            let links = self.ext.forges.clone();
+            let (path, preferred) = (row.path.clone(), upstream_remote(&row));
+            let spec = OpSpec::new(
+                Some(row.id),
+                OpClass::Network,
+                format!("Rerun failed CI of {}", row.name),
+            );
+            let handle = self.scheduler.submit(spec, move |_| {
+                let target = forge_repo(&git, &forge, &links, &path, preferred.as_deref())?;
+                Ok(forge.ci_writer.rerun_failed_ci(&target, &run)?)
+            });
+            jobs.push((row.id, handle));
+        }
+        let me = self.me.clone();
+        self.scheduler.runtime().spawn(async move {
+            let mut done = Vec::new();
+            let mut failed = 0;
+            for (repo, handle) in jobs {
+                match handle.wait().await {
+                    Ok(_) => done.push(repo),
+                    Err(_) => failed += 1,
+                }
+            }
+            let Some(app) = me.upgrade() else { return };
+            if let Some(s) = lock(&app.session).as_mut() {
+                // The new runs take a moment to show on the forge.
+                let until = Instant::now() + Duration::from_secs(CI_WATCH_SECS);
+                for repo in &done {
+                    s.ci_watch.insert(*repo, until);
+                }
+            }
+            for repo in &done {
+                app.load_forge(*repo, true);
+            }
+            app.emit(AppEvent::BatchFinished(
+                "Rerun failed CI".into(),
+                done.len(),
+                failed,
+                skipped,
+            ));
+        });
     }
 
     // ----- browse an account to clone from ---------------------------------

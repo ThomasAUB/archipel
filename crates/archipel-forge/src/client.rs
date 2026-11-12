@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions, MergeReport, Namespace,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
+    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
+    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    normalize_host,
 };
 use archipel_model::ports::{
-    CiReader, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
+    CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
+    PullRequestWriter,
 };
 
 use crate::github::GitHub;
@@ -106,6 +108,27 @@ impl PullRequestReader for ForgeClient {
 impl CiReader for ForgeClient {
     fn ci_for_branch(&self, repo: &ForgeRepo, branch: &str) -> Result<Option<CiRun>, ForgeError> {
         self.with(&repo.account, |p, at| p.branch_ci(at, &repo.path, branch))
+    }
+
+    fn ci_job_log(&self, repo: &ForgeRepo, job: &CiJob) -> Result<CiJobLog, ForgeError> {
+        let Some(id) = job.id else {
+            return Err(ForgeError::Unsupported(format!(
+                "{}: its log is on the CI that posted it",
+                job.name
+            )));
+        };
+        self.with(&repo.account, |p, at| {
+            let raw = p.job_log(at, &repo.path, id)?;
+            let mut log = p.log_excerpt(crate::ci_log::tail(&raw, crate::ci_log::TAIL_BYTES));
+            log.url.clone_from(&job.url);
+            Ok(log)
+        })
+    }
+}
+
+impl CiWriter for ForgeClient {
+    fn rerun_failed_ci(&self, repo: &ForgeRepo, run: &CiRun) -> Result<usize, ForgeError> {
+        self.with(&repo.account, |p, at| p.rerun_failed(at, &repo.path, run))
     }
 }
 

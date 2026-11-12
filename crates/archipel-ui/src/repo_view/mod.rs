@@ -45,6 +45,7 @@ use gpui_kit::{
     Point, SharedString, Subscription, UniformListScrollHandle, Window, div, px,
 };
 
+use crate::ci_tooltip::CiTooltip;
 use crate::diff_view::DiffDoc;
 use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, repo_surface, staging_surface, tone};
@@ -168,6 +169,9 @@ pub struct RepoView {
     ci: BranchCi,
     forge: ForgeStatus,
     forge_limit: Option<ForgeLimit>,
+    /// Whether the branch would conflict with its upstream or its target,
+    /// as in the dashboard row.
+    forecast: archipel_app::forecast::ConflictForecast,
     /// Open pull requests of the repo: the CI marks of their branches in
     /// the refs panel.
     pull_requests: Arc<Vec<PullRequestStatus>>,
@@ -186,8 +190,8 @@ impl RepoView {
     ) -> Self {
         let row = core.rows().into_iter().find(|r| r.id == path.id());
         let summary = row.as_ref().and_then(|r| r.summary().cloned());
-        let (ci, forge, forge_limit) = row
-            .map(|r| (r.ci, r.forge, r.forge_limit))
+        let (ci, forge, forge_limit, forecast) = row
+            .map(|r| (r.ci, r.forge, r.forge_limit, r.forecast))
             .unwrap_or_default();
         let staging = staging::Panel::new(summary, window, cx);
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
@@ -237,6 +241,7 @@ impl RepoView {
             ci,
             forge,
             forge_limit,
+            forecast,
             pull_requests: Arc::default(),
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -358,6 +363,12 @@ impl RepoView {
                     .child(self.name.clone()),
             )
             .children(self.render_ci(cx))
+            .children(crate::forecast_badge::forecast_badge(
+                "repo-forecast",
+                &self.forecast,
+                self.staging.summary(),
+                cx,
+            ))
             .child(
                 staging::small(button("r-files", "Files", cx))
                     .when(self.browser.is_some(), |b| b.bg(color(cx, T::BgSelected)))
@@ -379,6 +390,12 @@ impl RepoView {
         }
         let tooltip = ci_tooltip(&self.ci, &self.forge, self.forge_limit, now);
         let url = self.ci.run().and_then(|run| run.url.clone());
+        let failing = self
+            .ci
+            .run()
+            .filter(|run| run.failed_jobs().next().is_some())
+            .cloned();
+        let (core, repo) = (self.core.clone(), self.path.id());
         let hover = color(cx, T::BgHover);
         Some(
             div()
@@ -395,8 +412,12 @@ impl RepoView {
                         .hover(move |s| s.bg(hover))
                         .on_click(move |_, _, cx| cx.open_url(&url))
                 })
-                .when_some(tooltip, |d, lines| {
-                    d.tooltip(move |_, cx| TextTooltip::view(&lines, cx))
+                .when_some(tooltip, |d, lines| match failing {
+                    // The logs of the failed jobs, and a rerun.
+                    Some(run) => d.hoverable_tooltip(move |_, cx| {
+                        CiTooltip::view(core.clone(), repo, &lines, Some(&run), cx)
+                    }),
+                    None => d.tooltip(move |_, cx| TextTooltip::view(&lines, cx)),
                 })
                 .into_any_element(),
         )

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use archipel_app::App as Core;
 use archipel_app::dashboard::DashboardRow;
+use archipel_app::forecast::ConflictForecast;
 use archipel_model::changes::FileChange;
 use archipel_model::ports::DiffSide;
 use archipel_model::{HeadState, RepoId, RepoPath, RepoSummary};
@@ -17,6 +18,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Window, div};
 
 use crate::diff_view::{self, DiffDoc};
+use crate::forecast_badge::forecast_badge;
 use crate::staging::{self, NotedJob, Staging, StagingEvent};
 use crate::theme::{color, staging_surface};
 use crate::widgets::{SHORT_OID, button, icon_button};
@@ -44,6 +46,8 @@ pub struct QuickEdit {
     /// The working-copy file whose diff is open, in place of the
     /// dashboard rows; its diff is `None` while it loads.
     open_diff: Option<(String, DiffSide, Option<Arc<DiffDoc>>)>,
+    /// Whether the branch would conflict with its upstream or its target.
+    forecast: ConflictForecast,
     focus: FocusHandle,
 }
 
@@ -69,6 +73,7 @@ impl QuickEdit {
             staging,
             status: None,
             open_diff: None,
+            forecast: row.forecast.clone(),
             focus: cx.focus_handle(),
         };
         pane.load_changes(cx);
@@ -84,6 +89,14 @@ impl QuickEdit {
     pub fn on_summary(&mut self, summary: Option<&RepoSummary>, cx: &mut Context<Self>) {
         staging::on_summary(self, summary, cx);
         self.load_changes(cx);
+    }
+
+    /// The conflict forecast of the repo was computed again.
+    pub fn on_forecast(&mut self, forecast: &ConflictForecast, cx: &mut Context<Self>) {
+        if self.forecast != *forecast {
+            self.forecast = forecast.clone();
+            cx.notify();
+        }
     }
 
     fn load_changes(&mut self, cx: &mut Context<Self>) {
@@ -270,7 +283,13 @@ impl QuickEdit {
                                     .flex_none()
                                     .text_color(color(cx, T::FgSubtle))
                                     .child(sync),
-                            ),
+                            )
+                            .children(forecast_badge(
+                                "qe-forecast",
+                                &self.forecast,
+                                self.staging.summary(),
+                                cx,
+                            )),
                     ),
             )
             .child(

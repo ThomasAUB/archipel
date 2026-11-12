@@ -82,6 +82,7 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `StashWriter` | `push`, `apply`, `pop`, `drop`, `store` | repo actions, undo |
 | `WorktreeSnapshots` | `snapshot_worktree`, `snapshot_paths`, `restore_paths` | undo journal |
 | `RemoteOps` | `fetch`, `pull`, `push`, `clone` | batch ops |
+| `MergeForecaster` | `pull_strategy`, `forecast` (in-memory `merge-tree`, merge or replayed rebase), `incoming_paths` | conflict forecast (dashboard Sync badge) |
 | `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `squash` (plumbing only: `commit-tree` + `update-ref`), `continue/abort` | drag & drop, repo actions |
 | `SubmoduleReader` | `submodules` (one level: initialized, pinned and checked-out commits) | dependency tree |
 | `SubmoduleWriter` | `update_submodules` (`--init`, `--recursive`) | dependency tree actions |
@@ -91,7 +92,7 @@ One struct may implement several traits (the `gix` adapter implements all reader
 The same principle applies everywhere else, for example:
 
 - storage: `SummaryStore`, `UiStateStore`, `JournalStore`, `StatsStore` rather than one `Database`;
-- forges: `PullRequestReader` (dashboard column), `CiReader` (CI column), `PullRequestWriter` (create, link), `ForgeDirectory` (clone from an account), `ForgeSignIn` (verify a token, detect the provider), `CredentialStore` (OS keychain), `ForgeAccountStore` (signed-in hosts) rather than one `ForgeClient`;
+- forges: `PullRequestReader` (dashboard column), `CiReader` (CI column, job logs), `CiWriter` (CI reruns), `PullRequestWriter` (create, link), `ForgeDirectory` (clone from an account), `ForgeSignIn` (verify a token, detect the provider), `CredentialStore` (OS keychain), `ForgeAccountStore` (signed-in hosts) rather than one `ForgeClient`;
 - project: `ProjectSource` (load/save a project definition) separate from `RepoDiscovery` (scan a folder);
 - watching: `ChangeSource` (emits invalidations) separate from the debouncing policy.
 
@@ -121,7 +122,7 @@ Extension is done through **registries** of trait objects, not through `match` s
 | Look and feel | theme tokens + theme files (PLAN §3.5) | user config / built-in themes |
 | Shortcuts | keymap file, actions referenced by id | user config |
 | Actions (palette, menus, batch bar) | `Action` trait (id, label, availability, run) | `ActionRegistry` |
-| Dashboard columns | `DashboardColumn` trait (header, value from `RepoSummary`, sort key, renderer hint) | `ColumnRegistry` |
+| Dashboard columns | `DashboardColumn` trait (header, value from `RepoSummary`, sort key, tooltip, badge) | `ColumnRegistry` |
 | Dashboard filters | `RepoFilter` trait | `FilterRegistry` |
 | Git backend per operation | the reader/writer traits of §3.1 | composition root / settings |
 | "Open in browser" links | `ForgeProvider` trait (matches a remote URL, builds links) | `ForgeRegistry` |

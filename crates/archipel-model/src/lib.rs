@@ -16,6 +16,7 @@ pub mod cancel;
 pub mod changes;
 pub mod diff;
 pub mod error;
+pub mod forecast;
 pub mod forge;
 pub mod history;
 pub mod ids;

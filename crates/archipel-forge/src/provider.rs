@@ -4,7 +4,7 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace, PullRequestDraft,
+    CiJobLog, CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace, PullRequestDraft,
     PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 
@@ -83,6 +83,28 @@ pub trait CiApi: Send + Sync {
         repo: &str,
         branch: &str,
     ) -> Result<Option<CiRun>, ForgeError>;
+
+    /// The raw log of job `job` (a [`archipel_model::forge::CiJob`] id);
+    /// the caller keeps its end only. Unsupported by default.
+    fn job_log(&self, at: &Endpoint, repo: &str, job: u64) -> Result<String, ForgeError> {
+        let _ = (at, repo, job);
+        Err(ForgeError::Unsupported(
+            "this forge does not serve CI logs".into(),
+        ))
+    }
+
+    /// The excerpt of the end of a log: the default error rules of
+    /// [`crate::ci_log::excerpt`], for a provider whose logs need others.
+    fn log_excerpt(&self, log: &str) -> CiJobLog {
+        crate::ci_log::excerpt(log)
+    }
+
+    /// Reruns the failed jobs of `run`; returns how many runs restarted.
+    /// Unsupported by default.
+    fn rerun_failed(&self, at: &Endpoint, repo: &str, run: &CiRun) -> Result<usize, ForgeError> {
+        let _ = (at, repo, run);
+        Err(ForgeError::Unsupported("this forge cannot rerun CI".into()))
+    }
 }
 
 /// Account browsing (clone from an account / org / group).

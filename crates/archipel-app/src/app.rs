@@ -31,6 +31,7 @@ mod auto_fetch;
 mod categories;
 mod clone;
 mod dispatch;
+mod forecast;
 mod forge_flow;
 mod identity;
 mod projects;

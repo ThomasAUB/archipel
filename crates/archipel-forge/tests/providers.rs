@@ -10,11 +10,12 @@ use archipel_forge::ForgeClient;
 use archipel_forge::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJobState, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod, MergeOptions,
-    MergeState, Namespace, NamespaceKind, PullRequestDraft, ReviewState,
+    CiJob, CiJobState, CiRun, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod,
+    MergeOptions, MergeState, Namespace, NamespaceKind, PullRequestDraft, ReviewState,
 };
 use archipel_model::ports::{
-    CiReader, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader, PullRequestWriter,
+    CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
+    PullRequestWriter,
 };
 use archipel_model::testing::InMemoryCredentials;
 use serde_json::json;
@@ -49,6 +50,19 @@ impl FakeHttp {
                     .map(|(k, v)| ((*k).into(), (*v).into()))
                     .collect(),
                 body: body.to_string(),
+            },
+        ));
+    }
+
+    /// A plain-text answer (a log).
+    fn on_text(&self, method: Method, url_part: &str, status: u16, text: &str) {
+        self.routes.lock().unwrap().push((
+            method,
+            url_part.into(),
+            HttpResponse {
+                status,
+                headers: Vec::new(),
+                body: text.into(),
             },
         ));
     }
@@ -912,4 +926,218 @@ fn pages_on_another_host_are_not_followed() {
     let ns = c.namespaces(&acct).unwrap();
     c.repositories(&acct, &ns[0]).unwrap();
     assert!(http.seen().iter().all(|r| !r.url.contains("evil.example")));
+}
+
+fn failed_job(id: Option<u64>, name: &str) -> CiJob {
+    CiJob {
+        id,
+        name: name.into(),
+        stage: None,
+        state: CiJobState::Failed,
+        url: Some(format!("web/{name}")),
+    }
+}
+
+#[test]
+fn github_actions_jobs_carry_their_id() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/branches/main",
+        200,
+        json!({"commit": {"sha": "abc"}}),
+    );
+    http.on(
+        Method::Get,
+        "/commits/abc/check-runs",
+        200,
+        json!({"check_runs": [
+            {"id": 11, "app": {"slug": "github-actions"}, "name": "test",
+             "status": "completed", "conclusion": "failure"},
+            {"id": 12, "app": {"slug": "circleci-checks"}, "name": "circle",
+             "status": "completed", "conclusion": "failure"}
+        ]}),
+    );
+    let c = client(&http, &["github.com"]);
+    let run = c.ci_for_branch(&github_repo(), "main").unwrap().unwrap();
+    let ids: Vec<_> = run.jobs.iter().map(|j| j.id).collect();
+    assert_eq!(ids, [Some(11), None], "only Actions jobs have a log here");
+    assert_eq!(run.id, None);
+}
+
+#[test]
+fn github_job_log_excerpt() {
+    let http = Arc::new(FakeHttp::default());
+    http.on_text(
+        Method::Get,
+        "/repos/octo/app/actions/jobs/11/logs",
+        200,
+        "2024-05-01T10:00:00.0000000Z ##[group]Run cargo test\n\
+         2024-05-01T10:00:01.0000000Z running 1 test\n\
+         2024-05-01T10:00:02.0000000Z test it_works ... FAILED\n\
+         2024-05-01T10:00:03.0000000Z ##[error]Process completed with exit code 101.\n",
+    );
+    let c = client(&http, &["github.com"]);
+    let log = c
+        .ci_job_log(&github_repo(), &failed_job(Some(11), "test"))
+        .unwrap();
+    assert!(log.matched);
+    assert_eq!(
+        log.excerpt,
+        [
+            "Run cargo test",
+            "running 1 test",
+            "test it_works ... FAILED",
+            "Error: Process completed with exit code 101."
+        ]
+    );
+    assert_eq!(log.url.as_deref(), Some("web/test"));
+    // A check posted by another CI has no log here.
+    assert!(matches!(
+        c.ci_job_log(&github_repo(), &failed_job(None, "circle")),
+        Err(ForgeError::Unsupported(_))
+    ));
+    // A token without Actions access is told what to add.
+    http.on(
+        Method::Get,
+        "/actions/jobs/12/logs",
+        403,
+        json!({"message": "Resource not accessible by personal access token"}),
+    );
+    let e = c
+        .ci_job_log(&github_repo(), &failed_job(Some(12), "test"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("Actions: read"), "{e}");
+}
+
+#[test]
+fn github_reruns_each_failed_workflow_run_once() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(Method::Get, "/actions/jobs/11", 200, json!({"run_id": 7}));
+    http.on(Method::Get, "/actions/jobs/12", 200, json!({"run_id": 7}));
+    http.on(Method::Get, "/actions/jobs/13", 200, json!({"run_id": 8}));
+    http.on_text(Method::Post, "/rerun-failed-jobs", 201, "");
+    let c = client(&http, &["github.com"]);
+    let run = CiRun {
+        id: None,
+        state: CiState::Failure,
+        sha: "abc".into(),
+        url: None,
+        jobs: vec![
+            failed_job(Some(11), "a"),
+            failed_job(Some(12), "b"),
+            failed_job(Some(13), "c"),
+            failed_job(None, "legacy"),
+        ],
+    };
+    assert_eq!(c.rerun_failed_ci(&github_repo(), &run).unwrap(), 2);
+    let posts: Vec<String> = http
+        .seen()
+        .into_iter()
+        .filter(|r| r.method == Method::Post)
+        .map(|r| r.url)
+        .collect();
+    assert_eq!(
+        posts,
+        [
+            "https://api.github.com/repos/octo/app/actions/runs/7/rerun-failed-jobs",
+            "https://api.github.com/repos/octo/app/actions/runs/8/rerun-failed-jobs"
+        ]
+    );
+    // Nothing GitHub Actions can rerun.
+    let other = CiRun {
+        jobs: vec![failed_job(None, "legacy")],
+        ..run
+    };
+    assert!(matches!(
+        c.rerun_failed_ci(&github_repo(), &other),
+        Err(ForgeError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn github_rerun_without_write_access_names_the_scope() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(Method::Get, "/actions/jobs/11", 200, json!({"run_id": 7}));
+    http.on(
+        Method::Post,
+        "/rerun-failed-jobs",
+        403,
+        json!({"message": "Resource not accessible by personal access token"}),
+    );
+    let c = client(&http, &["github.com"]);
+    let run = CiRun {
+        id: None,
+        state: CiState::Failure,
+        sha: "abc".into(),
+        url: None,
+        jobs: vec![failed_job(Some(11), "a")],
+    };
+    let e = c
+        .rerun_failed_ci(&github_repo(), &run)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("not allowed to rerun the CI"), "{e}");
+    assert!(e.contains("Actions: read and write"), "{e}");
+}
+
+#[test]
+fn gitlab_job_log_and_pipeline_retry() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/projects/team%2Fsub%2Fapp";
+    http.on(
+        Method::Get,
+        &format!("{base}/pipelines?ref=main"),
+        200,
+        json!([{"id": 9, "status": "failed", "sha": "def", "web_url": "pw"}]),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/pipelines/9/jobs"),
+        200,
+        json!([{"id": 31, "name": "test", "stage": "test", "status": "failed", "web_url": "j"}]),
+    );
+    http.on_text(
+        Method::Get,
+        &format!("{base}/jobs/31/trace"),
+        200,
+        "section_start:1700000000:script\r\u{1b}[0K\u{1b}[32;1m$ make test\u{1b}[0;m\n\
+         ok 1\n\
+         \u{1b}[31mERROR: Job failed: exit code 2\u{1b}[0m\n\
+         section_end:1700000000:script\r\u{1b}[0K\n",
+    );
+    http.on(
+        Method::Post,
+        &format!("{base}/pipelines/9/retry"),
+        201,
+        json!({"id": 9}),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let run = c.ci_for_branch(&gitlab_repo(), "main").unwrap().unwrap();
+    assert_eq!((run.id, run.jobs[0].id), (Some(9), Some(31)));
+    let log = c.ci_job_log(&gitlab_repo(), &run.jobs[0]).unwrap();
+    assert_eq!(
+        log.excerpt,
+        ["$ make test", "ok 1", "ERROR: Job failed: exit code 2"]
+    );
+    assert_eq!(c.rerun_failed_ci(&gitlab_repo(), &run).unwrap(), 1);
+    // A read-only token is told what to add.
+    http.routes.lock().unwrap().insert(
+        0,
+        (
+            Method::Post,
+            "/retry".into(),
+            HttpResponse {
+                status: 403,
+                body: "{\"message\":\"403 Forbidden\"}".into(),
+                ..HttpResponse::default()
+            },
+        ),
+    );
+    let e = c
+        .rerun_failed_ci(&gitlab_repo(), &run)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("api scope"), "{e}");
 }

@@ -142,8 +142,11 @@ impl HttpTransport for UreqTransport {
             .filter_map(|(k, v)| Some((k.as_str().to_owned(), v.to_str().ok()?.to_owned())))
             .collect();
         let status = response.status().as_u16();
+        // CI logs run past ureq's default 10 MB limit.
         let body = response
             .body_mut()
+            .with_config()
+            .limit(MAX_BODY_BYTES)
             .read_to_string()
             .map_err(|e| e.to_string())?;
         Ok(HttpResponse {
@@ -154,9 +157,15 @@ impl HttpTransport for UreqTransport {
     }
 }
 
+/// Largest answer body read (a CI log).
+const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Entries kept at most by [`CachingTransport`]; the cache is emptied when
 /// full.
 const MAX_CACHED: usize = 1024;
+
+/// Larger answers (CI logs) are not kept by [`CachingTransport`].
+const MAX_CACHED_BODY: usize = 256 * 1024;
 
 /// Makes repeated GETs conditional: the `ETag` of each answer is kept and
 /// sent back as `If-None-Match`, and a `304 Not Modified` is served from the
@@ -198,7 +207,10 @@ impl CachingTransport {
     fn keep(&self, key: u64, response: &HttpResponse) {
         let mut cache = self.cache();
         match response.header("etag") {
-            Some(etag) if (200..=299).contains(&response.status) => {
+            Some(etag)
+                if (200..=299).contains(&response.status)
+                    && response.body.len() <= MAX_CACHED_BODY =>
+            {
                 if cache.len() >= MAX_CACHED && !cache.contains_key(&key) {
                     cache.clear();
                 }
@@ -356,6 +368,23 @@ impl Api<'_> {
         self.decode(&response)
     }
 
+    /// GET `path` as text (a log).
+    pub fn get_text(&self, path: &str, what: &str) -> Result<String, ForgeError> {
+        Ok(self.send(Method::Get, self.url(path), None, what)?.body)
+    }
+
+    /// Sends a JSON body to `path`; the answer body is ignored.
+    pub fn write_unit(
+        &self,
+        method: Method,
+        path: &str,
+        body: serde_json::Value,
+        what: &str,
+    ) -> Result<(), ForgeError> {
+        self.send(method, self.url(path), Some(body), what)
+            .map(drop)
+    }
+
     /// Sends a JSON body to `path` and decodes the answer.
     pub fn write<T: DeserializeOwned>(
         &self,
@@ -418,14 +447,21 @@ pub fn optional<T>(result: Result<T, ForgeError>) -> Result<Option<T>, ForgeErro
 /// For a write the user may not be allowed to do (merge): a 401 / 403
 /// then means a missing permission more often than a bad token.
 pub fn permission<T>(result: Result<T, ForgeError>, action: &str) -> Result<T, ForgeError> {
+    scoped(
+        result,
+        action,
+        "no permission on the repository, or the token lacks write access",
+    )
+}
+
+/// Like [`permission`], naming what the token needs (`hint`): a 401 / 403
+/// becomes "not allowed to `action` (`hint`)".
+pub fn scoped<T>(result: Result<T, ForgeError>, action: &str, hint: &str) -> Result<T, ForgeError> {
     result.map_err(|e| match e {
         ForgeError::Unauthorized { host, status } => ForgeError::Http {
             host,
             status,
-            message: format!(
-                "not allowed to {action} (no permission on the repository, or the token \
-                 lacks write access)"
-            ),
+            message: format!("not allowed to {action} ({hint})"),
         },
         e => e,
     })

@@ -6,9 +6,10 @@
 //! * Every edit of the definition is saved to the project file right away
 //!   ([`App::edit_definition`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
+use archipel_model::forge::CiJobLog;
 use archipel_model::ports::WatchHandle;
 use archipel_model::project::{ProjectDef, ProjectLocation, RegistryEntry, RepoEntry};
 use archipel_model::submodule::SubmoduleNode;
@@ -17,6 +18,7 @@ use archipel_model::{CancelToken, ProjectId, RepoId, RepoPath, Timestamp};
 
 use super::{App, AppError, AppEvent, lock};
 use crate::dashboard::{DashboardRow, RepoStatus};
+use crate::forecast::ConflictForecast;
 use crate::forge::{BranchCi, ForgeStatus};
 
 /// An open project.
@@ -56,6 +58,15 @@ pub(super) struct Session {
     pub(super) ci_watch: HashMap<RepoId, Instant>,
     /// Repos with a CI follow-up read scheduled.
     pub(super) ci_poll: HashSet<RepoId>,
+    /// Inputs of the last conflict forecast queued or made, per repo.
+    pub(super) forecast_inputs: HashMap<RepoId, super::forecast::ForecastInputs>,
+    /// Repos waiting for their conflict forecast (one runs at a time).
+    pub(super) forecast_queue: VecDeque<RepoId>,
+    /// The repo whose conflict forecast is running.
+    pub(super) forecast_running: Option<RepoId>,
+    /// Error excerpts of CI job logs, by repo and job id (a job's log does
+    /// not change once it failed; a rerun is a new job).
+    pub(super) ci_logs: HashMap<(RepoId, u64), CiJobLog>,
 }
 
 impl Session {
@@ -79,6 +90,7 @@ fn new_row(repo: &RepoEntry, status: RepoStatus, stale: bool, ui: &UiState) -> D
         forge: ForgeStatus::Unknown,
         ci: BranchCi::Unknown,
         forge_limit: None,
+        forecast: ConflictForecast::default(),
     }
 }
 
@@ -153,6 +165,10 @@ impl App {
             forge_backoff: HashMap::new(),
             ci_watch: HashMap::new(),
             ci_poll: HashSet::new(),
+            forecast_inputs: HashMap::new(),
+            forecast_queue: VecDeque::new(),
+            forecast_running: None,
+            ci_logs: HashMap::new(),
         });
         if let Err(e) = self.services.registry.mark_opened(id, Timestamp::now()) {
             tracing::warn!(error = %e, "could not update the recent list");
@@ -269,6 +285,8 @@ impl App {
             s.forge_checked.remove(&repo);
             s.forge_failed.remove(&repo);
             s.ci_watch.remove(&repo);
+            s.forecast_inputs.remove(&repo);
+            s.forecast_queue.retain(|r| *r != repo);
             Some(())
         })?;
         self.start_watching();

@@ -13,16 +13,17 @@ use crate::cancel::{CancelToken, ProgressSink};
 use crate::changes::FileChange;
 use crate::diff::FileDiff;
 use crate::error::{GitError, ProjectError, StoreError, WatchError};
+use crate::forecast::{MergeForecast, MergeStrategy};
 use crate::history::{CommitMeta, TopologyNode, WalkOrder};
 use crate::ids::{Oid, ProjectId, RepoId, RepoPath};
 use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefSnapshot};
 use crate::ports::{
     BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, Coverage, DiffReader,
     DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
-    MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps,
-    RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
-    SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore,
-    WatchHandle, WorktreeFiles, WorktreeSnapshots,
+    MergeForecaster, MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter,
+    RemoteInfo, RemoteOps, RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore,
+    StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader,
+    UiStateStore, WatchHandle, WorktreeFiles, WorktreeSnapshots,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -86,6 +87,14 @@ pub struct FakeRepo {
     pub files: BTreeMap<String, Vec<u8>>,
     /// Files of commit trees (commit → path → bytes), for `TreeReader`.
     pub trees: HashMap<Oid, BTreeMap<String, Vec<u8>>>,
+    /// What `MergeForecaster::pull_strategy` returns.
+    pub pull_strategy: MergeStrategy,
+    /// Conflicting paths per `(ours, theirs)`, for `MergeForecaster::forecast`
+    /// (clean when absent).
+    pub conflicts: HashMap<(Oid, Oid), Vec<String>>,
+    /// Incoming paths per `(ours, theirs)`, for
+    /// `MergeForecaster::incoming_paths` (none when absent).
+    pub incoming: HashMap<(Oid, Oid), Vec<String>>,
 }
 
 impl Default for FakeRepo {
@@ -105,6 +114,9 @@ impl Default for FakeRepo {
             submodules: Vec::new(),
             files: BTreeMap::new(),
             trees: HashMap::new(),
+            pull_strategy: MergeStrategy::Merge,
+            conflicts: HashMap::new(),
+            incoming: HashMap::new(),
         }
     }
 }
@@ -825,6 +837,54 @@ impl SubmoduleWriter for FakeGit {
             }
         });
         Ok(())
+    }
+}
+
+/// Forecasts are recorded as calls (`"forecast"`, detail `ours..theirs
+/// strategy`), so tests can count them.
+impl MergeForecaster for FakeGit {
+    fn pull_strategy(&self, repo: &RepoPath, _branch: &str) -> Result<MergeStrategy, GitError> {
+        self.read(repo, "pull_strategy", |r| r.pull_strategy)
+    }
+    fn forecast(
+        &self,
+        repo: &RepoPath,
+        ours: Oid,
+        theirs: Oid,
+        strategy: MergeStrategy,
+        cancel: &CancelToken,
+    ) -> Result<MergeForecast, GitError> {
+        cancel.check()?;
+        let conflicts = self.read(repo, "forecast", |r| {
+            r.conflicts
+                .get(&(ours, theirs))
+                .cloned()
+                .unwrap_or_default()
+        })?;
+        self.record(
+            "forecast",
+            repo,
+            format!(
+                "{}..{} {}",
+                ours.short(7),
+                theirs.short(7),
+                strategy.label()
+            ),
+        )?;
+        Ok(MergeForecast {
+            strategy,
+            conflicts,
+        })
+    }
+    fn incoming_paths(
+        &self,
+        repo: &RepoPath,
+        ours: Oid,
+        theirs: Oid,
+    ) -> Result<Vec<String>, GitError> {
+        self.read(repo, "incoming_paths", |r| {
+            r.incoming.get(&(ours, theirs)).cloned().unwrap_or_default()
+        })
     }
 }
 
