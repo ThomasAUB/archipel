@@ -20,6 +20,7 @@ mod menu;
 mod navigation;
 mod operations;
 mod refs_panel;
+mod reword;
 mod squash;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -157,6 +158,8 @@ pub struct RepoView {
     confirm: Option<Confirm>,
     /// The squash dialog, once the range is checked.
     squash: Option<squash::SquashDialog>,
+    /// The message of the selected commit, while edited in the details pane.
+    reword: Option<reword::RewordEdit>,
     prompt_focus: FocusHandle,
     status: Option<String>,
     refs: Arc<RefList>,
@@ -233,6 +236,7 @@ impl RepoView {
             menu: None,
             confirm: None,
             squash: None,
+            reword: None,
             prompt_focus: cx.focus_handle(),
             status: None,
             refs: Arc::default(),

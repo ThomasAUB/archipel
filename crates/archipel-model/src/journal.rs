@@ -92,6 +92,8 @@ pub enum OperationKind {
     Fetch,
     /// Squash of consecutive commits of the current branch.
     Squash,
+    /// New message for a commit of the current branch.
+    Reword,
 }
 
 /// Whether an entry is currently applied or has been undone.

@@ -323,7 +323,7 @@ pub trait RemoteOps: Send + Sync {
     ) -> Result<RepoPath, GitError>;
 }
 
-/// Merge, rebase, cherry-pick, revert, squash and their continuation.
+/// Merge, rebase, cherry-pick, revert, squash, reword and their continuation.
 pub trait HistoryRewriter: Send + Sync {
     /// Merges `rev` into the current branch.
     fn merge(&self, repo: &RepoPath, rev: &str, mode: MergeMode) -> Result<(), GitError>;
@@ -354,6 +354,10 @@ pub trait HistoryRewriter: Send + Sync {
         newest: Oid,
         message: &str,
     ) -> Result<Oid, GitError>;
+    /// Gives `commit` (of the first-parent history of `HEAD`) `message`.
+    /// The commits after it are recreated on top with the same content;
+    /// the index and the worktree are not touched. Returns the new `HEAD`.
+    fn reword(&self, repo: &RepoPath, commit: Oid, message: &str) -> Result<Oid, GitError>;
     /// Continues, aborts or skips the operation in progress.
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError>;
 }

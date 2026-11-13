@@ -569,6 +569,49 @@ fn squash_from_the_root_up_to_head() {
 }
 
 #[test]
+fn reword_rewrites_one_message_and_keeps_the_rest() {
+    let (repo, path, cli) = setup();
+    let base = cli.resolve(&path, "HEAD").unwrap().unwrap();
+    let mut ids = Vec::new();
+    for (file, message) in [("b.txt", "add b"), ("c.txt", "add c")] {
+        repo.write(file, "x\n").unwrap();
+        ids.push(Oid::from_hex(&repo.commit_all(message).unwrap()).unwrap());
+    }
+    let tree_before = repo.git(&["rev-parse", "HEAD^{tree}"]).unwrap();
+    repo.write("a.txt", "dirty\n").unwrap();
+
+    let tip = cli
+        .reword(&path, ids[0], "  add b, reworded  \n\nbody\n\n")
+        .unwrap();
+
+    assert_eq!(cli.resolve(&path, "HEAD").unwrap(), Some(tip));
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD^{tree}"]).unwrap(),
+        tree_before
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%B", "HEAD~1"]).unwrap(),
+        "add b, reworded\n\nbody"
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s", "HEAD"]).unwrap(),
+        "add c"
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD~2"]).unwrap(), base.to_hex());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+        "dirty\n"
+    );
+    // The tip, and an empty message.
+    cli.reword(&path, tip, "c").unwrap();
+    assert_eq!(repo.git(&["log", "-1", "--format=%B"]).unwrap(), "c");
+    assert!(matches!(
+        cli.reword(&path, tip, " \n"),
+        Err(GitError::InvalidRequest(_))
+    ));
+}
+
+#[test]
 fn diffs_and_churn() {
     let (repo, path, cli) = setup();
     repo.write("a.txt", "one\n2\nthree\nfour\n").unwrap();

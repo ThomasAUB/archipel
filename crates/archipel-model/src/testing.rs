@@ -797,6 +797,10 @@ impl HistoryRewriter for FakeGit {
         )?;
         Ok(newest)
     }
+    fn reword(&self, repo: &RepoPath, commit: Oid, message: &str) -> Result<Oid, GitError> {
+        self.record("reword", repo, format!("{}:{message}", commit.to_hex()))?;
+        Ok(commit)
+    }
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError> {
         self.record("sequence", repo, format!("{action:?}"))
     }

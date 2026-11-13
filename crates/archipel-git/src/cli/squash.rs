@@ -5,6 +5,8 @@
 //! after it are recreated on top with their own trees. Every tree is kept,
 //! so nothing can conflict, and neither the index nor the worktree is
 //! touched: a dirty working copy is fine.
+//!
+//! Rewording a commit is the same rewrite on a range of one commit.
 
 use archipel_model::history::SquashPreview;
 use archipel_model::ports::RefReader;
@@ -45,7 +47,8 @@ fn refuse(why: impl Into<String>) -> GitError {
 
 impl GitCli {
     /// Reads and checks the commits from `oldest` to `newest`: consecutive
-    /// commits of the first-parent history of `HEAD`, no merge among them.
+    /// commits of the first-parent history of `HEAD`, no merge among them
+    /// (a single commit, reworded, may be a merge).
     fn squash_plan(
         &self,
         repo: &RepoPath,
@@ -58,9 +61,6 @@ impl GitCli {
         let head = self
             .resolve(repo, "HEAD")?
             .ok_or_else(|| refuse("HEAD has no commit"))?;
-        if oldest == newest {
-            return Err(refuse("pick at least two commits to squash"));
-        }
         let mut cmd = Cmd::new(
             repo.as_path(),
             CmdKind::Read,
@@ -113,7 +113,9 @@ impl GitCli {
         squashed.reverse();
         let mut after = chain;
         after.reverse();
-        if let Some(merge) = squashed.iter().find(|l| l.parents.len() > 1) {
+        if squashed.len() > 1
+            && let Some(merge) = squashed.iter().find(|l| l.parents.len() > 1)
+        {
             return Err(refuse(format!(
                 "{} is a merge: merges cannot be squashed",
                 merge.oid.short(8)
@@ -224,6 +226,9 @@ impl GitCli {
         oldest: Oid,
         newest: Oid,
     ) -> Result<SquashPreview, GitError> {
+        if oldest == newest {
+            return Err(refuse("pick at least two commits to squash"));
+        }
         let plan = self.squash_plan(repo, oldest, newest)?;
         let commits: Vec<Oid> = plan.squashed.iter().map(|l| l.oid).collect();
         let message = combined_message(
@@ -241,34 +246,57 @@ impl GitCli {
         newest: Oid,
         message: &str,
     ) -> Result<Oid, GitError> {
+        if oldest == newest {
+            return Err(refuse("pick at least two commits to squash"));
+        }
         if message.trim().is_empty() {
             return Err(refuse("write a message for the squashed commit"));
         }
+        self.rewrite(repo, oldest, newest, message, "archipel: squash")
+    }
+
+    pub(super) fn reword_impl(
+        &self,
+        repo: &RepoPath,
+        commit: Oid,
+        message: &str,
+    ) -> Result<Oid, GitError> {
+        if message.trim().is_empty() {
+            return Err(refuse("write a message for the commit"));
+        }
+        self.rewrite(repo, commit, commit, message, "archipel: reword")
+    }
+
+    /// Replaces the commits from `oldest` to `newest` by one commit with
+    /// `message` and recreates the commits after them on top, then moves
+    /// `HEAD` (`reflog` is the reflog message). Returns the new `HEAD`.
+    fn rewrite(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+        message: &str,
+        reflog: &str,
+    ) -> Result<Oid, GitError> {
         let plan = self.squash_plan(repo, oldest, newest)?;
         let first = &plan.squashed[0];
-        let mut wanted: Vec<Oid> = vec![first.oid, newest];
+        // `git log --no-walk` lists a commit given twice only once.
+        let mut wanted: Vec<Oid> = vec![first.oid];
+        if newest != first.oid {
+            wanted.push(newest);
+        }
+        let skip = wanted.len();
         wanted.extend(plan.after.iter().map(|l| l.oid));
         let recorded = self.recorded(repo, &wanted)?;
-        // The squashed commit: the first commit's author and parent, the
-        // last commit's tree.
+        // The new commit: the first commit's author and parents, the last
+        // commit's tree.
         let author = &recorded[0];
-        let squashed = Recorded {
-            tree: recorded[1].tree.clone(),
-            author_name: author.author_name.clone(),
-            author_email: author.author_email.clone(),
-            author_date: author.author_date.clone(),
-            message: String::new(),
-        };
-        let mut tip = self.commit_tree(
-            repo,
-            &squashed.tree,
-            &first.parents,
-            &squashed,
-            &normalized(message),
-        )?;
+        let tree = recorded[skip - 1].tree.clone();
+        let mut tip =
+            self.commit_tree(repo, &tree, &first.parents, author, &normalized(message))?;
         // The commits after the range, on top: same trees, first parent
         // replaced, other parents (of merges) kept.
-        for (link, rec) in plan.after.iter().zip(&recorded[2..]) {
+        for (link, rec) in plan.after.iter().zip(&recorded[skip..]) {
             let mut parents = vec![tip];
             parents.extend(link.parents.iter().skip(1).copied());
             tip = self.commit_tree(repo, &rec.tree, &parents, rec, &rec.message)?;
@@ -280,7 +308,7 @@ impl GitCli {
             &[
                 "update-ref",
                 "-m",
-                "archipel: squash",
+                reflog,
                 "HEAD",
                 &tip.to_hex(),
                 &plan.head.to_hex(),
