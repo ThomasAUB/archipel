@@ -457,6 +457,39 @@ fn passing_pull_request_failure_keeps_the_last_status() {
 }
 
 #[test]
+fn passing_failure_of_a_first_read_is_retried_before_showing_an_error() {
+    let e = env_with(Settings {
+        forge_refresh_secs: 1,
+        ..Settings::default()
+    });
+    let unreachable = ForgeError::Network {
+        host: "github.com".into(),
+        message: "connection reset".into(),
+    };
+    e.forge.fail("acme/r0", unreachable.clone());
+    e.forge.fail("acme/r1", unreachable);
+    sign_in(&e);
+    // "sign in" goes once the first read lands: it shows nothing.
+    let r1 = e.repos[1].clone();
+    wait_until("first read", || forge_of(&e, 1) == ForgeStatus::Unknown);
+    assert_eq!(ci_of(&e, &r1), BranchCi::Unknown, "no error shown yet");
+
+    // No focus, no refresh: the retry alone shows r1 once it answers…
+    e.forge.recover("acme/r1");
+    wait_until(
+        "r1 read again",
+        || matches!(ci_of(&e, &r1), BranchCi::Run(r) if r.state == CiState::Pending),
+    );
+    assert!(matches!(forge_of(&e, 1), ForgeStatus::NoPullRequest { .. }));
+    // …and the error of r0, which keeps failing.
+    let r0 = e.repos[0].clone();
+    wait_until("r0 error", || {
+        matches!(ci_of(&e, &r0), BranchCi::Error(_))
+            && matches!(forge_of(&e, 0), ForgeStatus::Error(_))
+    });
+}
+
+#[test]
 fn open_pull_requests_are_listed_and_merged() {
     let e = env();
     sign_in(&e);
