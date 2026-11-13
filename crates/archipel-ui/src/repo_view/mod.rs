@@ -110,6 +110,14 @@ fn lock(v: &SharedView) -> std::sync::MutexGuard<'_, HistoryView> {
     v.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A submodule of the refs panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SubmoduleRow {
+    info: SubmoduleInfo,
+    /// Uncommitted changes inside the submodule (only known when initialized).
+    edited: bool,
+}
+
 /// The repository tab.
 pub struct RepoView {
     core: Arc<Core>,
@@ -161,7 +169,7 @@ pub struct RepoView {
     status: Option<String>,
     refs: Arc<RefList>,
     /// Submodules, listed under the tags in the refs panel.
-    submodules: Arc<Vec<SubmoduleInfo>>,
+    submodules: Arc<Vec<SubmoduleRow>>,
     /// Refs state of the last summary seen; `None` until the next summary,
     /// which is then taken as is (the graph was just loaded).
     refs_state: Option<RefsState>,

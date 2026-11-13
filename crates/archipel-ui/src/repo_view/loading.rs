@@ -19,7 +19,9 @@ use crate::staging;
 
 use super::graph_paint::{lanes_above, stash_lane};
 use super::refs_panel::{RefList, RefRow};
-use super::{HeadLink, MAX_LANES_SHOWN, OpenDiff, PlacedStash, RepoView, SharedView, lock};
+use super::{
+    HeadLink, MAX_LANES_SHOWN, OpenDiff, PlacedStash, RepoView, SharedView, SubmoduleRow, lock,
+};
 
 /// Graph rows laid out at a time while looking for the HEAD commit.
 const HEAD_SCAN_ROWS: u32 = 512;
@@ -403,9 +405,26 @@ impl RepoView {
     }
 
     pub(super) fn load_submodules(&mut self, cx: &mut Context<Self>) {
-        let reader = self.core.repo_actions().ports().submodules.clone();
+        let ports = self.core.repo_actions().ports();
+        let reader = ports.submodules.clone();
+        let status = ports.status.clone();
         let path = self.path.clone();
-        let task = cx.background_spawn(async move { reader.submodules(&path) });
+        let task = cx.background_spawn(async move {
+            let infos = reader.submodules(&path)?;
+            Ok::<_, archipel_model::GitError>(
+                infos
+                    .into_iter()
+                    .map(|info| {
+                        let edited = info.initialized
+                            && info.path.as_path().is_dir()
+                            && status
+                                .summary(&info.path)
+                                .is_ok_and(|s| s.changes.is_dirty());
+                        SubmoduleRow { info, edited }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {

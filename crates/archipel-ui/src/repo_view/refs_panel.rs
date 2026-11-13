@@ -8,18 +8,18 @@ use std::sync::Arc;
 use archipel_app::forge::{BranchCiMark, branch_ci_mark};
 use archipel_model::Oid;
 use archipel_model::refs::{RefKind, RefTip};
-use archipel_model::submodule::SubmoduleInfo;
 use archipel_theme::ColorToken as T;
+use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, MouseButton, MouseDownEvent, SharedString, Window, div, px,
-    uniform_list,
+    svg, uniform_list,
 };
 
 use crate::theme::{color, radius, row_height, tone};
 use crate::widgets::{SHORT_OID, TextTooltip, scroll_list};
 
-use super::RepoView;
+use super::{RepoView, SubmoduleRow};
 use super::menu::{MenuAction, MenuTarget};
 
 /// One fixed-height row of the refs panel.
@@ -298,8 +298,11 @@ fn render_ci_mark(i: usize, ci: BranchCiMark, cx: &mut Context<RepoView>) -> Any
 }
 
 /// One submodule of the refs panel: dimmed when not initialized, in the
-/// warning color when checked out at another commit than the pinned one.
-fn render_submodule_row(i: usize, sub: &SubmoduleInfo, cx: &mut Context<RepoView>) -> AnyElement {
+/// warning color when checked out at another commit than the pinned one,
+/// with a pencil when it has uncommitted changes.
+fn render_submodule_row(i: usize, row: &SubmoduleRow, cx: &mut Context<RepoView>) -> AnyElement {
+    let sub = &row.info;
+    let edited = row.edited;
     let hover = color(cx, T::BgHover);
     let (fg, state) = if !sub.initialized {
         (T::FgSubtle, "Not initialized")
@@ -312,12 +315,12 @@ fn render_submodule_row(i: usize, sub: &SubmoduleInfo, cx: &mut Context<RepoView
         (T::FgDefault, "At the pinned commit")
     };
     let short = |oid: Option<Oid>| oid.map_or_else(|| "—".to_owned(), |o| o.short(SHORT_OID));
-    let tooltip = vec![
-        sub.name.clone(),
-        state.to_owned(),
-        format!("Pinned: {}", short(sub.pinned)),
-        format!("Checked out: {}", short(sub.checked_out)),
-    ];
+    let mut tooltip = vec![sub.name.clone(), state.to_owned()];
+    if edited {
+        tooltip.push("Uncommitted changes".to_owned());
+    }
+    tooltip.push(format!("Pinned: {}", short(sub.pinned)));
+    tooltip.push(format!("Checked out: {}", short(sub.checked_out)));
     let path = sub.path.clone();
     let initialized = sub.initialized;
     let menu_sub = sub.clone();
@@ -345,6 +348,16 @@ fn render_submodule_row(i: usize, sub: &SubmoduleInfo, cx: &mut Context<RepoView
                 v.open_menu(MenuTarget::Submodule(menu_sub.clone()), e.position, cx);
             }),
         )
+        .gap_1()
         .child(div().truncate().child(sub.name.clone()))
+        .when(edited, |d| {
+            d.child(
+                svg()
+                    .flex_none()
+                    .path(IconName::Pencil.path())
+                    .size(px(11.0))
+                    .text_color(color(cx, T::StatusDirty)),
+            )
+        })
         .into_any_element()
 }

@@ -30,6 +30,7 @@ mod file_edit;
 mod fonts;
 mod forecast_badge;
 mod forge_panel;
+mod icons;
 mod ignore;
 mod instance;
 mod keys;
@@ -215,7 +216,7 @@ fn main() {
     let application = gpui_kit::application();
     startup::mark("gpui platform created");
     application
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(icons::AppAssets)
         .run(move |cx: &mut App| {
             startup::mark("gpui running");
             gpui_kit::init(cx);
