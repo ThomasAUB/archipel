@@ -129,6 +129,11 @@ impl FakeForge {
         lock(&self.state).failing.insert(path.into(), error);
     }
 
+    /// Makes the calls on repo `path` answer again.
+    pub fn recover(&self, path: &str) {
+        lock(&self.state).failing.remove(path);
+    }
+
     /// Makes the pull request reads of repo `path` fail with `error`, or
     /// succeed again with `None`; its CI reads still answer.
     pub fn fail_pull_requests(&self, path: &str, error: Option<ForgeError>) {

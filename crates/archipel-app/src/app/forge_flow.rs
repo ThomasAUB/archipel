@@ -19,7 +19,7 @@ use archipel_model::requests::PushRequest;
 use archipel_model::{ForgeError, RepoId, RepoPath, Timestamp};
 use archipel_ops::{GitPorts, OpClass, OpError, OpSpec};
 
-use super::{App, AppError, AppEvent, lock};
+use super::{App, AppError, AppEvent, lock, session::Session};
 use crate::dashboard::DashboardRow;
 use crate::forge::{
     BranchCi, ForgeLimit, ForgePorts, ForgeRegistry, ForgeStatus, Located, StaleCause,
@@ -251,8 +251,10 @@ fn read_forge(
             Ok(Some(run)) => BranchCi::Run(run),
             Ok(None) => BranchCi::None,
             Err(ForgeError::NotSignedIn { .. }) => BranchCi::Unknown,
-            // Reported once, by the pull request read below.
+            // Reported once, by the pull request read below; logged, as
+            // that read may well succeed.
             Err(e) => {
+                tracing::warn!(branch, error = %e, "cannot read the CI");
                 ci_limit = rate_limit(&e);
                 ci_stale = stale_cause(&e);
                 BranchCi::Error(e.to_string())
@@ -518,6 +520,10 @@ impl App {
                 .forge_checked
                 .get(&repo)
                 .is_some_and(|(b, _)| *b != branch);
+            if moved {
+                // Nor did its reads fail: see `apply_forge`.
+                s.forge_failed.remove(&repo);
+            }
             if moved
                 && (row.forge != ForgeStatus::Unknown
                     || row.ci != BranchCi::Unknown
@@ -530,7 +536,7 @@ impl App {
             }
             // A failed read is retried sooner, so a passing failure does not
             // stick for a whole refresh period.
-            let fresh = if s.forge_failed.contains(&repo) {
+            let fresh = if s.forge_failed.contains_key(&repo) {
                 fresh.min(Duration::from_secs(RETRY_FAILED_SECS))
             } else {
                 fresh
@@ -607,6 +613,12 @@ impl App {
                     Timestamp(now.0 - i64::try_from(at.elapsed().as_secs()).unwrap_or(0))
                 });
             let failed = read.status_stale.is_some() || read.ci_stale.is_some();
+            // Failures lasting past a retry show as errors. A read asked
+            // again at once (a refresh during a checkout) is no retry.
+            let failed_before = s
+                .forge_failed
+                .get(&repo)
+                .is_some_and(|since| since.elapsed() >= self.retry_failed() / 2);
             let mut ci_pending = false;
             let changed = match row {
                 Some(row) if current => {
@@ -616,16 +628,31 @@ impl App {
                     let as_of = row.forge_limit.map(|l| l.as_of).or(read_at);
                     let keep_status = read.status_stale.is_some()
                         && as_of.is_some()
-                        && !matches!(row.forge, ForgeStatus::Unknown | ForgeStatus::Error(_));
+                        && matches!(
+                            row.forge,
+                            ForgeStatus::Open(_) | ForgeStatus::NoPullRequest { .. }
+                        );
                     let keep_ci = read.ci_stale.is_some()
                         && as_of.is_some()
                         && !matches!(row.ci, BranchCi::Unknown | BranchCi::Error(_));
+                    // With nothing earlier to keep (just checked out, just
+                    // started), a first passing failure shows nothing yet
+                    // rather than an error: it is read again shortly, and
+                    // shows as an error if it lasts.
                     let status = if keep_status {
                         row.forge.clone()
+                    } else if read.status_stale.is_some() && !failed_before {
+                        ForgeStatus::Unknown
                     } else {
                         read.status
                     };
-                    let ci = if keep_ci { row.ci.clone() } else { read.ci };
+                    let ci = if keep_ci {
+                        row.ci.clone()
+                    } else if read.ci_stale.is_some() && !failed_before {
+                        BranchCi::Unknown
+                    } else {
+                        read.ci
+                    };
                     let cause = read.status_stale.or(read.ci_stale).unwrap_or_default();
                     let limit = as_of
                         .filter(|_| keep_status || keep_ci)
@@ -645,31 +672,15 @@ impl App {
             };
             if current {
                 if failed {
-                    s.forge_failed.insert(repo);
+                    s.forge_failed.entry(repo).or_insert_with(Instant::now);
                 } else {
                     s.forge_failed.remove(&repo);
                 }
                 s.forge_checked.insert(repo, (branch, Instant::now()));
             }
-            // Unsettled CI is read again soon, so a run that starts or ends
-            // shows without waiting for the next refresh.
-            let watching = s
-                .ci_watch
-                .get(&repo)
-                .is_some_and(|until| *until > Instant::now());
-            if !watching {
-                s.ci_watch.remove(&repo);
-            }
-            let every = self.settings.ci_poll_secs;
-            let unsettled = current && (ci_pending || watching) && every > 0;
-            // At most one follow-up read scheduled per repo.
-            let poll = (unsettled && s.ci_poll.insert(repo)).then(|| {
-                Duration::from_secs(if failed {
-                    every.max(RETRY_FAILED_SECS)
-                } else {
-                    every
-                })
-            });
+            let poll = current
+                .then(|| self.follow_up(s, repo, ci_pending, failed))
+                .flatten();
             (changed, reread, poll)
         };
         if changed {
@@ -683,6 +694,45 @@ impl App {
         }
         // The pull request's target may have changed.
         self.load_forecast(repo);
+    }
+
+    /// How soon a read that failed in passing is retried: never later than
+    /// the regular refresh.
+    fn retry_failed(&self) -> Duration {
+        Duration::from_secs(
+            RETRY_FAILED_SECS
+                .min(self.settings.forge_refresh_secs)
+                .max(1),
+        )
+    }
+
+    /// When to read the current branch of `repo` again, unless a read is
+    /// already scheduled. Unsettled CI is read again soon, so a run that
+    /// starts or ends shows without waiting for the next refresh. So is a
+    /// passing failure: nothing else may read the repo before the window is
+    /// focused again or a file in it changes.
+    fn follow_up(
+        &self,
+        s: &mut Session,
+        repo: RepoId,
+        ci_pending: bool,
+        failed: bool,
+    ) -> Option<Duration> {
+        let watching = s
+            .ci_watch
+            .get(&repo)
+            .is_some_and(|until| *until > Instant::now());
+        if !watching {
+            s.ci_watch.remove(&repo);
+        }
+        let every = Duration::from_secs(self.settings.ci_poll_secs);
+        let unsettled = (ci_pending || watching) && !every.is_zero();
+        // At most one follow-up read scheduled per repo.
+        ((unsettled || failed) && s.ci_poll.insert(repo)).then(|| match (unsettled, failed) {
+            (true, false) => every,
+            (true, true) => every.max(self.retry_failed()),
+            (false, _) => self.retry_failed(),
+        })
     }
 
     /// Re-reads the forge status of `repo` after `delay`.
