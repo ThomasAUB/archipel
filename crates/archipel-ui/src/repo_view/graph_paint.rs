@@ -354,11 +354,23 @@ impl RepoView {
                         ),
                         |d| {
                             let menu_tip = tip.clone();
+                            let refs = row.refs.clone();
                             d.on_mouse_down(
                                 MouseButton::Right,
-                                cx.listener(move |v, e: &MouseDownEvent, _, cx| {
+                                cx.listener(move |v, e: &MouseDownEvent, window, cx| {
                                     cx.stop_propagation();
-                                    v.open_menu(MenuTarget::Ref(menu_tip.clone()), e.position, cx);
+                                    v.focus.focus(window, cx);
+                                    if v.selected.is_none_or(|(r, _)| r != index) {
+                                        v.select_commit(index, oid, cx);
+                                    }
+                                    // The badge's own actions, then its
+                                    // commit's.
+                                    let target = MenuTarget::Commit {
+                                        oid,
+                                        refs: refs.clone(),
+                                        focus: Some(menu_tip.clone()),
+                                    };
+                                    v.open_menu(target, e.position, cx);
                                 }),
                             )
                         },
@@ -420,7 +432,12 @@ impl RepoView {
                     if v.selected.is_none_or(|(r, _)| r != index) {
                         v.select_commit(index, oid, cx);
                     }
-                    v.open_menu(MenuTarget::Commit(oid, refs.clone()), e.position, cx);
+                    let target = MenuTarget::Commit {
+                        oid,
+                        refs: refs.clone(),
+                        focus: None,
+                    };
+                    v.open_menu(target, e.position, cx);
                 }),
             )
             .child(

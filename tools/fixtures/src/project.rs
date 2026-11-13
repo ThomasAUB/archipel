@@ -153,8 +153,7 @@ fn local_commit(work: &Path, message: &str) -> Result<()> {
 fn push_from_other_clone(root: &Path, work: &Path, remote: &Path) -> Result<()> {
     let name = work
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let other = root.join("others").join(name);
     std::fs::create_dir_all(root.join("others"))?;
     git(
