@@ -746,6 +746,10 @@ impl HistoryRewriter for GitCli {
         self.squash_impl(repo, oldest, newest, message)
     }
 
+    fn reword(&self, repo: &RepoPath, commit: Oid, message: &str) -> Result<Oid, GitError> {
+        self.reword_impl(repo, commit, message)
+    }
+
     fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), GitError> {
         let op = GitDirs::locate(repo.as_path())?
             .in_progress()

@@ -11,7 +11,7 @@ use archipel_model::requests::StashApplyMode;
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, SharedString, div, px, uniform_list};
+use gpui_kit::{AnyElement, ClickEvent, Context, SharedString, div, px, uniform_list};
 
 use crate::diff_view::DiffDoc;
 use crate::staging::{self};
@@ -81,6 +81,10 @@ impl RepoView {
             .filter(|(o, _)| *o == oid)
             .map(|(_, m)| m.clone());
         let mut el = div().p_2().flex().flex_col().gap_1();
+        let editing = self.reword.as_ref().is_some_and(|r| r.oid() == oid);
+        if editing && let Some(editor) = self.render_reword(cx) {
+            el = el.child(editor);
+        }
         if let Some(m) = meta {
             let (title, body) = match &message {
                 Some(msg) => match msg.split_once('\n') {
@@ -89,21 +93,35 @@ impl RepoView {
                 },
                 None => (m.summary.clone().into(), ""),
             };
-            el = el.child(
-                div()
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .child(title),
-            );
-            if !body.is_empty() {
-                el = el.child(
-                    div()
-                        .id("details-message")
-                        .max_h(px(MESSAGE_BODY_HEIGHT))
-                        .overflow_y_scrollbar()
-                        .text_sm()
-                        .text_color(color(cx, T::FgMuted))
-                        .child(body.to_owned()),
-                );
+            if !editing {
+                // A double-click on the message edits it.
+                let mut text = div()
+                    .id("details-message-text")
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
+                        if e.click_count() > 1 {
+                            v.start_reword(oid, window, cx);
+                        }
+                    }))
+                    .child(
+                        div()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child(title),
+                    );
+                if !body.is_empty() {
+                    text = text.child(
+                        div()
+                            .id("details-message")
+                            .max_h(px(MESSAGE_BODY_HEIGHT))
+                            .overflow_y_scrollbar()
+                            .text_sm()
+                            .text_color(color(cx, T::FgMuted))
+                            .child(body.to_owned()),
+                    );
+                }
+                el = el.child(text);
             }
             el = el.child(
                 div()

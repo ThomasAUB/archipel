@@ -875,6 +875,15 @@ impl RepoActions {
         })
     }
 
+    /// Gives `commit` of the current branch `message`; the commits after
+    /// it are rewritten on top, unchanged.
+    pub fn reword(&self, repo: &RepoPath, commit: Oid, message: &str) -> Result<(), OpError> {
+        let rec = Recording::new(OperationKind::Reword, format!("Reword {}", commit.short(8)));
+        self.journal.record(repo, rec, || {
+            self.git.rewriter.reword(repo, commit, message).map(drop)
+        })
+    }
+
     /// Merges `rev` into the current branch.
     pub fn merge(&self, repo: &RepoPath, rev: &str, mode: MergeMode) -> Result<(), OpError> {
         let rec = Recording::new(OperationKind::Merge, format!("Merge {rev}"));

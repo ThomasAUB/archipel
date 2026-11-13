@@ -454,6 +454,7 @@ impl RepoView {
     pub(super) fn select_commit(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
         self.selected = Some((row, oid));
         self.multi.clear();
+        self.reword = None;
         self.wip_selected = false;
         self.stash_selected = None;
         self.open_diff = None;
