@@ -22,8 +22,14 @@ use super::squash::SquashRange;
 /// What a right-click menu acts on.
 #[derive(Clone)]
 pub(super) enum MenuTarget {
-    /// A commit row: its id and the refs pointing at it.
-    Commit(Oid, Vec<RefTip>),
+    /// A commit row: its id and the refs pointing at it. `focus`: the
+    /// branch or tag badge right-clicked on the row, whose own actions
+    /// come first.
+    Commit {
+        oid: Oid,
+        refs: Vec<RefTip>,
+        focus: Option<RefTip>,
+    },
     /// Several selected commits, newest first.
     Commits(Vec<Oid>),
     /// A branch or tag (graph badge or refs panel).
@@ -142,7 +148,16 @@ fn menu_entries(
     has_local: impl Fn(&str) -> bool,
 ) -> Vec<MenuEntry> {
     match target {
-        MenuTarget::Commit(oid, refs) => commit_entries(*oid, refs, current),
+        MenuTarget::Commit {
+            oid,
+            refs,
+            focus: None,
+        } => commit_entries(*oid, refs, current),
+        MenuTarget::Commit {
+            oid,
+            refs,
+            focus: Some(tip),
+        } => badge_entries(*oid, refs, tip, current, has_local),
         MenuTarget::Commits(oids) => commits_entries(oids),
         MenuTarget::Ref(tip) => ref_entries(tip, current, has_local),
         MenuTarget::Stash(oid) => stash_entries(*oid),
@@ -226,6 +241,66 @@ fn commit_entries(oid: Oid, refs: &[RefTip], current: Option<&str>) -> Vec<MenuE
     }
     out.push(MenuEntry::Separator);
     out.push(item("Copy commit id", A::Copy(oid.to_hex())));
+    out
+}
+
+/// The menu of badge `tip` on commit `oid`, which `refs` point at: the
+/// ref's own actions, then the commit's, without repeating an action, and
+/// the copy entries last.
+fn badge_entries(
+    oid: Oid,
+    refs: &[RefTip],
+    tip: &RefTip,
+    current: Option<&str>,
+    has_local: impl Fn(&str) -> bool,
+) -> Vec<MenuEntry> {
+    let is_copy = |e: &MenuEntry| {
+        matches!(
+            e,
+            MenuEntry::Item {
+                action: MenuAction::Copy(_),
+                ..
+            }
+        )
+    };
+    // The badge's ref is deleted from its own section.
+    let others: Vec<RefTip> = refs.iter().filter(|r| *r != tip).cloned().collect();
+    let commit = commit_entries(oid, &others, current);
+    let in_commit = |e: &MenuEntry| match e {
+        MenuEntry::Item { action, .. } => commit.iter().any(|c| match c {
+            MenuEntry::Item { action: a, .. } => a == action,
+            MenuEntry::Separator => false,
+        }),
+        MenuEntry::Separator => false,
+    };
+    let reference = ref_entries(tip, current, has_local);
+    let (copies, reference): (Vec<_>, Vec<_>) = reference
+        .into_iter()
+        .filter(|e| !in_commit(e))
+        .partition(is_copy);
+    let (commit_copies, commit): (Vec<_>, Vec<_>) = commit.into_iter().partition(is_copy);
+    let mut out = reference;
+    out.push(MenuEntry::Separator);
+    out.extend(commit);
+    out.push(MenuEntry::Separator);
+    out.extend(copies);
+    out.extend(commit_copies);
+    tidy_separators(out)
+}
+
+/// `entries` without leading, trailing or doubled separators.
+fn tidy_separators(entries: Vec<MenuEntry>) -> Vec<MenuEntry> {
+    let mut out: Vec<MenuEntry> = Vec::with_capacity(entries.len());
+    for e in entries {
+        let separator = e == MenuEntry::Separator;
+        if separator && out.last().is_none_or(|l| *l == MenuEntry::Separator) {
+            continue;
+        }
+        out.push(e);
+    }
+    if out.last() == Some(&MenuEntry::Separator) {
+        out.pop();
+    }
     out
 }
 
@@ -695,7 +770,15 @@ mod tests {
             tip("v1", RefKind::Tag),
             tip("origin/main", RefKind::RemoteBranch),
         ];
-        let entries = menu_entries(&MenuTarget::Commit(oid, refs), Some("main"), |_| true);
+        let entries = menu_entries(
+            &MenuTarget::Commit {
+                oid,
+                refs,
+                focus: None,
+            },
+            Some("main"),
+            |_| true,
+        );
         let actions = actions(&entries);
         assert!(actions.contains(&&MenuAction::Name(NameForm::Branch(Some(oid)))));
         assert!(actions.contains(&&MenuAction::Name(NameForm::Tag(oid))));
@@ -716,7 +799,15 @@ mod tests {
     fn commit_menu_offers_squashing_up_to_head_except_on_head() {
         let oid = Oid::from_bytes(&[4; 20]).unwrap();
         let squashes = |refs: Vec<RefTip>| -> Vec<MenuAction> {
-            let entries = menu_entries(&MenuTarget::Commit(oid, refs), Some("main"), |_| true);
+            let entries = menu_entries(
+                &MenuTarget::Commit {
+                    oid,
+                    refs,
+                    focus: None,
+                },
+                Some("main"),
+                |_| true,
+            );
             actions(&entries)
                 .into_iter()
                 .filter(|a| matches!(a, MenuAction::Squash(_)))
@@ -749,6 +840,52 @@ mod tests {
         assert_eq!(
             actions(&entries)[0],
             &MenuAction::Squash(SquashRange::Selected(oids))
+        );
+    }
+
+    #[test]
+    fn badge_menu_merges_branch_and_commit_actions() {
+        let feat = tip("feat", RefKind::LocalBranch);
+        let oid = feat.target;
+        let refs = vec![feat.clone(), tip("v1", RefKind::Tag)];
+        let entries = menu_entries(
+            &MenuTarget::Commit {
+                oid,
+                refs,
+                focus: Some(feat),
+            },
+            Some("main"),
+            |_| true,
+        );
+        let acts = actions(&entries);
+        // Branch actions first.
+        assert_eq!(
+            acts[0],
+            &MenuAction::Checkout(CheckoutTarget::Branch("feat".into()))
+        );
+        for wanted in [
+            MenuAction::Merge("feat".into()),
+            MenuAction::Name(NameForm::Rename("feat".into())),
+            MenuAction::Name(NameForm::Tag(oid)),
+            MenuAction::Squash(SquashRange::IntoParent(oid)),
+            MenuAction::Reset(oid, ResetMode::Soft),
+            MenuAction::DeleteTag("v1".into()),
+            MenuAction::Copy("feat".into()),
+            MenuAction::Copy(oid.to_hex()),
+        ] {
+            assert!(acts.contains(&&wanted), "{wanted:?}");
+        }
+        // No action twice.
+        for (i, a) in acts.iter().enumerate() {
+            assert!(!acts[i + 1..].contains(a), "{a:?} repeated");
+        }
+        // No leading, trailing or doubled separator.
+        assert_ne!(entries.first(), Some(&MenuEntry::Separator));
+        assert_ne!(entries.last(), Some(&MenuEntry::Separator));
+        assert!(
+            !entries
+                .windows(2)
+                .any(|w| w[0] == MenuEntry::Separator && w[1] == MenuEntry::Separator)
         );
     }
 
