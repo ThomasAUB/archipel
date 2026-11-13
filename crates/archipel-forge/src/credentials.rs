@@ -3,8 +3,9 @@
 //! the user config directory ([`FileAccountStore`]). Neither ever touches
 //! `archipel.toml`.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
@@ -24,7 +25,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Reads are bounded by [`READ_TIMEOUT`]: past it the read fails with
 /// [`ForgeError::Keychain`] and keeps waiting in the background, and later
 /// reads of that host fail at once until it ends (so a locked keychain costs
-/// one waiting thread per host, not one per forge request).
+/// a few waiting threads per host, not one per forge request). Reads of a
+/// host that answers run concurrently.
 pub struct KeychainCredentials {
     service: String,
     reads: BoundedReads,
@@ -69,18 +71,21 @@ impl CredentialStore for KeychainCredentials {
     }
 }
 
-/// Keychain reads that give up after a timeout, at most one in flight per host.
+/// Keychain reads that give up after a timeout. Reads of a host run
+/// concurrently while the keychain answers; once one of them outlives the
+/// timeout, new reads of that host fail at once until it ends.
 struct BoundedReads {
     timeout: Duration,
-    /// Hosts whose read outlived its timeout and is still waiting.
-    waiting: Arc<Mutex<HashSet<String>>>,
+    /// Per host, the number of reads that outlived their timeout and are
+    /// still waiting.
+    stuck: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl BoundedReads {
     fn new(timeout: Duration) -> Self {
         Self {
             timeout,
-            waiting: Arc::default(),
+            stuck: Arc::default(),
         }
     }
 
@@ -96,28 +101,49 @@ impl BoundedReads {
                 self.timeout.as_secs()
             ))
         };
-        if !lock(&self.waiting).insert(host.to_owned()) {
+        if lock(&self.stuck).contains_key(host) {
             return Err(not_answering());
         }
         let (tx, rx) = mpsc::channel();
-        let waiting = Arc::clone(&self.waiting);
+        // Set (under the `stuck` lock) when the caller gave up on this read
+        // and counted it as stuck.
+        let gave_up = Arc::new(AtomicBool::new(false));
+        let stuck = Arc::clone(&self.stuck);
+        let thread_gave_up = Arc::clone(&gave_up);
         let owned_host = host.to_owned();
         let spawned = std::thread::Builder::new()
             .name("archipel-keychain".into())
             .spawn(move || {
                 let result = read();
-                lock(&waiting).remove(&owned_host);
-                // The caller may have given up already.
+                // Send and uncount under the lock, so the caller's timeout
+                // either sees the result or counts the read before we uncount.
+                let mut stuck = lock(&stuck);
                 let _ = tx.send(result);
+                if thread_gave_up.load(Ordering::Relaxed)
+                    && let Some(n) = stuck.get_mut(&owned_host)
+                {
+                    *n -= 1;
+                    if *n == 0 {
+                        stuck.remove(&owned_host);
+                    }
+                }
             });
         if let Err(e) = spawned {
-            lock(&self.waiting).remove(host);
             return Err(ForgeError::Keychain(format!("cannot start a read: {e}")));
         }
-        rx.recv_timeout(self.timeout).unwrap_or_else(|_| {
-            tracing::warn!(host, "keychain read timed out");
-            Err(not_answering())
-        })
+        if let Ok(result) = rx.recv_timeout(self.timeout) {
+            return result;
+        }
+        let mut stuck = lock(&self.stuck);
+        if let Ok(result) = rx.try_recv() {
+            // Answered between the timeout and the lock.
+            return result;
+        }
+        gave_up.store(true, Ordering::Relaxed);
+        *stuck.entry(host.to_owned()).or_default() += 1;
+        drop(stuck);
+        tracing::warn!(host, "keychain read timed out");
+        Err(not_answering())
     }
 }
 
@@ -193,6 +219,31 @@ mod tests {
             reads.run::<()>("h", || Err(ForgeError::Keychain("boom".into()))),
             Err(ForgeError::Keychain(m)) if m == "boom"
         ));
+    }
+
+    #[test]
+    fn concurrent_reads_of_a_host_all_succeed() {
+        let reads = Arc::new(BoundedReads::new(Duration::from_secs(5)));
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let threads: Vec<_> = (0..4)
+            .map(|i| {
+                let reads = Arc::clone(&reads);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    reads.run("github.com", move || {
+                        // All four reads are in flight at the same time.
+                        barrier.wait();
+                        Ok(i)
+                    })
+                })
+            })
+            .collect();
+        let mut got: Vec<_> = threads
+            .into_iter()
+            .map(|t| t.join().unwrap().unwrap())
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, [0, 1, 2, 3]);
     }
 
     #[test]
