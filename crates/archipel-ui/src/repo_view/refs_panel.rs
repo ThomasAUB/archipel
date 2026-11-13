@@ -19,8 +19,8 @@ use gpui_kit::{
 use crate::theme::{color, radius, row_height, tone};
 use crate::widgets::{SHORT_OID, TextTooltip, scroll_list};
 
-use super::{RepoView, SubmoduleRow};
 use super::menu::{MenuAction, MenuTarget};
+use super::{RepoView, SubmoduleRow};
 
 /// One fixed-height row of the refs panel.
 pub(super) enum RefRow {
