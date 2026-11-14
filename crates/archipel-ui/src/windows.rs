@@ -98,23 +98,30 @@ pub fn open(cx: &mut App, dir: Option<&Path>) {
             warnings.push(format!("cannot open {}: {e}", dir.display()));
         }
     }
-    open_with(cx, core, warnings);
+    open_with(cx, core, warnings, false);
 }
 
-/// Opens the first window, on the base core session prepared at startup.
+/// Opens the first window, on the base core session prepared at startup,
+/// in fullscreen.
 pub fn open_first(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
     cx.global_mut::<Windows>().base_free = false;
-    open_with(cx, core, warnings);
+    open_with(cx, core, warnings, true);
 }
 
-fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
+/// Opens a window on `core`; `fullscreen` opens it in fullscreen, restoring
+/// to the default windowed bounds.
+fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>, fullscreen: bool) {
     let offset =
         px(28.0 * f32::from(u8::try_from(cx.global::<Windows>().open.len() % 8).unwrap_or(0)));
     let mut bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
     bounds.origin.x += offset;
     bounds.origin.y += offset;
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(if fullscreen {
+            WindowBounds::Fullscreen(bounds)
+        } else {
+            WindowBounds::Windowed(bounds)
+        }),
         app_id: Some(APP_ID.to_owned()),
         ..WindowOptions::default()
     };
