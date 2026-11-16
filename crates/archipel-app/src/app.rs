@@ -39,6 +39,7 @@ mod refresh;
 mod scan;
 mod session;
 mod tabs;
+mod targets;
 mod tree;
 mod undo;
 mod update_check;
@@ -439,13 +440,19 @@ impl App {
         let sources = self.stat_sources();
         let mut views = Vec::new();
         let mut errors = Vec::new();
-        // Branches belong to repos: a worktree picked means its repo.
-        let ids: Vec<RepoId> = ids.iter().map(|id| self.main_repo_of(*id)).collect();
+        // Branches belong to repos: a worktree targeted means its repo.
+        let mut mains: Vec<RepoId> = Vec::new();
+        for id in self.resolve_targets(ids) {
+            let main = self.main_repo_of(id);
+            if !mains.contains(&main) {
+                mains.push(main);
+            }
+        }
         let rows = self
             .rows()
             .into_iter()
-            .filter(|r| r.summary().is_some() && r.parent().is_none());
-        for row in rows.filter(|r| ids.is_empty() || ids.contains(&r.id)) {
+            .filter(|r| r.summary().is_some() && mains.contains(&r.id));
+        for row in rows {
             let target = RepoTarget {
                 id: row.id,
                 path: row.path,

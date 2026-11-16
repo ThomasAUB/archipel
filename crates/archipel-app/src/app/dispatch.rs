@@ -221,38 +221,17 @@ impl App {
         Ok(())
     }
 
-    /// The shown repos among `ids` (all shown repos when empty) that have a
-    /// summary, as batch targets.
+    /// The targets of a batch on `ids` (see [`App::resolve_targets`]) that
+    /// have a summary (were read once).
     fn targets(&self, ids: &[RepoId]) -> Vec<BatchTarget> {
-        lock(&self.session)
-            .as_ref()
-            .map(|s| {
-                // In a set view, "all" means the set's worktrees (spec §10).
-                if ids.is_empty()
-                    && let Some(set) = s.ui.active_set()
-                {
-                    return s
-                        .set_rows(set)
-                        .filter(|r| !r.hidden && r.summary().is_some())
-                        .map(|r| BatchTarget {
-                            id: r.id,
-                            path: r.path.clone(),
-                        })
-                        .collect();
-                }
-                s.rows
-                    .iter()
-                    .filter(|r| !r.hidden)
-                    // All: every repo, not every worktree of them.
-                    .filter(|r| ids.contains(&r.id) || ids.is_empty() && r.parent().is_none())
-                    .filter(|r| r.summary().is_some())
-                    .map(|r| BatchTarget {
-                        id: r.id,
-                        path: r.path.clone(),
-                    })
-                    .collect()
+        self.target_rows(ids)
+            .into_iter()
+            .filter(|r| r.summary().is_some())
+            .map(|r| BatchTarget {
+                id: r.id,
+                path: r.path,
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Whether the open project shows linked worktrees.
@@ -285,8 +264,8 @@ impl App {
     pub(super) fn fetch(&self, ids: &[RepoId], prune: bool) {
         // Once per repo, whichever of its worktrees was picked (spec §10).
         let mut mains: Vec<RepoId> = Vec::with_capacity(ids.len());
-        for id in ids {
-            let main = self.main_repo_of(*id);
+        for id in self.resolve_targets(ids) {
+            let main = self.main_repo_of(id);
             if !mains.contains(&main) {
                 mains.push(main);
             }

@@ -9,6 +9,7 @@ use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, KeyDownEvent, Window, div, px};
 
+use crate::keys::fixed_label;
 use crate::theme::{color, radius};
 use crate::widgets::{SHORT_OID, button, modal, primary_button};
 
@@ -179,10 +180,16 @@ impl RepoView {
             .shadow_lg()
             .child(title)
             .child(Textarea::new(&dialog.message))
-            .child(div().text_xs().text_color(color(cx, T::FgMuted)).child(
-                "The commits after them are rewritten on top, unchanged. Commits \
-                         already pushed then need a force push. Ctrl+Enter squashes.",
-            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(color(cx, T::FgMuted))
+                    .child(format!(
+                        "The commits after them are rewritten on top, unchanged. Commits \
+                 already pushed then need a force push. {} squashes.",
+                        fixed_label("ctrl-enter")
+                    )),
+            )
             .child(
                 div()
                     .flex()

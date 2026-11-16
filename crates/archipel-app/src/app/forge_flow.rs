@@ -751,13 +751,13 @@ impl App {
 
     // ----- pull requests --------------------------------------------------
 
-    /// Prepares pull requests for `ids` (every shown repo when empty): the
-    /// forge repo, source and target branches of each, and a title.
+    /// Prepares pull requests for `ids` (all when empty, see
+    /// [`App::resolve_targets`]): the forge repo, source and target branches
+    /// of each, and a title.
     pub async fn prepare_pull_requests(&self, ids: &[RepoId]) -> Result<PullRequestPlan, AppError> {
         let rows: Vec<DashboardRow> = self
-            .rows()
+            .target_rows(ids)
             .into_iter()
-            .filter(|r| ids.is_empty() || ids.contains(&r.id))
             .filter(|r| r.summary().is_some())
             .collect();
         if rows.is_empty() {
@@ -931,17 +931,14 @@ impl App {
         errors
     }
 
-    /// The open pull requests of `ids` (every shown repo when empty), one
-    /// network read per repo, in parallel; in project order.
+    /// The open pull requests of `ids` (all when empty, see
+    /// [`App::resolve_targets`]), one network read per repo, in parallel; in
+    /// project order.
     pub async fn open_pull_requests(
         &self,
         ids: &[RepoId],
     ) -> Result<Vec<RepoPullRequests>, AppError> {
-        let rows: Vec<DashboardRow> = self
-            .rows()
-            .into_iter()
-            .filter(|r| ids.is_empty() || ids.contains(&r.id))
-            .collect();
+        let rows = self.target_rows(ids);
         if rows.is_empty() {
             return Err(AppError::InvalidInput("no repository to list".into()));
         }
@@ -1096,11 +1093,7 @@ impl App {
     /// fail are skipped. Reported like the other batches, failures in the
     /// drawer; the CI of each rerun repo is then followed closely.
     pub(super) fn rerun_failed_ci(&self, ids: &[RepoId]) {
-        let rows: Vec<DashboardRow> = self
-            .rows()
-            .into_iter()
-            .filter(|r| !r.hidden && (ids.is_empty() || ids.contains(&r.id)))
-            .collect();
+        let rows = self.target_rows(ids);
         let mut skipped = 0;
         let mut jobs = Vec::new();
         for row in rows {

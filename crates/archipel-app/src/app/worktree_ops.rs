@@ -223,17 +223,18 @@ impl App {
         Ok(())
     }
 
-    /// Prunes the missing worktrees of the repos of `ids` (every repo with
-    /// some when empty).
+    /// Prunes the missing worktrees of `ids` and of the repos among them
+    /// (all when empty, see [`App::resolve_targets`]).
     pub(super) fn prune_worktrees(&self, ids: &[RepoId]) {
         let mains: Vec<RepoPath> = {
             let guard = lock(&self.session);
             let Some(s) = guard.as_ref() else { return };
+            let targets: Vec<RepoId> = s.target_rows(ids).into_iter().map(|r| r.id).collect();
             let mut mains: Vec<RepoId> = Vec::new();
             for row in s.rows.iter().filter(|r| !r.hidden) {
                 let Some(w) = &row.worktree else { continue };
                 let Some(parent) = w.parent else { continue };
-                let wanted = ids.is_empty() || ids.contains(&row.id) || ids.contains(&parent);
+                let wanted = targets.contains(&row.id) || targets.contains(&parent);
                 if w.missing && w.locked.is_none() && wanted && !mains.contains(&parent) {
                     mains.push(parent);
                 }

@@ -556,8 +556,10 @@ impl FinishSetDialog {
         }
         self.busy = false;
         if report.failed().is_empty() {
+            let undo = crate::keys::label_for(&self.core.extensions().keymap, "history.undo")
+                .unwrap_or_else(|| "Undo".to_owned());
             cx.emit(WorktreeDialogEvent::Notice(format!(
-                "Finished worktree set {} (Ctrl+Z on each repo brings its worktree back)",
+                "Finished worktree set {} ({undo} on each repo brings its worktree back)",
                 report.name
             )));
             cx.emit(WorktreeDialogEvent::Closed);

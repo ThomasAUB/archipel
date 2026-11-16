@@ -16,16 +16,16 @@ use super::menus::Menu;
 use super::overlays::{Overlay, PaletteKind};
 
 impl Workspace {
-    /// The batch selection (empty: every repo); in a Worktree Set view,
-    /// none selected means the set's worktrees (spec §10).
-    pub(super) fn selected_or_all(&self) -> Vec<RepoId> {
-        let selected = self.core.action_context().selected;
-        if selected.is_empty()
-            && let Some(set) = self.core.active_set()
-        {
-            return set.members.iter().map(|m| m.path.id()).collect();
-        }
-        selected
+    /// The label of the key bound to action `id` (rebindable), if any.
+    pub(super) fn shortcut(&self, id: &str) -> Option<String> {
+        crate::keys::label_for(&self.core.extensions().keymap, id)
+    }
+
+    /// The batch selection, as commands on "the selected repos (all when
+    /// none)" take it: the core resolves an empty one
+    /// ([`Core::resolve_targets`]).
+    pub(super) fn selection(&self) -> Vec<RepoId> {
+        self.core.action_context().selected
     }
 
     /// Runs the action `id` of the registry: the one way the palette, the
@@ -93,16 +93,16 @@ impl Workspace {
             "project.set_icon" => self.open_palette(PaletteKind::Icon, window, cx),
             "project.set_icon_image" => self.pick_icon_image(cx),
             "repos.set_category" => {
-                let targets = self.core.action_context().selected;
+                let targets = self.selection();
                 self.set_category(targets, window, cx);
             }
             "forge.accounts" => self.open_forge(ForgeTab::Accounts, window, cx),
             "forge.pull_requests" => {
-                let ids = self.selected_or_all();
+                let ids = self.selection();
                 self.open_forge(ForgeTab::Open(ids), window, cx);
             }
             "forge.create_pull_requests" => {
-                let ids = self.selected_or_all();
+                let ids = self.selection();
                 self.open_forge(ForgeTab::Create(ids), window, cx);
             }
             "forge.open_pull_request" => self.open_pull_request(cx),
@@ -117,11 +117,10 @@ impl Workspace {
 
     /// Opens the pull request of the active / selected repo in the browser.
     fn open_pull_request(&mut self, cx: &mut Context<Self>) {
-        let ctx = self.core.action_context();
-        let target = ctx
-            .active_repo
-            .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]));
-        let url = target
+        let url = self
+            .core
+            .action_context()
+            .target_repo()
             .and_then(|id| self.core.row(id))
             .and_then(|r| r.forge.pull_request().map(|pr| pr.url.clone()));
         match url {
@@ -131,11 +130,10 @@ impl Workspace {
     }
 
     fn open_ci(&mut self, cx: &mut Context<Self>) {
-        let ctx = self.core.action_context();
-        let target = ctx
-            .active_repo
-            .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]));
-        let url = target
+        let url = self
+            .core
+            .action_context()
+            .target_repo()
             .and_then(|id| self.core.row(id))
             .and_then(|r| r.ci.run().and_then(|run| run.url.clone()));
         match url {

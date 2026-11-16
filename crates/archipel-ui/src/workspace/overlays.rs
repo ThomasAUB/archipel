@@ -169,7 +169,7 @@ impl Workspace {
                     .keymap
                     .keys_for(a.id())
                     .first()
-                    .map(|k| crate::keys::gpui_keystroke(k))
+                    .map(|k| crate::keys::label(k))
                     .unwrap_or_default(),
             })
             .collect()
@@ -339,7 +339,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let targets = self.selected_or_all();
+        let targets = self.selection();
         match kind {
             PaletteKind::Projects => match value.as_str() {
                 "+folder" => self.new_project_from_folder(cx),
@@ -451,7 +451,7 @@ impl Workspace {
         if self.core.project().is_none() {
             return;
         }
-        let (core, scope) = (self.core.clone(), self.selected_or_all());
+        let (core, scope) = (self.core.clone(), self.selection());
         let panel = cx.new(|cx| BranchesPanel::new(core, scope, cx));
         let sub = cx.subscribe_in(
             &panel,

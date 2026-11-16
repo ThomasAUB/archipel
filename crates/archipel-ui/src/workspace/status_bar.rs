@@ -46,8 +46,31 @@ impl Workspace {
             .bg(color(cx, T::BgPanel))
             .border_t_1()
             .border_color(color(cx, T::BorderSubtle))
-            .child(section("OPERATIONS  (Ctrl+J)", cx))
+            .child(section(
+                match self.shortcut("drawer.toggle") {
+                    Some(key) => format!("OPERATIONS  ({key})"),
+                    None => "OPERATIONS".to_owned(),
+                },
+                cx,
+            ))
             .children(lines)
+    }
+
+    /// The status bar's line when it has nothing to say: the main
+    /// shortcuts, as bound now (unbound ones left out).
+    fn shortcut_hints(&self) -> String {
+        [
+            ("palette.projects", "switch project"),
+            ("palette.actions", "actions"),
+            ("commit.open", "commit"),
+            ("history.undo", "undo"),
+            ("repos.toggle_hidden", "hide"),
+            ("window.new", "new window"),
+        ]
+        .into_iter()
+        .filter_map(|(id, what)| self.shortcut(id).map(|key| format!("{key} {what}")))
+        .collect::<Vec<_>>()
+        .join(" · ")
     }
 
     pub(super) fn render_status(
@@ -55,9 +78,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let text = self.notice.clone().or_else(|| self.warnings.first().cloned()).unwrap_or_else(|| {
-            "Ctrl+P switch project · Ctrl+Shift+P actions · Ctrl+K commit · Ctrl+Z undo · Ctrl+H hide · Ctrl+N new window".into()
-        });
+        let text = self
+            .notice
+            .clone()
+            .or_else(|| self.warnings.first().cloned())
+            .unwrap_or_else(|| self.shortcut_hints());
         div()
             .id("status")
             .h(px(24.0))

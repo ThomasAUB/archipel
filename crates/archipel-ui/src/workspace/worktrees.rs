@@ -96,7 +96,8 @@ impl Workspace {
             return;
         }
         let core = self.core.clone();
-        let selected = self.selected_or_all();
+        // Every targeted repo checked: the set's in a set view.
+        let selected = self.core.resolve_targets(&self.selection());
         let dialog = cx.new(|cx| NewSetDialog::new(core, selected, window, cx));
         let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| {
             this.on_worktree_dialog(e, window, cx);
@@ -159,9 +160,7 @@ impl Workspace {
     /// The worktree row the worktree actions apply to: the active tab's,
     /// else the single selected row.
     pub(super) fn target_worktree(&self) -> Option<RepoId> {
-        let ctx = self.core.action_context();
-        ctx.active_repo
-            .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]))
+        self.core.action_context().target_repo()
     }
 
     /// Runs a worktree UI command of the action palette.

@@ -339,6 +339,11 @@ impl RepoView {
         };
         let hover = color(cx, T::BgHover);
         let path = self.path.as_path().display().to_string();
+        let switch_hint =
+            match crate::keys::label_for(&self.core.extensions().keymap, "palette.worktrees") {
+                Some(key) => format!("Click: switch worktree ({key})"),
+                None => "Click: switch worktree".to_owned(),
+            };
         Some(
             div()
                 .id("worktree-chip")
@@ -350,12 +355,7 @@ impl RepoView {
                 .text_color(color(cx, T::FgMuted))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
-                .tooltip(move |_, cx| {
-                    TextTooltip::view(
-                        &[path.clone(), "Click: switch worktree (Ctrl+Shift+O)".into()],
-                        cx,
-                    )
-                })
+                .tooltip(move |_, cx| TextTooltip::view(&[path.clone(), switch_hint.clone()], cx))
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(StagingEvent::SwitchWorktree)))
                 .child(label)
                 .into_any_element(),
