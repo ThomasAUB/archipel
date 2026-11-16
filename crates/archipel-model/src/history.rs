@@ -58,9 +58,11 @@ impl CommitMeta {
 /// Order of the topology walk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WalkOrder {
-    /// `--topo-order` with committer date tie breaks (what graph views use).
-    #[default]
+    /// `--topo-order`: keeps each line of history together, so an older commit
+    /// of one branch can be listed above newer commits of another.
     Topological,
-    /// Committer date, newest first (`--date-order`).
+    /// Committer date, newest first, never a parent above its child
+    /// (`--date-order`); what graph views use, as rows read chronologically.
+    #[default]
     Date,
 }

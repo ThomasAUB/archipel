@@ -63,7 +63,7 @@ impl GraphOptions {
             checkpoint_interval: settings.graph_checkpoint_interval,
             overscan: settings.graph_overscan,
             meta_cache_bytes: settings.commit_cache_bytes,
-            walk_order: WalkOrder::Topological,
+            walk_order: WalkOrder::Date,
             search_chunk_rows: Self::DEFAULT_SEARCH_CHUNK_ROWS,
             stream_rows: Self::DEFAULT_STREAM_ROWS,
         }
