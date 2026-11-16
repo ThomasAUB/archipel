@@ -175,10 +175,24 @@ pub enum Command {
 pub struct ActionContext {
     /// A project is open.
     pub project_open: bool,
-    /// Repos selected in the dashboard (or the active repo tab).
+    /// Repos selected in the dashboard, the batch selection. Commands on
+    /// "the selected repos (all when none)" take it as is: the core
+    /// resolves an empty one (`App::resolve_targets`).
     pub selected: Vec<RepoId>,
     /// The repo of the active tab, if it is a repo tab.
     pub active_repo: Option<RepoId>,
+}
+
+impl ActionContext {
+    /// The one repo an action on a single repo acts on: the active tab's,
+    /// else the selected repo when exactly one is.
+    #[must_use]
+    pub fn target_repo(&self) -> Option<RepoId> {
+        self.active_repo.or(match self.selected[..] {
+            [only] => Some(only),
+            _ => None,
+        })
+    }
 }
 
 /// An action of the palette.
@@ -287,12 +301,7 @@ fn with_selection(ctx: &ActionContext) -> bool {
     ctx.project_open && !ctx.selected.is_empty()
 }
 fn with_repo(ctx: &ActionContext) -> bool {
-    ctx.project_open && (ctx.active_repo.is_some() || ctx.selected.len() == 1)
-}
-
-fn target_repo(ctx: &ActionContext) -> Option<RepoId> {
-    ctx.active_repo
-        .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]))
+    ctx.project_open && ctx.target_repo().is_some()
 }
 
 /// All actions, by id.
@@ -366,13 +375,13 @@ impl ActionRegistry {
             "history.undo",
             "Undo last operation",
             with_repo,
-            |c| target_repo(c).map(Command::Undo),
+            |c| c.target_repo().map(Command::Undo),
         )));
         r.register(Arc::new(SimpleAction::new(
             "history.redo",
             "Redo",
             with_repo,
-            |c| target_repo(c).map(Command::Redo),
+            |c| c.target_repo().map(Command::Redo),
         )));
         r.register(Arc::new(SimpleAction::new(
             "tabs.next",
@@ -398,7 +407,7 @@ impl ActionRegistry {
             "repo.open",
             "Open repository tab",
             with_repo,
-            |c| target_repo(c).map(Command::OpenRepoTab),
+            |c| c.target_repo().map(Command::OpenRepoTab),
         )));
         r
     }

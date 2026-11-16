@@ -247,6 +247,26 @@ fn fetch_runs_once_per_repo_and_all_means_repos() {
 }
 
 #[test]
+fn all_means_every_shown_repo_and_hidden_repos_are_never_targets() {
+    let e = env();
+    loaded(&e);
+    let (r0, r1) = (e.repos[0].id(), e.repos[1].id());
+    let feat = e
+        .app
+        .all_rows()
+        .into_iter()
+        .find(DashboardRow::is_worktree)
+        .unwrap()
+        .id;
+    // All: the repos, not their worktrees; a worktree picked is itself.
+    assert_eq!(e.app.resolve_targets(&[]), [r0, r1]);
+    assert_eq!(e.app.resolve_targets(&[feat]), [feat]);
+    e.app.dispatch(Command::HideRepos(vec![r1])).unwrap();
+    assert_eq!(e.app.resolve_targets(&[]), [r0]);
+    assert!(e.app.resolve_targets(&[r1]).is_empty());
+}
+
+#[test]
 fn create_open_and_remove_a_worktree() {
     let e = env();
     loaded(&e);
@@ -366,6 +386,8 @@ fn a_worktree_set_shows_its_members_in_place_of_their_repos() {
             .contains("[agent/one]")
     );
     // Batch actions on "all" target the members.
+    let shown: Vec<RepoId> = e.app.visible_rows().iter().map(|r| r.id).collect();
+    assert_eq!(e.app.resolve_targets(&[]), shown);
     wait_until(&e.app, "members read", |app| {
         app.visible_rows().iter().all(|r| r.summary().is_some())
     });

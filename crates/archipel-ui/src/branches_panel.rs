@@ -321,7 +321,11 @@ impl Render for BranchesPanel {
     #[allow(clippy::too_many_lines)] // declarative element tree
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let scope = match self.scope.len() {
-            0 => "every repository".to_owned(),
+            // None selected: every repo, or those of the set shown.
+            0 => match self.core.active_set() {
+                Some(set) => format!("the repositories of worktree set “{}”", set.name),
+                None => "every repository".to_owned(),
+            },
             1 => "the selected repository".to_owned(),
             n => format!("{n} selected repositories"),
         };

@@ -8,6 +8,7 @@ use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, KeyDownEvent, Window, div};
 
+use crate::keys::fixed_label;
 use crate::theme::color;
 use crate::widgets::{SHORT_OID, button, primary_button};
 
@@ -113,10 +114,16 @@ impl RepoView {
                     }
                 }))
                 .child(Textarea::new(&edit.message))
-                .child(div().text_xs().text_color(color(cx, T::FgMuted)).child(
-                    "The commits after it are rewritten on top, unchanged; pushed commits \
-                     then need a force push. Ctrl+Enter saves, Esc cancels.",
-                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(color(cx, T::FgMuted))
+                        .child(format!(
+                            "The commits after it are rewritten on top, unchanged; pushed commits \
+                     then need a force push. {} saves, Esc cancels.",
+                            fixed_label("ctrl-enter")
+                        )),
+                )
                 .child(
                     div()
                         .flex()

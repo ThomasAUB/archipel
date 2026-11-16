@@ -241,12 +241,12 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_palette(PaletteKind::Projects, window, cx);
                     }))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(color(cx, T::FgSubtle))
-                            .child("PROJECT  (Ctrl+P)"),
-                    )
+                    .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
+                        match self.shortcut("palette.projects") {
+                            Some(key) => format!("PROJECT  ({key})"),
+                            None => "PROJECT".to_owned(),
+                        },
+                    ))
                     .child(match identity {
                         None => div().child("No project — open or create one"),
                         Some(identity) => div()

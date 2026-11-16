@@ -275,7 +275,7 @@ impl Workspace {
         let subtle = color(cx, T::FgSubtle);
         let item = |eid: &'static str,
                     label: String,
-                    shortcut: Option<&'static str>,
+                    shortcut: Option<String>,
                     command: Command,
                     cx: &mut Context<Self>| {
             div()
@@ -299,11 +299,13 @@ impl Workspace {
         } else {
             String::new()
         };
-        let (hide_label, hide_shortcut) = if all_hidden {
-            (format!("Unhide{plural}"), None)
+        let hide_label = if all_hidden {
+            format!("Unhide{plural}")
         } else {
-            (format!("Hide{plural}"), Some("Ctrl+H"))
+            format!("Hide{plural}")
         };
+        // The same key hides and unhides.
+        let hide_shortcut = self.shortcut("repos.toggle_hidden");
         let menu = context_menu(cx)
             .child(item(
                 "menu-open",

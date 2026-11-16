@@ -299,12 +299,13 @@ pub(crate) fn current<V: Staging>(v: &mut V, file: Option<&str>, cx: &gpui_kit::
 /// The header's buttons and note while editing.
 pub(crate) fn render_bar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
     let edit = v.panel().edit.as_ref()?;
+    let save_key = crate::keys::fixed_label("ctrl-s");
     let note = if edit.armed_close {
-        "Unsaved changes: Esc again discards them"
+        "Unsaved changes: Esc again discards them".to_owned()
     } else if is_dirty(edit, cx) {
-        "Modified · Ctrl+S saves · Esc back to the diff"
+        format!("Modified · {save_key} saves · Esc back to the diff")
     } else {
-        "Ctrl+S saves · Esc back to the diff"
+        format!("{save_key} saves · Esc back to the diff")
     };
     Some(
         div()
