@@ -346,6 +346,57 @@ The largest phase.
 
 **Exit:** stats on the 100k-commit repo computed without RSS exceeding the cache budget; incremental update after a new commit < 1 s.
 
+### Phase 8 — Worktrees (§10, P1)
+
+UI/UX: [WORKTREES.md](WORKTREES.md) (cited as W§n below). Four slices, each shippable on its own and in this order; a slice ends with its UI.md entries and the spec's "Implemented" note updated.
+
+**Decisions.**
+- A linked worktree is a `RepoPath` like any repo, with its own `RepoId` (derived from its path, as today), so every existing per-repo code path (summary, watcher, Quick Edit Pane, Repo View, journal, forge status, forecast) works on it unchanged. What is new is the *relation* to its main worktree, held beside the project's repo list, never inside `RepoEntry`.
+- Worktrees are discovered, not stored: the project file keeps only `copy_to_worktrees`; sets, expanded groups and the Set Selector choice go to the personal UI state (`UiStateStore`).
+- Writes go through the `git` CLI (`git worktree add/remove/lock/unlock/move/prune/repair`), as every write does; the list is read with `git worktree list --porcelain -z` (CLI first: `gix` support is partial; a `gix` reader can replace it later behind the same trait, with a differential test).
+- An ADR (`0004-worktrees.md`) records the above, the location template and the undo design.
+
+**8.1 — Discover and show (W§3, W§4.1–4.4, W§9).**
+1. Model (`archipel-model`): `WorktreeInfo { path, head: HeadRef, is_main, is_bare, locked: Option<String>, prunable: Option<String> }`; port `WorktreeReader::worktrees(repo)` in `ports/git.rs`; `MemoryGit` support in `testing.rs`.
+2. CLI adapter (`archipel-git/src/cli/read.rs`): porcelain `-z` parser in `parse/`, unit tests on recorded output (main, linked, detached, locked with reason, prunable, bare main).
+3. Project grouping (`archipel-project` / `archipel-app::projects`): a `WorktreeIndex` mapping each repo to its linked worktrees, built from `worktrees()` of every visible repo; `archipel.toml` entries that are linked worktrees of a listed repo are folded under it (W§3), others get the "worktree of …" hint. The folder scan keeps finding them (`DiscoveredKind::GitFile`) but no longer adds a linked worktree whose main repo is in the project.
+4. Watching (`archipel-watch`): `<common_dir>/worktrees/` added to the shallow watch set; a change there invalidates the repo's worktree list only. A linked worktree gets its own watcher only while visible (expanded, in the active set, or in a tab); otherwise its summary is refreshed on window focus, reusing the degraded path of `app/refresh.rs`.
+5. Background fetch (`app/auto_fetch.rs`): keyed by common dir, so a repo and its worktrees are fetched once; the Fetch column of worktree rows reads the repo's.
+6. View models (`archipel-app::dashboard`, `view.rs`): `DashboardRow` gains `worktree: Option<WorktreeRowInfo>` (parent `RepoId`, locked / missing); child rows ordered under their parent whatever the sort; filter rule "parent kept, dimmed, when only a child matches"; Filter Chip **Worktrees**; expanded state in UI state.
+7. UI (`archipel-ui`): Worktree Count and Sidebar Worktree Rows (`workspace`), Dashboard Worktree Rows (reuse the Dependency Tree connectors of `render_tree`), Repo Tab label `repo · branch` + glyph (`app/tabs.rs`), Refs Panel **WORKTREES** section and branch glyphs (`repo_view`), Worktree Chip in the Repo Toolbar.
+8. Worktree Switcher: a `PaletteKind` over every worktree of the project; `ctrl-shift-o` = `palette.worktrees` in `keymap.rs` (W§12 q3: check it against text inputs first).
+
+*Exit:* a fixture repo with 3 linked worktrees (one locked, one missing, one detached) shows nested everywhere; creating / removing a worktree from a terminal shows up within one debounce; idle RSS of the 20-repo fixture with 3 collapsed worktrees per repo within 5 MB of the same project without worktrees.
+
+**8.2 — Guard rails (W§7).** Small, high value, independent of 8.3.
+1. `BranchInfo` gains `worktree: Option<PathBuf>` (the other worktree that has it checked out), filled from the `WorktreeIndex` (no extra Git call).
+2. Checkout of such a branch: the action layer (`archipel-app::actions`) catches it **before** calling Git and returns a choice (Open that worktree / Check out detached / Cancel) rendered as a Prompt Palette; batch checkout skips with reason "in worktree …".
+3. Delete branch: refused with **Remove worktree…**; Drop Menu entries rebase / reset / merge onto it disabled with the reason; Branches Panel never pre-checks it.
+4. Undo (`app/undo.rs`, `archipel-ops::undo`): refuse restoring a ref that is the HEAD of another worktree, with the reason.
+
+*Exit:* each row of the W§7 table has an integration test on the fixture.
+
+**8.3 — Create, open, remove (W§6, W§8).**
+1. Port `WorktreeWriter`: `add(repo, &WorktreeAddRequest { path, target: CheckoutTarget | NewBranch { name, base } })`, `remove(repo, path, force)`, `lock / unlock`, `move_to`, `prune`, `repair`. CLI implementation in `cli/write.rs`, integration tests on real temp repos (including Windows long paths and a path with spaces).
+2. Location template: settings `worktree_location` (personal, `archipel-model::settings`), placeholders `{project} {repo} {branch} {set}`, branch slug (`/` → `-`, characters forbidden on any OS removed, as for project paths in spec §1); pure function, unit-tested.
+3. `copy_to_worktrees` in `RepoEntry` (`archipel.toml`, `/`-relative globs, deterministic output, round-trip test); copying done through `WorktreeFiles` after `add`, ignoring missing files, never following links outside the main worktree.
+4. Submodules: optional `update_submodules(--init --recursive)` in the new worktree (existing `SubmoduleWriter`).
+5. Journal: new `OperationKind::WorktreeAdd` / `WorktreeRemove`. Remove records the worktree path, its HEAD (`HeadRef`), the branch tip, and a `snapshot_worktree` OID taken in the worktree first; undo = `worktree add` at the same path on that branch (recreating it from the tip), then `restore_paths`. Undo of add = remove when the worktree is still clean, else refused. Redo symmetrical.
+6. Remove's loss report: uncommitted changes (`changes`), unpushed commits (`is_ancestor` against every remote-tracking ref), in-progress op (`GitDirs::in_progress` on the worktree's git dir) — one function shared with 8.4's Finish dialog.
+7. UI: New Worktree dialog (a new Overlay, `worktree_dialog.rs`), Worktree Menu (`menu.rs`, every W§6.5 entry), Remove Confirm Dialog with second click, entry points of W§6.1 (Graph Menu, Refs Panel header +, Branch button, Row Menu, drag onto WORKTREES), "Open in terminal / external editor" from personal settings (new settings `terminal_command`, `editor_command` if not already present; none in `archipel.toml`).
+
+*Exit:* create → edit → remove with changes → undo restores the files byte for byte (CRLF and untracked files included); remove refused while a rebase is in progress; template output identical on Windows and Linux for the same inputs.
+
+**8.4 — Worktree Sets (W§5).**
+1. `WorktreeSet { name, branch, folder, members: Vec<(RepoId, PathBuf)> }` in personal UI state; reconciled with the `WorktreeIndex` on every refresh (missing members flagged, empty sets dropped).
+2. Batch creation in `archipel-ops::batch`: one `WorktreeAdd` per repo through the per-repo write queue, in parallel across repos, one `BatchId` (so undo is one unit), per-repo report + **Retry failed** (reuse the Commit Panel's report widget).
+3. Set Selector (`archipel-app::dashboard`): `SetView::{All, MainOnly, Set(id)}` per window; in a set view, rows are the set members, repos outside it hidden or dimmed; selection targets for batch actions, the Commit Panel pre-check and the Forge Panel's New pull request resolve to the members. Project Band stripe + window title suffix (`identity.rs`).
+4. Finish: loss report per member (8.3.6), remove checked members and merged branches as one batch, remove the Set Folder when empty.
+5. UI: New Worktree Set dialog (per-repo base dropdown, live branch-name validation, disabled rows with reason), Set Selector chip + menu, Manage sets, Finish dialog.
+6. P2 items of W§11 (set in new window, Worktree HEAD Marker, launching on a Set Folder, Move / Locate UI) stay in the P2 backlog.
+
+*Exit:* on a 5-repo fixture, create a set, edit files in 3 members, commit them from the Commit Panel in the set view, finish the set: worktrees, merged branches and the Set Folder are gone, and one undo brings the whole set back.
+
 ### P2 backlog
 
 - Import from submodules, `repo` manifest, VS Code `.code-workspace`.
@@ -353,7 +404,7 @@ The largest phase.
 - CI failure excerpt and rerun (spec §8) — done: `CiReader::ci_job_log` and `CiWriter` ports, provider methods `CiApi::job_log` / `log_excerpt` / `rerun_failed`, error rules in `archipel-forge::ci_log`, `App::ci_job_log` (cached per session) and `Command::RerunFailedCi`, the hoverable CI Tooltip.
 - Conflict forecast (spec §3) — done: the `MergeForecaster` port (`git merge-tree --write-tree`, rebase replayed commit by commit), `App::load_forecast` (background, one at a time, cached by commit ids), `DashboardRow::forecast`, the Sync column badge (`DashboardColumn::badge`), the "Will conflict" filter, the Forecast Badge in the Quick Edit Header and the Repo Toolbar.
 - macOS packaging and notarization.
-- Worktrees as first-class project members.
+- Worktrees as first-class project members — promoted to P1: Phase 8. Left here: Worktree Set in its own window, Worktree HEAD Marker, launching on a Set Folder, Move / Locate UI (W§11).
 
 ---
 
@@ -411,6 +462,7 @@ The largest phase.
 | Watcher limits / event storms on big worktrees | CPU spikes, stale data | Debounce, fine-grained invalidation, degrade to `.git/`-only + focus refresh. |
 | Credential prompts hang subprocesses | Blocked batch ops | `GIT_TERMINAL_PROMPT=0`, askpass helper, per-op timeouts and cancellation. |
 | Undo after rebase/push is ambiguous | Data loss perception | Only undo local ref moves; refuse with explanation otherwise; always confirm. |
+| Many worktrees (agent runs) multiply watchers and status reads | CPU and RAM over budget | Watch a worktree only while visible; one fetch per common dir; RSS exit criterion in Phase 8.1. |
 | Line-level staging edge cases (CRLF, no newline at EOF, binary) | Corrupted index | Patch generation tested against fixtures with those cases; fall back to file-level staging with a message. |
 
 ---
