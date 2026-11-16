@@ -24,7 +24,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Reads are bounded by [`READ_TIMEOUT`]: past it the read fails with
 /// [`ForgeError::Keychain`] and keeps waiting in the background, and later
 /// reads of that host fail at once until it ends (so a locked keychain costs
-/// one waiting thread per host, not one per forge request).
+/// a few waiting threads per host, not one per forge request). Reads that
+/// merely overlap all run: a refresh reads one host for many repos at once.
 pub struct KeychainCredentials {
     service: String,
     reads: BoundedReads,
@@ -69,22 +70,25 @@ impl CredentialStore for KeychainCredentials {
     }
 }
 
-/// Keychain reads that give up after a timeout, at most one in flight per host.
+/// Keychain reads that give up after a timeout.
 struct BoundedReads {
     timeout: Duration,
-    /// Hosts whose read outlived its timeout and is still waiting.
-    waiting: Arc<Mutex<HashSet<String>>>,
+    /// Hosts with a read that outlived its timeout and is still waiting:
+    /// further reads of them fail at once instead of piling up threads.
+    stuck: Arc<Mutex<HashSet<String>>>,
 }
 
 impl BoundedReads {
     fn new(timeout: Duration) -> Self {
         Self {
             timeout,
-            waiting: Arc::default(),
+            stuck: Arc::default(),
         }
     }
 
     /// Runs `read` for `host` on its own thread, waiting at most the timeout.
+    /// Concurrent reads of one host each run; only a host whose read timed
+    /// out (and has not ended since) fails at once.
     fn run<T: Send + 'static>(
         &self,
         host: &str,
@@ -96,28 +100,36 @@ impl BoundedReads {
                 self.timeout.as_secs()
             ))
         };
-        if !lock(&self.waiting).insert(host.to_owned()) {
+        if lock(&self.stuck).contains(host) {
             return Err(not_answering());
         }
         let (tx, rx) = mpsc::channel();
-        let waiting = Arc::clone(&self.waiting);
+        let stuck = Arc::clone(&self.stuck);
         let owned_host = host.to_owned();
         let spawned = std::thread::Builder::new()
             .name("archipel-keychain".into())
             .spawn(move || {
                 let result = read();
-                lock(&waiting).remove(&owned_host);
+                // Under the lock, so a caller timing out at this very moment
+                // either sees the result or marks the host before we unmark it.
+                let mut stuck = lock(&stuck);
                 // The caller may have given up already.
                 let _ = tx.send(result);
+                stuck.remove(&owned_host);
             });
         if let Err(e) = spawned {
-            lock(&self.waiting).remove(host);
             return Err(ForgeError::Keychain(format!("cannot start a read: {e}")));
         }
-        rx.recv_timeout(self.timeout).unwrap_or_else(|_| {
-            tracing::warn!(host, "keychain read timed out");
-            Err(not_answering())
-        })
+        if let Ok(result) = rx.recv_timeout(self.timeout) {
+            return result;
+        }
+        let mut stuck = lock(&self.stuck);
+        if let Ok(result) = rx.try_recv() {
+            return result;
+        }
+        stuck.insert(host.to_owned());
+        tracing::warn!(host, "keychain read timed out");
+        Err(not_answering())
     }
 }
 
@@ -221,6 +233,27 @@ mod tests {
                 }
                 Err(e) => panic!("host still blocked: {e}"),
             }
+        }
+    }
+
+    #[test]
+    fn overlapping_reads_of_one_host_all_succeed() {
+        let reads = Arc::new(BoundedReads::new(Duration::from_secs(5)));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let (reads, barrier) = (Arc::clone(&reads), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    reads.run("github.com", move || {
+                        // Every read is in flight before any returns.
+                        barrier.wait();
+                        Ok(i)
+                    })
+                })
+            })
+            .collect();
+        for (i, h) in handles.into_iter().enumerate() {
+            assert_eq!(h.join().unwrap().unwrap(), i);
         }
     }
 
