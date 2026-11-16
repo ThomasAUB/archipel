@@ -28,6 +28,8 @@ pub(super) enum RefRow {
     Header(&'static str, usize),
     /// A branch or tag; `current` when `HEAD` is on it.
     Tip { tip: RefTip, current: bool },
+    /// A worktree of the repo (spec §10).
+    Worktree(super::worktrees::WorktreeEntry),
 }
 
 /// Branches and tags of the refs panel, flattened into rows (a repo may
@@ -122,6 +124,20 @@ impl RepoView {
                             None => {
                                 let row = &refs.rows[i];
                                 let folded = matches!(row, RefRow::Header(t, _) if is_collapsed(t));
+                                if let RefRow::Worktree(entry) = row {
+                                    return Some(super::worktrees::render_worktree_row(
+                                        i, entry, cx,
+                                    ));
+                                }
+                                let elsewhere = match row {
+                                    RefRow::Tip { tip, .. } if tip.kind == RefKind::LocalBranch => {
+                                        this.worktree_branches
+                                            .get(&tip.name)
+                                            .map(|(_, p)| p.clone())
+                                    }
+                                    _ => None,
+                                };
+                                let repo = this.path.id();
                                 let ci = match row {
                                     RefRow::Tip { tip, current } if is_branch(tip) => {
                                         branch_ci_mark(
@@ -134,13 +150,15 @@ impl RepoView {
                                     }
                                     _ => None,
                                 };
-                                Some(render_ref_row(i, row, folded, ci, cx))
+                                Some(render_ref_row(i, row, folded, ci, elsewhere, repo, cx))
                             }
                             Some(0) => Some(render_ref_row(
                                 i,
                                 &RefRow::Header("SUBMODULES", subs.len()),
                                 is_collapsed("SUBMODULES"),
                                 None,
+                                None,
+                                this.path.id(),
                                 cx,
                             )),
                             Some(s) => subs.get(s - 1).map(|sub| render_submodule_row(i, sub, cx)),
@@ -201,11 +219,14 @@ pub(super) fn branch_drag_and_drop<E: StatefulInteractiveElement>(
 
 /// One row of the refs panel; `collapsed` for a header whose section is
 /// collapsed.
+#[allow(clippy::too_many_arguments)] // one row, everything it shows
 fn render_ref_row(
     i: usize,
     row: &RefRow,
     collapsed: bool,
     ci: Option<BranchCiMark>,
+    elsewhere: Option<std::path::PathBuf>,
+    repo: archipel_model::RepoId,
     cx: &mut Context<RepoView>,
 ) -> AnyElement {
     let base = div()
@@ -232,8 +253,12 @@ fn render_ref_row(
                         .child(if collapsed { "▸" } else { "▾" }),
                 )
                 .child(format!("{title} ({count})"))
+                .when(title == "WORKTREES", |d| {
+                    d.child(super::worktrees::new_worktree_button(repo, cx))
+                })
                 .into_any_element()
         }
+        RefRow::Worktree(entry) => super::worktrees::render_worktree_row(i, entry, cx),
         RefRow::Tip { tip, current } => {
             let hover = color(cx, T::BgHover);
             let name = tip.name.clone();
@@ -271,6 +296,22 @@ fn render_ref_row(
                     name
                 }))
                 .when_some(ci, |d, ci| d.child(render_ci_mark(i, ci, cx)))
+                .when_some(elsewhere, |d, path| {
+                    // Checked out in another worktree (spec §10).
+                    let where_ = format!("Checked out in the worktree at {}", path.display());
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("ref-wt-{i}")))
+                            .flex_none()
+                            .ml_1()
+                            .text_xs()
+                            .text_color(color(cx, T::FgSubtle))
+                            .tooltip(move |_, cx| {
+                                TextTooltip::view(std::slice::from_ref(&where_), cx)
+                            })
+                            .child(archipel_app::dashboard::WORKTREE_GLYPH),
+                    )
+                })
                 .into_any_element()
         }
     }

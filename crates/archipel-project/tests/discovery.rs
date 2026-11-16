@@ -11,7 +11,8 @@ use archipel_model::ids::RepoPath;
 use archipel_model::ports::project::RepoDiscovery;
 use archipel_model::project::{DiscoveredKind, DiscoveredRepo, ProjectDef, ScanOptions};
 use archipel_project::{
-    FsRepoDiscovery, RepoPresence, ScanStrategy, classify_repos, outermost_repo_root, repo_presence,
+    FsRepoDiscovery, RepoPresence, ScanStrategy, classify_repos, linked_worktree_main,
+    outermost_repo_root, repo_presence,
 };
 
 const STRATEGIES: [ScanStrategy; 2] = [ScanStrategy::Sequential, ScanStrategy::Parallel];
@@ -280,6 +281,7 @@ fn presence_of_repositories() {
         path: RepoPath::new(root.join(name)),
         alias: None,
         category: None,
+        copy_to_worktrees: Vec::new(),
     };
     let project = ProjectDef {
         name: "p".to_owned(),
@@ -333,4 +335,23 @@ fn real_submodule_is_detected_and_scanned() {
             rel("deps/child", DiscoveredKind::GitFile),
         ]
     );
+}
+
+#[test]
+fn linked_worktrees_are_told_from_repos_and_submodules() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = TestRepo::new().unwrap();
+    repo.write("a.txt", "a").unwrap();
+    repo.commit_all("init").unwrap();
+    let wt = dir.path().join("wt one");
+    repo.git(&["worktree", "add", "-q", "-b", "w", wt.to_str().unwrap()])
+        .unwrap();
+    let main = linked_worktree_main(&wt).unwrap();
+    // The repo's own folder (Git may spell its path differently).
+    assert!(main.join(".git").is_dir(), "{}", main.display());
+    assert_eq!(main.file_name(), repo.path().file_name());
+    assert!(linked_worktree_main(repo.path()).is_none());
+    let sub = dir.path().join("sub");
+    fake_git_file(&sub);
+    assert!(linked_worktree_main(&sub).is_none());
 }

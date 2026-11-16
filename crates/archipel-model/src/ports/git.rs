@@ -29,6 +29,7 @@ use crate::submodule::SubmoduleInfo;
 use crate::summary::RepoSummary;
 use crate::time::Timestamp;
 use crate::tree::TreeEntry;
+use crate::worktree::{WorktreeAddRequest, WorktreeInfo};
 
 /// Reads the dashboard summary and the working copy changes.
 pub trait StatusReader: Send + Sync {
@@ -420,4 +421,50 @@ pub trait SubmoduleWriter: Send + Sync {
         progress: &dyn ProgressSink,
         cancel: &CancelToken,
     ) -> Result<(), GitError>;
+}
+
+/// Lists the worktrees of a repository (WORKTREES.md §3).
+pub trait WorktreeReader: Send + Sync {
+    /// Every worktree of the repository `repo` belongs to (`repo` may be
+    /// any of them): the main one first, then the linked ones in Git's
+    /// order. A repository without linked worktrees returns its main one.
+    fn worktrees(&self, repo: &RepoPath) -> Result<Vec<WorktreeInfo>, GitError>;
+}
+
+/// Creates, removes, locks and prunes worktrees (`git worktree …`). `repo`
+/// is any worktree of the repository; worktree paths are absolute.
+pub trait WorktreeWriter: Send + Sync {
+    /// `git worktree add`: creates the worktree of `request`.
+    fn add_worktree(&self, repo: &RepoPath, request: &WorktreeAddRequest) -> Result<(), GitError>;
+    /// `git worktree remove` (`--force` with `force`: dirty or locked
+    /// worktrees too; the caller has said what would be lost).
+    fn remove_worktree(&self, repo: &RepoPath, path: &Path, force: bool) -> Result<(), GitError>;
+    /// Locks (`Some(reason)`) or unlocks (`None`) a worktree.
+    fn lock_worktree(
+        &self,
+        repo: &RepoPath,
+        path: &Path,
+        reason: Option<&str>,
+    ) -> Result<(), GitError>;
+    /// `git worktree prune`: forgets the worktrees whose folder is gone
+    /// (locked ones are kept).
+    fn prune_worktrees(&self, repo: &RepoPath) -> Result<(), GitError>;
+    /// `git worktree move`.
+    fn move_worktree(&self, repo: &RepoPath, from: &Path, to: &Path) -> Result<(), GitError>;
+}
+
+/// Copies a repository's local files (untracked or ignored: `.env`,
+/// local configs) into another worktree of it (spec §10).
+pub trait LocalFilesCopier: Send + Sync {
+    /// Copies the files of worktree `from` matching `patterns` (`/`-relative
+    /// globs: `*`, `?` within a component, `**` for any depth) to the same
+    /// relative paths in worktree `to`, never overwriting an existing file
+    /// and never following a link. Missing files are ignored. Returns the
+    /// relative paths copied, sorted.
+    fn copy_local_files(
+        &self,
+        from: &RepoPath,
+        to: &RepoPath,
+        patterns: &[String],
+    ) -> Result<Vec<String>, GitError>;
 }

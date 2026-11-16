@@ -10,8 +10,9 @@ use archipel_model::ports::{Coverage, Invalidation, InvalidationSink, Scope};
 use archipel_model::{GitError, ProjectId, RepoId, RepoPath, RepoSummary};
 use archipel_ops::{OpClass, OpSpec};
 
+use super::session::Session;
 use super::{App, AppEvent, lock};
-use crate::dashboard::RepoStatus;
+use crate::dashboard::{DashboardRow, RepoStatus};
 
 impl App {
     /// Recomputes every summary in parallel, then caches them.
@@ -80,6 +81,7 @@ impl App {
                     Err(e) => RepoStatus::Error(e.to_string()),
                 };
             }
+            share_fetch_time(s, repo);
             let finished_all =
                 (s.pending.is_empty() && !again).then(|| (s.id.clone(), s.rows.clone()));
             (finished_all, again)
@@ -119,21 +121,21 @@ impl App {
         let (project, targets): (ProjectId, Vec<(RepoId, RepoPath)>) = {
             let guard = lock(&self.session);
             let Some(s) = guard.as_ref() else { return };
-            let targets = s
-                .rows
-                .iter()
-                .filter(|r| !r.hidden && r.path.as_path().exists())
-                .map(|r| (r.id, r.path.clone()))
-                .collect();
+            let targets = watch_targets(s).map(|r| (r.id, r.path.clone())).collect();
             (s.id.clone(), targets)
         };
         let me = self.me.clone();
         let sink: Arc<dyn InvalidationSink> = Arc::new(move |inv: Invalidation| {
             let Some(app) = me.upgrade() else { return };
+            // Worktrees added, removed or locked: their list only.
+            if inv.scope.intersects(Scope::WORKTREES) {
+                app.load_worktrees(inv.repo);
+            }
+            let rest = inv.scope.without(Scope::WORKTREES);
             // Only `FETCH_HEAD` written: a fetch that moved no ref.
-            if inv.scope == Scope::FETCH {
+            if rest == Scope::FETCH {
                 app.note_fetched(inv.repo);
-            } else {
+            } else if !rest.is_empty() {
                 app.refresh_repo(inv.repo);
             }
         });
@@ -172,7 +174,7 @@ impl App {
     /// shown repo is not fully watched (degraded mode), refreshes every
     /// shown repo; then refreshes stale forge statuses.
     pub fn on_focus(&self) {
-        let degraded: Vec<RepoId> = lock(&self.session)
+        let stale: Vec<RepoId> = lock(&self.session)
             .as_ref()
             .map(|s| {
                 let watched = s
@@ -180,17 +182,56 @@ impl App {
                     .iter()
                     .filter(|w| w.coverage == Coverage::Full)
                     .count();
-                let shown = s.rows.iter().filter(|r| !r.hidden);
-                if watched == shown.clone().count() {
-                    Vec::new()
+                // Linked worktrees not shown are never watched: their
+                // cached summary is refreshed now (spec §10).
+                let unwatched = s
+                    .rows
+                    .iter()
+                    .filter(|r| !r.hidden && r.path.as_path().exists())
+                    .filter(|r| !s.worktree_visible(r));
+                if watched == watch_targets(s).count() {
+                    unwatched.map(|r| r.id).collect()
                 } else {
-                    shown.map(|r| r.id).collect()
+                    s.rows.iter().filter(|r| !r.hidden).map(|r| r.id).collect()
                 }
             })
             .unwrap_or_default();
-        for id in degraded {
+        for id in stale {
             self.refresh_repo(id);
         }
         self.refresh_forge_stale();
+    }
+}
+
+/// The rows to watch: shown, on disk, and for linked worktrees visible
+/// (spec §10: a collapsed worktree costs no watch).
+fn watch_targets(s: &Session) -> impl Iterator<Item = &DashboardRow> {
+    s.rows
+        .iter()
+        .filter(|r| !r.hidden && r.path.as_path().exists())
+        .filter(|r| s.worktree_visible(r))
+}
+
+/// Refs, so fetches, are shared by a repo and its worktrees (spec §10): the
+/// last fetch time of repo row `id`'s repo goes to every row of it.
+pub(super) fn share_fetch_time(s: &mut Session, id: RepoId) {
+    let main = s.main_of(id);
+    let Some(time) = s
+        .row(main)
+        .and_then(|r| r.summary())
+        .and_then(|x| x.last_fetch)
+    else {
+        return;
+    };
+    for row in s
+        .rows
+        .iter_mut()
+        .filter(|r| r.id == id || r.parent() == Some(main))
+    {
+        if let RepoStatus::Ready(summary) = &mut row.status
+            && summary.last_fetch < Some(time)
+        {
+            summary.last_fetch = Some(time);
+        }
     }
 }

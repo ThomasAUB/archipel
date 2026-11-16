@@ -26,8 +26,11 @@ impl Scope {
     pub const OP_STATE: Self = Self(1 << 4);
     /// Repository configuration changed (upstreams, remotes).
     pub const CONFIG: Self = Self(1 << 5);
+    /// Worktrees added, removed or locked (`<common dir>/worktrees/`): the
+    /// worktree list, not the summary.
+    pub const WORKTREES: Self = Self(1 << 6);
     /// Everything.
-    pub const ALL: Self = Self(0b11_1111);
+    pub const ALL: Self = Self(0b111_1111);
 
     /// Whether every bit of `other` is set.
     #[must_use]
@@ -39,6 +42,12 @@ impl Scope {
     #[must_use]
     pub fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
+    }
+
+    /// The bits of `self` not in `other`.
+    #[must_use]
+    pub fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 
     /// Whether no bit is set.

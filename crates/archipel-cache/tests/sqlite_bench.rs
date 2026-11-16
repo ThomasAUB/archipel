@@ -58,6 +58,7 @@ fn entry(n: u64) -> JournalEntry {
         after: snapshot(n + 1),
         worktree_snapshot: None,
         stash: None,
+        worktree: None,
         time: Timestamp(0),
         state: EntryState::Done,
     }

@@ -107,6 +107,17 @@ impl BatchTarget {
     }
 }
 
+/// One worktree to create in a batch.
+#[derive(Clone, Debug)]
+pub struct WorktreePlan {
+    /// The repo (its main worktree).
+    pub target: BatchTarget,
+    /// Where and what.
+    pub request: archipel_model::worktree::WorktreeAddRequest,
+    /// What to do after creating it.
+    pub setup: crate::worktree::WorktreeSetup,
+}
+
 /// Runs batch operations through the scheduler, in parallel across repos.
 pub struct BatchOps {
     scheduler: Arc<Scheduler>,
@@ -123,6 +134,58 @@ impl BatchOps {
             actions,
             counter: AtomicU64::new(0),
         }
+    }
+
+    /// Creates one worktree per repo of `plans`, in parallel across repos,
+    /// as one batch (a Worktree Set, spec §10). Each outcome holds the local
+    /// files copied.
+    pub async fn add_worktree_all(&self, plans: Vec<WorktreePlan>) -> BatchReport<Vec<String>> {
+        let batch = Some(self.new_batch_id());
+        let targets: Vec<BatchTarget> = plans.iter().map(|p| p.target.clone()).collect();
+        let plans: Arc<HashMap<RepoId, WorktreePlan>> =
+            Arc::new(plans.into_iter().map(|p| (p.target.id, p)).collect());
+        self.run(
+            &targets,
+            OpClass::Write,
+            "New worktree",
+            move |a, t, ctx| {
+                let Some(plan) = plans.get(&t.id) else {
+                    return Ok(Outcome::Skipped("no plan".into()));
+                };
+                let setup = crate::worktree::WorktreeSetup {
+                    batch,
+                    ..plan.setup.clone()
+                };
+                a.add_worktree(&t.path, &plan.request, &setup, ctx, ctx.cancel())
+                    .map(Outcome::Done)
+            },
+        )
+        .await
+    }
+
+    /// Removes one linked worktree per repo, as one batch (finishing a
+    /// Worktree Set). `targets` are the repos (main worktrees); `removals`
+    /// maps each to the worktree removed and how.
+    pub async fn remove_worktree_all(
+        &self,
+        targets: &[BatchTarget],
+        removals: HashMap<RepoId, (RepoPath, crate::worktree::RemoveOptions)>,
+    ) -> BatchReport<()> {
+        let batch = Some(self.new_batch_id());
+        let removals = Arc::new(removals);
+        self.run(
+            targets,
+            OpClass::Write,
+            "Remove worktree",
+            move |a, t, _| {
+                let Some((wt, options)) = removals.get(&t.id) else {
+                    return Ok(Outcome::Skipped("nothing to remove".into()));
+                };
+                let options = crate::worktree::RemoveOptions { batch, ..*options };
+                a.remove_worktree(&t.path, wt, options).map(Outcome::Done)
+            },
+        )
+        .await
     }
 
     /// A batch id unique across sessions (time-based, plus a counter).
@@ -210,6 +273,20 @@ impl BatchOps {
                     .any(|b| !b.is_remote && b.name == branch && b.is_head)
                 {
                     return Ok(Outcome::Skipped(format!("already on {branch}")));
+                }
+                // Git refuses a branch checked out in another worktree.
+                let here = t.path.id();
+                if let Some(wt) = a
+                    .ports()
+                    .worktrees
+                    .worktrees(&t.path)?
+                    .into_iter()
+                    .find(|w| w.branch() == Some(branch.as_str()) && w.path.id() != here)
+                {
+                    return Ok(Outcome::Skipped(format!(
+                        "in worktree {}",
+                        wt.path.as_path().display()
+                    )));
                 }
                 let target = if branches.iter().any(|b| !b.is_remote && b.name == branch) {
                     CheckoutTarget::Branch(branch.clone())

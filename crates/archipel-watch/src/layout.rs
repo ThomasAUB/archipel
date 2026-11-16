@@ -17,6 +17,8 @@ const GITDIR_PREFIX: &str = "gitdir:";
 const COMMONDIR_FILE: &str = "commondir";
 /// Directory holding refs, watched recursively when the whole Git dir is not.
 const REFS_DIR: &str = "refs";
+/// Directory of the linked worktrees' Git dirs, in the common directory.
+const WORKTREES_DIR: &str = "worktrees";
 
 /// Canonical locations of a repository's files.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +119,12 @@ impl RepoLayout {
         let refs = self.common_dir.join(REFS_DIR);
         if refs.is_dir() {
             out.push(WatchPath::new(refs, Depth::Recursive));
+        }
+        // Worktrees added or removed from anywhere (a terminal, an agent):
+        // the main worktree's business, a linked one only shows itself.
+        let worktrees = self.common_dir.join(WORKTREES_DIR);
+        if self.common_dir == self.git_dir && worktrees.is_dir() {
+            out.push(WatchPath::new(worktrees, Depth::Shallow));
         }
         out
     }

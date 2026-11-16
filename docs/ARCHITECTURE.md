@@ -86,6 +86,9 @@ Example for Git access — instead of one `GitRead` / `GitWrite` pair with dozen
 | `HistoryRewriter` | `merge`, `rebase`, `cherry_pick`, `revert`, `squash` (plumbing only: `commit-tree` + `update-ref`), `continue/abort` | drag & drop, repo actions |
 | `SubmoduleReader` | `submodules` (one level: initialized, pinned and checked-out commits) | dependency tree |
 | `SubmoduleWriter` | `update_submodules` (`--init`, `--recursive`) | dependency tree actions |
+| `WorktreeReader` | `worktrees` (`git worktree list --porcelain -z`) | worktree rows, guard rails |
+| `WorktreeWriter` | `add_worktree`, `remove_worktree`, `lock_worktree`, `prune_worktrees`, `move_worktree` | worktree actions, undo |
+| `LocalFilesCopier` | `copy_local_files` (`copy_to_worktrees` globs) | new worktrees |
 
 One struct may implement several traits (the `gix` adapter implements all readers, the CLI adapter implements all writers and readers as a fallback), but **nobody depends on the struct**, only on the traits.
 

@@ -14,9 +14,16 @@ use super::Workspace;
 use super::overlays::PaletteKind;
 
 impl Workspace {
-    /// The batch selection (empty: every repo).
+    /// The batch selection (empty: every repo); in a Worktree Set view,
+    /// none selected means the set's worktrees (spec §10).
     pub(super) fn selected_or_all(&self) -> Vec<RepoId> {
-        self.core.action_context().selected
+        let selected = self.core.action_context().selected;
+        if selected.is_empty()
+            && let Some(set) = self.core.active_set()
+        {
+            return set.members.iter().map(|m| m.path.id()).collect();
+        }
+        selected
     }
 
     pub(super) fn run_action(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -75,6 +82,9 @@ impl Workspace {
             }
             "forge.open_pull_request" => self.open_pull_request(cx),
             "forge.open_ci" => self.open_ci(cx),
+            worktree if worktree.starts_with("worktree.") || worktree == "palette.worktrees" => {
+                self.run_worktree_command(worktree, window, cx);
+            }
             other => self.notice = Some(format!("“{other}” is not available in this build")),
         }
         cx.notify();

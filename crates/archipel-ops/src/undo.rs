@@ -15,7 +15,10 @@ use archipel_model::journal::{
 use archipel_model::requests::{
     CheckoutTarget, ForceMode, PushRequest, ResetMode, SequenceAction, StashApplyMode,
 };
+use std::path::PathBuf;
+
 use archipel_model::summary::RepoOp;
+use archipel_model::worktree::{WorktreeAddRequest, WorktreeTarget};
 use archipel_model::{CancelToken, Oid, ProgressSink, RepoId, RepoPath};
 
 use crate::actions::{GitPorts, split_remote_ref};
@@ -63,6 +66,17 @@ pub enum UndoStep {
     ApplySnapshot(Oid),
     /// Write back the files of a path snapshot taken before a discard.
     RestorePaths(Oid),
+    /// Create a linked worktree again (undo of its removal).
+    AddWorktree(WorktreeAddRequest),
+    /// Remove a linked worktree (undo of its creation); it is clean.
+    RemoveWorktree(PathBuf),
+    /// Write back a path snapshot into another worktree than the repo's.
+    RestorePathsIn {
+        /// The worktree.
+        worktree: PathBuf,
+        /// The snapshot.
+        snapshot: Oid,
+    },
 }
 
 /// A compensating action for a push.
@@ -201,6 +215,7 @@ impl UndoService {
                 // A commit's "before" had its changes staged: move the branch only.
                 let soft = matches!(entry.kind, K::Commit | K::Amend);
                 let mut steps = ref_steps(from, to, soft);
+                self.check_other_worktrees(repo, entry, &steps)?;
                 if direction == Direction::Undo && entry.kind == K::Reset {
                     steps.extend(entry.worktree_snapshot.map(UndoStep::ApplySnapshot));
                 }
@@ -236,10 +251,180 @@ impl UndoService {
                 Direction::Undo => self.push_compensations(repo, entry),
                 Direction::Redo => Err(OpError::Refused("push again instead of redoing".into())),
             },
+            K::WorktreeRemove => self.worktree_remove_plan(repo, entry, direction),
+            K::WorktreeAdd => self.worktree_add_plan(repo, entry, direction),
             K::Fetch | K::Stage => Ok(UndoPlan::Nothing(
                 "this operation has nothing to undo".into(),
             )),
         }
+    }
+
+    /// Refuses moving a branch another worktree has checked out: it would
+    /// change that worktree's `HEAD` under it (spec §10).
+    fn check_other_worktrees(
+        &self,
+        repo: &RepoPath,
+        entry: &JournalEntry,
+        steps: &[UndoStep],
+    ) -> Result<(), OpError> {
+        let moved: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                UndoStep::UpdateRef { name, .. } => name.strip_prefix("refs/heads/"),
+                _ => None,
+            })
+            .collect();
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let here = repo.id();
+        for wt in self.git.worktrees.worktrees(repo)? {
+            if let Some(b) = wt.branch()
+                && wt.path.id() != here
+                && moved.contains(&b)
+            {
+                return Err(OpError::Refused(format!(
+                    "cannot undo “{}”: {b} is checked out in {} (it would change that worktree under it)",
+                    entry.label,
+                    wt.path.as_path().display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Undo of a worktree removal: its branch back if it was deleted, the
+    /// worktree again at the same path on the same branch, its files back.
+    fn worktree_remove_plan(
+        &self,
+        repo: &RepoPath,
+        entry: &JournalEntry,
+        direction: Direction,
+    ) -> Result<UndoPlan, OpError> {
+        if direction == Direction::Redo {
+            return Err(OpError::Refused(
+                "remove the worktree again instead of redoing".into(),
+            ));
+        }
+        let record = entry
+            .worktree
+            .as_ref()
+            .ok_or_else(|| OpError::Refused("no worktree was recorded".into()))?;
+        let worktrees = self.git.worktrees.worktrees(repo)?;
+        let path_id = RepoPath::new(record.path.clone()).id();
+        if worktrees.iter().any(|w| w.path.id() == path_id) {
+            return Err(OpError::Refused(format!(
+                "{} is a worktree again",
+                record.path.display()
+            )));
+        }
+        let mut steps = Vec::new();
+        let target = match &record.head {
+            HeadRef::Symbolic(name) => {
+                let branch = short(name);
+                let now = self.git.refs.resolve(repo, name)?;
+                if record.branch_changed {
+                    match (now, entry.before.target(name)) {
+                        (None, Some(tip)) => steps.push(UndoStep::UpdateRef {
+                            name: name.clone(),
+                            to: Some(tip),
+                            expected: None,
+                        }),
+                        (Some(_), _) => {
+                            return Err(OpError::Refused(format!(
+                                "cannot undo “{}”: a branch {branch} exists again",
+                                entry.label
+                            )));
+                        }
+                        (None, None) => {
+                            return Err(OpError::Refused(format!(
+                                "cannot undo “{}”: the tip of {branch} was not recorded",
+                                entry.label
+                            )));
+                        }
+                    }
+                } else if now.is_none() {
+                    return Err(OpError::Refused(format!(
+                        "cannot undo “{}”: {branch} was deleted since",
+                        entry.label
+                    )));
+                }
+                if let Some(w) = worktrees.iter().find(|w| w.branch() == Some(branch)) {
+                    return Err(OpError::Refused(format!(
+                        "cannot undo “{}”: {branch} is checked out in {} now",
+                        entry.label,
+                        w.path.as_path().display()
+                    )));
+                }
+                WorktreeTarget::Branch(branch.to_owned())
+            }
+            HeadRef::Detached(oid) => WorktreeTarget::Detached(oid.to_hex()),
+        };
+        steps.push(UndoStep::AddWorktree(WorktreeAddRequest {
+            path: record.path.clone(),
+            target,
+        }));
+        steps.extend(
+            entry
+                .worktree_snapshot
+                .map(|snapshot| UndoStep::RestorePathsIn {
+                    worktree: record.path.clone(),
+                    snapshot,
+                }),
+        );
+        Ok(UndoPlan::Steps { steps, note: None })
+    }
+
+    /// Undo of a worktree creation: removed again while clean, with the
+    /// branch it created while that branch did not move.
+    fn worktree_add_plan(
+        &self,
+        repo: &RepoPath,
+        entry: &JournalEntry,
+        direction: Direction,
+    ) -> Result<UndoPlan, OpError> {
+        if direction == Direction::Redo {
+            return Err(OpError::Refused(
+                "create the worktree again instead of redoing".into(),
+            ));
+        }
+        let record = entry
+            .worktree
+            .as_ref()
+            .ok_or_else(|| OpError::Refused("no worktree was recorded".into()))?;
+        let path = RepoPath::new(record.path.clone());
+        let exists = self
+            .git
+            .worktrees
+            .worktrees(repo)?
+            .iter()
+            .any(|w| w.path.id() == path.id());
+        let mut steps = Vec::new();
+        if exists {
+            if !self.git.status.changes(&path)?.is_empty() {
+                return Err(OpError::Refused(format!(
+                    "cannot undo “{}”: the worktree has changes (remove it instead)",
+                    entry.label
+                )));
+            }
+            steps.push(UndoStep::RemoveWorktree(record.path.clone()));
+        }
+        if let (true, HeadRef::Symbolic(name)) = (record.branch_changed, &record.head) {
+            let now = self.git.refs.resolve(repo, name)?;
+            if now != entry.after.target(name) {
+                return Err(OpError::Refused(format!(
+                    "cannot undo “{}”: {} moved since (it would lose commits)",
+                    entry.label,
+                    short(name)
+                )));
+            }
+            steps.push(UndoStep::UpdateRef {
+                name: name.clone(),
+                to: None,
+                expected: now,
+            });
+        }
+        Ok(UndoPlan::Steps { steps, note: None })
     }
 
     fn check_unchanged(
@@ -454,6 +639,13 @@ impl UndoService {
                 g.stash_writer.stash_apply(repo, 0, StashApplyMode::Pop)?;
             }
             UndoStep::RestorePaths(oid) => g.snapshots.restore_paths(repo, *oid)?,
+            UndoStep::AddWorktree(request) => g.worktree_writer.add_worktree(repo, request)?,
+            UndoStep::RemoveWorktree(path) => {
+                g.worktree_writer.remove_worktree(repo, path, false)?;
+            }
+            UndoStep::RestorePathsIn { worktree, snapshot } => g
+                .snapshots
+                .restore_paths(&RepoPath::new(worktree.clone()), *snapshot)?,
         }
         Ok(())
     }

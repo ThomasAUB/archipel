@@ -146,6 +146,7 @@ impl Workspace {
             _ => None,
         };
         let category_dropdown = self.render_category_filter(ui, cx);
+        let set_selector = self.render_set_selector(ui, cx);
         let filters = ext.filters.filters().iter().map(|f| {
             let id = f.id().to_owned();
             let active = active.contains(&id);
@@ -175,6 +176,7 @@ impl Workspace {
                     .gap_3()
                     .child(div().flex().flex_wrap().gap_1().children(filters))
                     .children(category_dropdown)
+                    .child(set_selector)
                     .child(view_chips)
                     .children(scan),
             )
@@ -256,9 +258,18 @@ impl Workspace {
         } else {
             self.dash_rows
                 .retain(|id, _| rows.iter().any(|r| r.id == *id));
+            let all_worktrees = ui
+                .filters
+                .iter()
+                .any(|f| f == archipel_app::dashboard::WORKTREES_FILTER);
+            let set_view = ui.active_set().is_some();
             rows.iter()
-                .map(|row| {
-                    let content = RowContent::new(&ext, row, now, &selected);
+                .enumerate()
+                .map(|(i, row)| {
+                    let mut content = RowContent::new(&ext, row, now, &selected);
+                    if !set_view {
+                        content.nesting = nesting(row, rows.get(i + 1), &ui, all_worktrees);
+                    }
                     let two_lines = content
                         .cells
                         .first()
@@ -576,14 +587,50 @@ fn row_frame(
         .hover(move |s| s.bg(hover))
 }
 
+/// Where a row stands among worktrees (spec §10): a worktree row under its
+/// repo, or a repo row with linked worktrees to list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Nesting {
+    /// A plain row.
+    None,
+    /// A repo row with `count` linked worktrees, listed under it or not.
+    Repo { count: u32, expanded: bool },
+    /// A worktree row under its repo; `last` of the group.
+    Worktree { last: bool },
+}
+
+/// The [`Nesting`] of `row`, followed by `next` in the list.
+pub(super) fn nesting(
+    row: &DashboardRow,
+    next: Option<&DashboardRow>,
+    ui: &UiState,
+    all: bool,
+) -> Nesting {
+    if row.parent().is_some() {
+        let last = next.is_none_or(|n| n.parent() != row.parent());
+        return Nesting::Worktree { last };
+    }
+    if row.linked_worktrees > 0 && ui.set_view != archipel_model::worktree::SetView::MainOnly {
+        return Nesting::Repo {
+            count: row.linked_worktrees,
+            expanded: all || ui.expanded_worktrees.contains(&row.id),
+        };
+    }
+    Nesting::None
+}
+
 /// What a dashboard row shows; its view is drawn again only when this
 /// changes.
 #[derive(PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // what the row view compares
 struct RowContent {
     id: RepoId,
     selected: bool,
     stale: bool,
     hidden: bool,
+    /// Listed for context only (a worktree of it matches): dimmed.
+    context: bool,
+    nesting: Nesting,
     cells: Vec<CellContent>,
 }
 
@@ -594,6 +641,8 @@ impl RowContent {
             selected: selected.contains(&row.id),
             stale: row.stale,
             hidden: row.hidden,
+            context: row.context_only,
+            nesting: Nesting::None,
             cells: cell_contents(ext, row, now, 0),
         }
     }
@@ -614,7 +663,9 @@ impl Render for DashRow {
         let c = &self.content;
         let id = c.id;
         let (on_click, on_menu) = (self.workspace.clone(), self.workspace.clone());
-        row_frame(id, c.selected, c.stale, c.hidden, cx)
+        let toggle = self.workspace.clone();
+        let nesting = c.nesting;
+        row_frame(id, c.selected, c.stale, c.hidden || c.context, cx)
             .size_full()
             .on_click(move |e, window, cx| {
                 let _ = on_click.update(cx, |this, cx| this.row_clicked(id, e, window, cx));
@@ -622,11 +673,93 @@ impl Render for DashRow {
             .on_mouse_down(MouseButton::Right, move |e, _, cx| {
                 let _ = on_menu.update(cx, |this, cx| this.open_row_menu(id, e, cx));
             })
-            .children(
-                c.cells
-                    .iter()
-                    .map(|cell| cell_element(cell, id, &self.core, cx)),
+            .children(c.cells.iter().map(|cell| {
+                let element = cell_element(cell, id, &self.core, cx);
+                if cell.column != 0 {
+                    return element;
+                }
+                let toggle = toggle.clone();
+                nested_cell(element, nesting, id, cx, move |cx| {
+                    let _ = toggle.update(cx, |this, cx| {
+                        this.dispatch(Command::ToggleWorktrees(id), cx);
+                    });
+                })
+            }))
+    }
+}
+
+/// The Repo cell of a row with its place among worktrees: the tree
+/// connector of a worktree row, the Worktree Count of a repo row (a click
+/// lists or unlists its worktrees: `on_toggle`).
+pub(super) fn nested_cell(
+    cell: AnyElement,
+    nesting: Nesting,
+    id: RepoId,
+    cx: &gpui_kit::App,
+    on_toggle: impl Fn(&mut gpui_kit::App) + 'static,
+) -> AnyElement {
+    let subtle = color(cx, T::FgSubtle);
+    match nesting {
+        Nesting::None => cell,
+        Nesting::Worktree { last } => div()
+            .flex_grow(WIDTHS[0])
+            .flex_basis(px(0.0))
+            .min_w_0()
+            .flex()
+            .items_start()
+            .child(
+                div()
+                    .flex_none()
+                    .pl_1()
+                    .pr_1()
+                    .font_family(crate::theme::mono_font(cx))
+                    .text_color(subtle)
+                    .child(if last { "└─" } else { "├─" }),
             )
+            .child(cell)
+            .into_any_element(),
+        Nesting::Repo { count, expanded } => {
+            let hover = color(cx, T::BgHover);
+            div()
+                .flex_grow(WIDTHS[0])
+                .flex_basis(px(0.0))
+                .min_w_0()
+                .flex()
+                .items_start()
+                .gap_1()
+                .child(cell)
+                .child(
+                    div()
+                        .id(SharedString::from(format!("wt-count-{id}")))
+                        .flex_none()
+                        .mr_2()
+                        .px_1()
+                        .rounded(radius(cx))
+                        .text_xs()
+                        .text_color(color(cx, T::FgMuted))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .tooltip(move |_, cx| {
+                            TextTooltip::view(
+                                &[format!(
+                                    "{count} linked worktree(s): click to {} them",
+                                    if expanded { "hide" } else { "list" }
+                                )],
+                                cx,
+                            )
+                        })
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            on_toggle(cx);
+                        })
+                        .child(format!(
+                            "{} {count} {}",
+                            archipel_app::dashboard::WORKTREE_GLYPH,
+                            if expanded { "▾" } else { "▸" }
+                        )),
+                )
+                .into_any_element()
+        }
     }
 }
 

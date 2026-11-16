@@ -20,10 +20,11 @@ use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefS
 use crate::ports::{
     BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, Coverage, DiffReader,
     DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
-    MergeForecaster, MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter,
-    RemoteInfo, RemoteOps, RemoteReader, RepoDiscovery, StashReader, StashWriter, StatsStore,
-    StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader,
-    UiStateStore, WatchHandle, WorktreeFiles, WorktreeSnapshots,
+    LocalFilesCopier, MergeForecaster, MergeToolLauncher, ProjectRegistry, ProjectSource,
+    RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RepoDiscovery, StashReader,
+    StashWriter, StatsStore, StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore,
+    TagWriter, TreeReader, UiStateStore, WatchHandle, WorktreeFiles, WorktreeReader,
+    WorktreeSnapshots, WorktreeWriter,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -38,6 +39,7 @@ use crate::summary::{HeadState, RepoSummary};
 use crate::time::Timestamp;
 use crate::tree::TreeEntry;
 use crate::ui_state::UiState;
+use crate::worktree::{WorktreeAddRequest, WorktreeInfo, WorktreeTarget};
 
 mod forge;
 pub use forge::{
@@ -95,6 +97,8 @@ pub struct FakeRepo {
     /// Incoming paths per `(ours, theirs)`, for
     /// `MergeForecaster::incoming_paths` (none when absent).
     pub incoming: HashMap<(Oid, Oid), Vec<String>>,
+    /// Linked worktrees (the main one is derived from the repo itself).
+    pub worktrees: Vec<WorktreeInfo>,
 }
 
 impl Default for FakeRepo {
@@ -117,6 +121,7 @@ impl Default for FakeRepo {
             pull_strategy: MergeStrategy::Merge,
             conflicts: HashMap::new(),
             incoming: HashMap::new(),
+            worktrees: Vec::new(),
         }
     }
 }
@@ -849,6 +854,194 @@ impl SubmoduleWriter for FakeGit {
     }
 }
 
+impl FakeGit {
+    /// The main repo whose linked worktrees list `path`, or `path` itself.
+    fn main_of(&self, path: &RepoPath) -> RepoPath {
+        lock(&self.repos)
+            .iter()
+            .find(|(_, r)| r.worktrees.iter().any(|w| w.path == *path))
+            .map_or_else(|| path.clone(), |(p, _)| p.clone())
+    }
+}
+
+/// Worktrees: the main one is the repo itself, the linked ones are
+/// [`FakeRepo::worktrees`]; a linked one may also be a repo of its own.
+impl WorktreeReader for FakeGit {
+    fn worktrees(&self, repo: &RepoPath) -> Result<Vec<WorktreeInfo>, GitError> {
+        let main = self.main_of(repo);
+        self.read(&main, "worktrees", |r| {
+            let mut out = vec![WorktreeInfo {
+                path: main.clone(),
+                head: Some(r.head.clone()),
+                head_oid: r.head_oid(),
+                is_main: true,
+                is_bare: false,
+                locked: None,
+                prunable: None,
+            }];
+            out.extend(r.worktrees.iter().cloned());
+            out
+        })
+    }
+}
+
+impl WorktreeWriter for FakeGit {
+    fn add_worktree(&self, repo: &RepoPath, request: &WorktreeAddRequest) -> Result<(), GitError> {
+        let main = self.main_of(repo);
+        self.record(
+            "worktree_add",
+            &main,
+            format!("{} {:?}", request.path.display(), request.target),
+        )?;
+        let path = RepoPath::new(request.path.clone());
+        let new_oid = self.fresh_oid();
+        let (head, refs) = self.with_repo(&main, |r| {
+            let base = |rev: Option<&str>| {
+                rev.and_then(|b| r.refs.get(&format!("refs/heads/{b}")).copied())
+                    .or_else(|| r.head_oid())
+                    .unwrap_or(new_oid)
+            };
+            let head = match &request.target {
+                WorktreeTarget::Branch(b) => HeadRef::Symbolic(format!("refs/heads/{b}")),
+                WorktreeTarget::TrackRemote(_) | WorktreeTarget::NewBranch { .. } => {
+                    let name = request.target.branch().unwrap_or_default().to_owned();
+                    let base = match &request.target {
+                        WorktreeTarget::NewBranch { base: b, .. } => base(b.as_deref()),
+                        _ => base(None),
+                    };
+                    r.refs.insert(format!("refs/heads/{name}"), base);
+                    HeadRef::Symbolic(format!("refs/heads/{name}"))
+                }
+                WorktreeTarget::Detached(rev) => HeadRef::Detached(base(Some(rev))),
+            };
+            let head_oid = match &head {
+                HeadRef::Symbolic(n) => r.refs.get(n).copied(),
+                HeadRef::Detached(o) => Some(*o),
+            };
+            r.worktrees.push(WorktreeInfo {
+                path: path.clone(),
+                head: Some(head.clone()),
+                head_oid,
+                is_main: false,
+                is_bare: false,
+                locked: None,
+                prunable: None,
+            });
+            (head, r.refs.clone())
+        });
+        let mut summary = RepoSummary::empty("main");
+        summary.head = match &head {
+            HeadRef::Symbolic(n) => HeadState::Branch(n.trim_start_matches("refs/heads/").into()),
+            HeadRef::Detached(o) => HeadState::Detached(*o),
+        };
+        self.insert(
+            &path,
+            FakeRepo {
+                summary,
+                refs,
+                head,
+                ..FakeRepo::default()
+            },
+        );
+        Ok(())
+    }
+
+    fn remove_worktree(&self, repo: &RepoPath, path: &Path, force: bool) -> Result<(), GitError> {
+        let main = self.main_of(repo);
+        self.record(
+            "worktree_remove",
+            &main,
+            format!("{} force={force}", path.display()),
+        )?;
+        let target = RepoPath::new(path);
+        self.with_repo(&main, |r| r.worktrees.retain(|w| w.path != target));
+        lock(&self.repos).remove(&target);
+        Ok(())
+    }
+
+    fn lock_worktree(
+        &self,
+        repo: &RepoPath,
+        path: &Path,
+        reason: Option<&str>,
+    ) -> Result<(), GitError> {
+        let main = self.main_of(repo);
+        self.record(
+            "worktree_lock",
+            &main,
+            format!("{} {reason:?}", path.display()),
+        )?;
+        let target = RepoPath::new(path);
+        self.with_repo(&main, |r| {
+            for w in r.worktrees.iter_mut().filter(|w| w.path == target) {
+                w.locked = reason.map(str::to_owned);
+            }
+        });
+        Ok(())
+    }
+
+    fn prune_worktrees(&self, repo: &RepoPath) -> Result<(), GitError> {
+        let main = self.main_of(repo);
+        self.record("worktree_prune", &main, "")?;
+        self.with_repo(&main, |r| {
+            r.worktrees
+                .retain(|w| w.prunable.is_none() || w.locked.is_some());
+        });
+        Ok(())
+    }
+
+    fn move_worktree(&self, repo: &RepoPath, from: &Path, to: &Path) -> Result<(), GitError> {
+        let main = self.main_of(repo);
+        self.record(
+            "worktree_move",
+            &main,
+            format!("{} -> {}", from.display(), to.display()),
+        )?;
+        let (from, to) = (RepoPath::new(from), RepoPath::new(to));
+        self.with_repo(&main, |r| {
+            for w in r.worktrees.iter_mut().filter(|w| w.path == from) {
+                w.path = to.clone();
+            }
+        });
+        let state = lock(&self.repos).remove(&from);
+        if let Some(state) = state {
+            self.insert(&to, state);
+        }
+        Ok(())
+    }
+}
+
+/// Copies are recorded as calls (`"copy_local_files"`, the patterns); files
+/// of [`FakeRepo::files`] whose path is a pattern are copied.
+impl LocalFilesCopier for FakeGit {
+    fn copy_local_files(
+        &self,
+        from: &RepoPath,
+        to: &RepoPath,
+        patterns: &[String],
+    ) -> Result<Vec<String>, GitError> {
+        self.record("copy_local_files", to, patterns.join(","))?;
+        let files: Vec<(String, Vec<u8>)> = self.read(from, "copy_local_files", |r| {
+            r.files
+                .iter()
+                .filter(|(p, _)| patterns.contains(p))
+                .map(|(p, b)| (p.clone(), b.clone()))
+                .collect()
+        })?;
+        let copied = self.with_repo(to, |r| {
+            let mut copied = Vec::new();
+            for (p, b) in files {
+                if !r.files.contains_key(&p) {
+                    r.files.insert(p.clone(), b);
+                    copied.push(p);
+                }
+            }
+            copied
+        });
+        Ok(copied)
+    }
+}
+
 /// Forecasts are recorded as calls (`"forecast"`, detail `ours..theirs
 /// strategy`), so tests can count them.
 impl MergeForecaster for FakeGit {
@@ -1126,7 +1319,8 @@ impl RepoDiscovery for FakeDiscovery {
 /// Fake change source: tests trigger invalidations by hand.
 #[derive(Default)]
 pub struct FakeChangeSource {
-    sinks: Mutex<Vec<(RepoId, Arc<dyn InvalidationSink>)>>,
+    sinks: Sinks,
+    next: AtomicU64,
     /// Coverage reported by new watches.
     pub coverage: Option<Coverage>,
 }
@@ -1134,7 +1328,11 @@ pub struct FakeChangeSource {
 impl FakeChangeSource {
     /// Sends an invalidation to every sink watching `repo`.
     pub fn trigger(&self, repo: RepoId, scope: crate::ports::Scope) {
-        for (r, sink) in lock(&self.sinks).iter() {
+        let sinks: Vec<_> = lock(&self.sinks)
+            .iter()
+            .map(|(_, r, s)| (*r, s.clone()))
+            .collect();
+        for (r, sink) in &sinks {
             if *r == repo {
                 sink.invalidate(crate::ports::Invalidation { repo, scope });
             }
@@ -1146,6 +1344,27 @@ impl FakeChangeSource {
     pub fn watch_count(&self) -> usize {
         lock(&self.sinks).len()
     }
+
+    /// The repos watched, one entry per active watch.
+    #[must_use]
+    pub fn watched(&self) -> Vec<RepoId> {
+        lock(&self.sinks).iter().map(|(_, r, _)| *r).collect()
+    }
+}
+
+/// The watches of a [`FakeChangeSource`]: id, repo, sink.
+type Sinks = Arc<Mutex<Vec<(u64, RepoId, Arc<dyn InvalidationSink>)>>>;
+
+/// Drops its watch from the fake when dropped, like a real handle.
+struct FakeWatchGuard {
+    id: u64,
+    sinks: Sinks,
+}
+
+impl Drop for FakeWatchGuard {
+    fn drop(&mut self) {
+        lock(&self.sinks).retain(|(id, _, _)| *id != self.id);
+    }
 }
 
 impl ChangeSource for FakeChangeSource {
@@ -1155,10 +1374,14 @@ impl ChangeSource for FakeChangeSource {
         _path: &RepoPath,
         sink: Arc<dyn InvalidationSink>,
     ) -> Result<WatchHandle, WatchError> {
-        lock(&self.sinks).push((repo, sink));
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        lock(&self.sinks).push((id, repo, sink));
         Ok(WatchHandle {
             coverage: self.coverage.unwrap_or(Coverage::Full),
-            guard: Box::new(()),
+            guard: Box::new(FakeWatchGuard {
+                id,
+                sinks: self.sinks.clone(),
+            }),
         })
     }
 }
@@ -1225,6 +1448,7 @@ mod tests {
             },
             worktree_snapshot: None,
             stash: None,
+            worktree: None,
             time: Timestamp(0),
             state: EntryState::Done,
         };

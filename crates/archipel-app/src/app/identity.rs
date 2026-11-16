@@ -31,6 +31,8 @@ pub struct ProjectIdentity {
     pub icon: Option<ProjectIcon>,
     /// One or two letters for badges.
     pub initials: String,
+    /// The Worktree Set the window shows, if any (spec §10).
+    pub set: Option<String>,
 }
 
 impl ProjectIdentity {
@@ -38,9 +40,13 @@ impl ProjectIdentity {
     /// An image icon cannot go in a title; a text one leads it.
     #[must_use]
     pub fn window_title(&self) -> String {
+        let set = self
+            .set
+            .as_ref()
+            .map_or_else(String::new, |s| format!(" [{s}]"));
         match self.icon.as_ref().and_then(ProjectIcon::text) {
-            Some(icon) => format!("{icon} {} — Archipel", self.name),
-            None => format!("{} — Archipel", self.name),
+            Some(icon) => format!("{icon} {}{set} — Archipel", self.name),
+            None => format!("{}{set} — Archipel", self.name),
         }
     }
 }
@@ -219,6 +225,7 @@ impl App {
             background_tint: s.def.settings.background_tint.filter(|&t| t > 0),
             icon,
             initials: initials(&s.def.name),
+            set: s.ui.active_set().map(|set| set.name.clone()),
         })
     }
 

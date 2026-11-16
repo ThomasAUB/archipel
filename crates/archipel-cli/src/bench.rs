@@ -165,6 +165,7 @@ fn project(name: &str, repos: &[RepoPath]) -> ProjectDef {
                 path: p.clone(),
                 alias: None,
                 category: None,
+                copy_to_worktrees: Vec::new(),
             })
             .collect(),
         settings: ProjectSettings::default(),

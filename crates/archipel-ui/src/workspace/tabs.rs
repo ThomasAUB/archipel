@@ -41,16 +41,30 @@ impl Render for TabGhost {
 impl Workspace {
     pub(super) fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.core.ui_state().unwrap_or_default();
-        let names: HashMap<RepoId, String> = self
+        let names: HashMap<RepoId, (String, Option<String>)> = self
             .core
             .rows()
             .into_iter()
-            .map(|r| (r.id, r.name))
+            .map(|r| {
+                // A worktree: `libfoo · feat/parser` with the glyph, its
+                // folder on hover (spec §10).
+                let path = r
+                    .is_worktree()
+                    .then(|| r.path.as_path().display().to_string());
+                let label = match &r.worktree {
+                    Some(_) => format!("{} {}", archipel_app::dashboard::WORKTREE_GLYPH, r.label()),
+                    None => r.name.clone(),
+                };
+                (r.id, (label, path))
+            })
             .collect();
         let tabs = ui.tabs.iter().enumerate().map(|(i, tab)| {
-            let label = match tab {
-                TabState::Dashboard => "Dashboard".to_owned(),
-                TabState::Repo(id) => names.get(id).cloned().unwrap_or_else(|| "repo".into()),
+            let (label, hover) = match tab {
+                TabState::Dashboard => ("Dashboard".to_owned(), None),
+                TabState::Repo(id) => names
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| ("repo".into(), None)),
             };
             let active = i == ui.active_tab;
             let mut el = div()
@@ -96,6 +110,11 @@ impl Workspace {
                 .on_drop(cx.listener(move |this, d: &TabDrag, _, cx| {
                     this.dispatch(Command::MoveTab { from: d.0, to: i }, cx);
                 }))
+                .when_some(hover, |d, path| {
+                    d.tooltip(move |_, cx| {
+                        crate::widgets::TextTooltip::view(std::slice::from_ref(&path), cx)
+                    })
+                })
                 .child(label.clone());
             if i > 0 {
                 let label = SharedString::from(label);
@@ -141,7 +160,7 @@ impl Workspace {
         }
         let row = self.core.rows().into_iter().find(|r| r.id == *id)?;
         let core = self.core.clone();
-        let view = cx.new(|cx| RepoView::new(core, row.path, row.name, window, cx));
+        let view = cx.new(|cx| RepoView::new(core, row.path.clone(), row.label(), window, cx));
         // Lives as long as the view.
         cx.subscribe_in(&view, window, Self::on_staging).detach();
         self.repo_views.insert(*id, view.clone());
@@ -159,6 +178,18 @@ impl Workspace {
     ) {
         match event {
             StagingEvent::OpenForge(tab) => self.open_forge(tab.clone(), window, cx),
+            StagingEvent::OpenRepo(id) => self.dispatch(Command::OpenRepoTab(*id), cx),
+            StagingEvent::NewWorktree(repo, start) => {
+                self.open_new_worktree(*repo, start, window, cx);
+            }
+            StagingEvent::RemoveWorktree(id) => self.open_remove_worktree(*id, window, cx),
+            StagingEvent::SwitchWorktree => {
+                self.open_palette(super::overlays::PaletteKind::Worktrees, window, cx);
+            }
+            StagingEvent::WorktreeMenu(id, position) => {
+                self.row_menu = Some((*id, *position));
+                cx.notify();
+            }
         }
     }
 }

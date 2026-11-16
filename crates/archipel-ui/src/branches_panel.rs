@@ -41,6 +41,8 @@ pub struct BranchesPanel {
     merged: Vec<BranchRow>,
     stale: Vec<BranchRow>,
     selected: HashSet<Key>,
+    /// Branches checked out in a linked worktree: never pre-checked.
+    in_worktree: HashSet<Key>,
     busy: bool,
     /// Delete clicked once: the next click deletes.
     armed: bool,
@@ -60,6 +62,7 @@ impl BranchesPanel {
             merged: Vec::new(),
             stale: Vec::new(),
             selected: HashSet::new(),
+            in_worktree: HashSet::new(),
             busy: true,
             armed: false,
             errors: Vec::new(),
@@ -78,8 +81,27 @@ impl BranchesPanel {
                 let min_age = Duration::from_secs(DEFAULT_STALE_BRANCH_DAYS * 86_400);
                 p.merged = view.merged_not_deleted().cloned().collect();
                 p.stale = view.stale(Timestamp::now(), min_age).cloned().collect();
+                // Branches checked out in a worktree: listed, never
+                // picked (spec §10: deleting them needs the worktree gone).
+                p.in_worktree = p
+                    .merged
+                    .iter()
+                    .chain(&p.stale)
+                    .filter(|r| {
+                        p.core
+                            .worktrees_of(r.repo_id)
+                            .iter()
+                            .any(|w| !w.is_main && w.branch() == Some(r.age.name.as_str()))
+                    })
+                    .map(key)
+                    .collect();
                 // Merged branches lose nothing when deleted: picked by default.
-                p.selected = p.merged.iter().map(key).collect();
+                p.selected = p
+                    .merged
+                    .iter()
+                    .map(key)
+                    .filter(|k| !p.in_worktree.contains(k))
+                    .collect();
                 p.errors = errors;
                 p.busy = false;
                 cx.notify();
@@ -240,6 +262,7 @@ impl BranchesPanel {
         for (i, row) in rows.iter().enumerate() {
             let k = key(row);
             let checked = self.selected.contains(&k);
+            let in_worktree = self.in_worktree.contains(&k);
             out.push(
                 div()
                     .id(SharedString::from(format!("b-{tag}-{i}")))
@@ -263,6 +286,13 @@ impl BranchesPanel {
                             .text_color(color(cx, T::FgMuted))
                             .child(row.repo.clone()),
                     )
+                    .when(in_worktree, |d| {
+                        d.child(
+                            div()
+                                .text_color(color(cx, T::FgSubtle))
+                                .child(archipel_app::dashboard::WORKTREE_GLYPH),
+                        )
+                    })
                     .child(
                         div()
                             .flex_1()

@@ -28,7 +28,7 @@ too; prefer the names of this document in prose and in new code.
 ├──────────────────────────────────────────────────────────────────────────┤
 │ Status Bar                                                               │
 └──────────────────────────────────────────────────────────────────────────┘
-  + Overlays on top: Palette, Commit Panel, Forge Panel, Branches Panel, Context Menus
+  + Overlays on top: Palette, Commit Panel, Forge Panel, Branches Panel, Worktree Dialogs, Context Menus
 ```
 
 | Name | What it is | Code |
@@ -211,13 +211,33 @@ An Overlay sits on a transparent backdrop: clicking outside it dismisses it
 | **Palette** | Fuzzy list with an input ([palette.rs](../crates/archipel-ui/src/palette.rs)). Its variants below. | — |
 | ↳ **Project Switcher** | Pick a project (recent first). | `Ctrl+P`, Project Header |
 | ↳ **Action Palette** | Every action by name. | `Ctrl+Shift+P` |
-| ↳ **Prompt Palette** | The Palette as a one-line prompt: checkout target, branch name, tag name, category (with suggestions), category rename, project color, background tint, icon. (`PaletteKind`) | Actions |
+| ↳ **Prompt Palette** | The Palette as a one-line prompt: checkout target, branch name, tag name, category (with suggestions), category rename, project color, background tint, icon, worktree lock reason, set rename. (`PaletteKind`) | Actions |
+| ↳ **Worktree Switcher** | Every worktree of the project (`repo · branch`, folder), open tabs first; Enter opens its Repo Tab. | `Ctrl+Shift+O`, Worktree Chip |
 | **Commit Panel** | Multi-repo commit (spec §4): repo list with staged-file previews, branch mismatch warning, one message, push option, per-repo report and Retry failed. ([commit_panel.rs](../crates/archipel-ui/src/commit_panel.rs)) | `Ctrl+K` |
 | **Forge Panel** | Forge integration (spec §8), with four **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (open PRs of the selected repos, merge with a confirming second click), **New pull request** (create PRs for the selected repos), **Clone** (into a folder, by default the project file's: from URLs typed or pasted, no account needed, or by browsing an account / org / group; clones join the Repo List expanded, selected and scrolled into view). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
 | **Branches Panel** | Branch cleanup across the selected repos (all when none), spec §7: **merged, not deleted** (pre-checked) and **stale** (unmerged, no commit for 90 days) local branches; Delete asks for a confirming second click, skips a branch that moved meanwhile; Undo on a repo restores its deleted branches one at a time. ([branches_panel.rs](../crates/archipel-ui/src/branches_panel.rs)) | Branches… chip, Action Palette |
-| **Context Menus** | Row Menu, Category Menu, Tab Menu (Workspace); Graph Menu, Drop Menu (Repo View). | Right-click |
+| **New Worktree Dialog** | Branch (existing, remote to track, or new from a base), detached, folder (from the location template, `…` to pick), Init submodules, Copy local files, Open in a tab. ([worktree_dialog.rs](../crates/archipel-ui/src/worktree_dialog.rs)) | Row Menu, Graph Menu, WORKTREES `+`, Action Palette |
+| **Remove Worktree Dialog** | What removing a worktree would lose (changes, unpushed commits, operation in progress with an Abort button), Also delete branch; **Remove anyway…** needs a second click. Undo (`Ctrl+Z` on the repo) brings it back. | Worktree Menu, Graph Menu |
+| **New Worktree Set Dialog** | Name (the branch), Set Folder, one row per repo (base, "new branch" / "branch exists → use it" / blocked when checked out elsewhere), Init submodules, Copy local files; per-repo result with Retry failed, Copy folder path, Reveal folder. ([worktree_set_dialog.rs](../crates/archipel-ui/src/worktree_set_dialog.rs)) | Set Selector, Action Palette |
+| **Finish Set Dialog** | Each member with what removing it would lose (safe ones checked, in progress not checkable), delete branch per member; removes the Set Folder when empty. | Set Selector, Action Palette |
+| **Context Menus** | Row Menu (with the **Worktree Menu** entries on worktree rows), Category Menu, Tab Menu, Set Selector menu (Workspace); Graph Menu, Drop Menu (Repo View). | Right-click |
 
-## 8. Naming rules
+## 8. Worktrees
+
+Spec §10, [WORKTREES.md](WORKTREES.md). UI code: [workspace/worktrees.rs](../crates/archipel-ui/src/workspace/worktrees.rs), [repo_view/worktrees.rs](../crates/archipel-ui/src/repo_view/worktrees.rs).
+
+| Name | What it is | Code |
+| ---- | ---------- | ---- |
+| **Worktree Glyph** | `⧉`, marking linked worktrees wherever they show. | `dashboard::WORKTREE_GLYPH` |
+| **Worktree Count** | `⧉2 ▸` on a repo row with linked worktrees (Sidebar, Dashboard); click lists or unlists them. | `nested_cell`, `render_sidebar` |
+| **Sidebar Worktree Row** | A linked worktree under its repo in the Sidebar: glyph, Status Dot, branch, sync, lock or "missing". | `Workspace::sidebar_worktree_rows` |
+| **Worktree Row** | A linked worktree under its repo on the Dashboard, with tree connectors; every column but Fetch is its own. | `Nesting::Worktree` |
+| **Set Selector** | View Chip `Worktrees: all ▾`: All, Main only, each set, New set…, Rename / Finish / Forget the active set, Show other repos. A set view shows its worktrees in place of their repos, stripes the Project Band and names the set in the window title. | `Workspace::render_set_selector` |
+| **WORKTREES** | Refs Panel section after LOCAL: every worktree of the repo (current one marked), `+` for a new one; double-click opens, right-click gives the Worktree Menu. | `render_worktree_row` |
+| **Worktree Chip** | Repo Toolbar chip `⧉ worktree of libfoo · branch` (or `⧉ n worktrees`); click opens the Worktree Switcher. | `RepoView::render_worktree_chip` |
+| **Worktree Prompt** | Replaces Git's "already checked out" refusal: Open that worktree · Check out detached · Cancel. | `RepoView::render_worktree_prompt` |
+
+## 9. Naming rules
 
 - **Pane** is a resizable region inside a view (Refs Panel's sibling panes,
   Quick Edit Pane); **Panel** is a self-contained block of UI that can be

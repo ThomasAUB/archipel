@@ -6,7 +6,7 @@ use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::requests::{CheckoutTarget, DeleteMode, MergeMode, ResetMode, StashApplyMode};
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::ui_state::GraphColumn;
-use archipel_model::{Oid, RepoPath};
+use archipel_model::{Oid, RepoId, RepoPath};
 use archipel_ops::{OpClass, OpError};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, ClipboardItem, Context, Pixels, Point, Window};
@@ -18,6 +18,8 @@ use crate::widgets::{
 use super::RepoView;
 use super::dialogs::{Confirm, NameForm};
 use super::squash::SquashRange;
+use crate::staging::StagingEvent;
+use crate::worktree_dialog::WorktreeStart;
 
 /// What a right-click menu acts on.
 #[derive(Clone)]
@@ -85,6 +87,12 @@ pub(super) enum MenuAction {
     Copy(String),
     /// Shows or hides a commit graph column.
     ToggleColumn(GraphColumn),
+    /// Opens the tab of another worktree (spec §10).
+    OpenWorktree(RepoId),
+    /// Opens the New Worktree dialog, prefilled.
+    NewWorktree(WorktreeStart),
+    /// Opens the Remove Worktree confirmation.
+    RemoveWorktree(RepoId),
 }
 
 impl MenuAction {
@@ -461,6 +469,132 @@ fn drop_entries(source: &RefTip, target: &RefTip, current: Option<&str>) -> Vec<
     out
 }
 
+/// `entries` adjusted for worktrees (spec §10, WORKTREES.md §7): a branch
+/// checked out in another worktree opens it instead of being checked out,
+/// is removed with its worktree instead of deleted, and is never checked
+/// out to merge or rebase; branches and commits offer a new worktree.
+fn with_worktrees(
+    target: &MenuTarget,
+    entries: Vec<MenuEntry>,
+    elsewhere: &super::worktrees::Elsewhere,
+    current: Option<&str>,
+) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    let place = |b: &str| elsewhere.get(b);
+    let open_or_say = |label: String, b: &str| {
+        let (id, path) = place(b)?;
+        Some(match id {
+            Some(id) => item(
+                format!("{label} — checked out in {}: open it", path.display()),
+                A::OpenWorktree(*id),
+            ),
+            None => item(
+                format!("{label} — checked out in {}", path.display()),
+                A::Copy(path.display().to_string()),
+            ),
+        })
+    };
+    let mut removed_once = false;
+    let mut out: Vec<MenuEntry> = Vec::with_capacity(entries.len() + 1);
+    for entry in entries {
+        let MenuEntry::Item { label, action, .. } = &entry else {
+            out.push(entry);
+            continue;
+        };
+        let replaced = match action {
+            A::Checkout(CheckoutTarget::Branch(b)) => place(b).map(|(id, path)| match id {
+                Some(id) => item(format!("Open the worktree of {b}"), A::OpenWorktree(*id)),
+                None => item(
+                    format!("{b} is checked out in {}", path.display()),
+                    A::Copy(path.display().to_string()),
+                ),
+            }),
+            A::Checkout(CheckoutTarget::TrackRemote(r)) => {
+                let b = r.split_once('/').map_or(r.as_str(), |(_, b)| b);
+                place(b).and_then(|(id, _)| {
+                    id.map(|id| item(format!("Open the worktree of {b}"), A::OpenWorktree(id)))
+                })
+            }
+            A::DeleteBranch(b, _) => match place(b) {
+                Some((Some(id), _)) if !removed_once => {
+                    removed_once = true;
+                    Some(danger(
+                        format!("Remove the worktree of {b}…"),
+                        A::RemoveWorktree(*id),
+                    ))
+                }
+                Some(_) => continue,
+                None => None,
+            },
+            A::MergeInto { into: b, .. } | A::RebaseBranch { branch: b, .. } => {
+                open_or_say(label.clone(), b)
+            }
+            _ => None,
+        };
+        out.push(replaced.unwrap_or(entry));
+    }
+    let new = new_worktree_entry(target, elsewhere, current);
+    if let Some(new) = new {
+        let at = usize::from(!out.is_empty());
+        out.insert(at, new);
+    }
+    out
+}
+
+/// "Check out in new worktree…" on a branch (not one checked out here or
+/// elsewhere), "New worktree here…" on a tag or a commit.
+fn new_worktree_entry(
+    target: &MenuTarget,
+    elsewhere: &super::worktrees::Elsewhere,
+    current: Option<&str>,
+) -> Option<MenuEntry> {
+    use MenuAction as A;
+    let place = |b: &str| elsewhere.get(b);
+    match target {
+        MenuTarget::Ref(tip)
+        | MenuTarget::Commit {
+            focus: Some(tip), ..
+        } => match tip.kind {
+            RefKind::LocalBranch
+                if Some(tip.name.as_str()) != current && place(&tip.name).is_none() =>
+            {
+                Some(item(
+                    "Check out in new worktree…",
+                    A::NewWorktree(WorktreeStart {
+                        branch: Some(tip.name.clone()),
+                        ..WorktreeStart::default()
+                    }),
+                ))
+            }
+            RefKind::RemoteBranch => Some(item(
+                "Check out in new worktree…",
+                A::NewWorktree(WorktreeStart {
+                    branch: Some(tip.name.clone()),
+                    ..WorktreeStart::default()
+                }),
+            )),
+            RefKind::Tag => Some(item(
+                "New worktree here…",
+                A::NewWorktree(WorktreeStart {
+                    base: Some(tip.name.clone()),
+                    ..WorktreeStart::default()
+                }),
+            )),
+            _ => None,
+        },
+        MenuTarget::Commit {
+            oid, focus: None, ..
+        } => Some(item(
+            "New worktree here…",
+            A::NewWorktree(WorktreeStart {
+                base: Some(oid.to_hex()),
+                ..WorktreeStart::default()
+            }),
+        )),
+        _ => None,
+    }
+}
+
 /// Whether `git branch -d` failed because the branch is not merged. Git's
 /// message may be translated; its hint names `git branch -D` in any locale.
 pub(super) fn is_not_merged(e: &OpError) -> bool {
@@ -625,6 +759,11 @@ impl RepoView {
                     .update_ui_state(|ui| ui.toggle_graph_column(column));
                 cx.notify();
             }
+            MenuAction::OpenWorktree(id) => cx.emit(StagingEvent::OpenRepo(id)),
+            MenuAction::NewWorktree(start) => {
+                cx.emit(StagingEvent::NewWorktree(self.path.id(), start));
+            }
+            MenuAction::RemoveWorktree(id) => cx.emit(StagingEvent::RemoveWorktree(id)),
         }
     }
 
@@ -633,6 +772,12 @@ impl RepoView {
         let (target, position) = self.menu.as_ref()?;
         let position = *position;
         let entries = menu_entries(target, self.current_branch(), |b| self.has_local(b));
+        let entries = with_worktrees(
+            target,
+            entries,
+            &self.worktree_branches,
+            self.current_branch(),
+        );
         let rows = entries
             .into_iter()
             .enumerate()

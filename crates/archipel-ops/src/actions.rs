@@ -6,10 +6,10 @@ use std::sync::Arc;
 use archipel_model::changes::FileState;
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
-    BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, MergeForecaster,
-    MergeToolLauncher, RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter,
-    StatusReader, SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles,
-    WorktreeSnapshots,
+    BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, LocalFilesCopier,
+    MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps, RemoteReader, StashReader,
+    StashWriter, StatusReader, SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader,
+    WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -67,6 +67,12 @@ pub struct GitPorts {
     pub tree: Arc<dyn TreeReader>,
     /// In-memory merges (the conflict forecast).
     pub forecaster: Arc<dyn MergeForecaster>,
+    /// Worktree list (spec §10).
+    pub worktrees: Arc<dyn WorktreeReader>,
+    /// Worktree creation, removal, locks.
+    pub worktree_writer: Arc<dyn WorktreeWriter>,
+    /// Copies local files into new worktrees.
+    pub local_files: Arc<dyn LocalFilesCopier>,
 }
 
 impl GitPorts {
@@ -93,6 +99,9 @@ impl GitPorts {
             + WorktreeFiles
             + TreeReader
             + MergeForecaster
+            + WorktreeReader
+            + WorktreeWriter
+            + LocalFilesCopier
             + 'static,
     {
         Self {
@@ -115,7 +124,10 @@ impl GitPorts {
             remotes: backend.clone(),
             files: backend.clone(),
             tree: backend.clone(),
-            forecaster: backend,
+            forecaster: backend.clone(),
+            worktrees: backend.clone(),
+            worktree_writer: backend.clone(),
+            local_files: backend,
         }
     }
 }

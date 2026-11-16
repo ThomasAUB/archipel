@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::RepoId;
+use crate::worktree::{SetView, WorktreeSet};
 
 /// A tab of the main area.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +60,8 @@ impl GraphColumn {
 /// saved by older builds still load.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+// Independent view toggles, each saved as is.
+#[allow(clippy::struct_excessive_bools)]
 pub struct UiState {
     /// Open tabs, in order.
     pub tabs: Vec<TabState>,
@@ -112,6 +115,14 @@ pub struct UiState {
     pub accent: Option<String>,
     /// Legacy personal icon / emoji; cleared when the icon is changed.
     pub icon: Option<String>,
+    /// Repos whose linked worktrees are listed under them (spec §10).
+    pub expanded_worktrees: Vec<RepoId>,
+    /// Worktree Sets of the project (spec §10).
+    pub worktree_sets: Vec<WorktreeSet>,
+    /// What the dashboard shows of worktrees (the Set Selector).
+    pub set_view: SetView,
+    /// In a set view, list the repos outside the set (dimmed).
+    pub set_show_others: bool,
 }
 
 impl UiState {
@@ -133,6 +144,15 @@ impl UiState {
             self.hidden_graph_columns.remove(i);
         } else {
             self.hidden_graph_columns.push(column);
+        }
+    }
+
+    /// The active Worktree Set, if the dashboard shows one.
+    #[must_use]
+    pub fn active_set(&self) -> Option<&WorktreeSet> {
+        match &self.set_view {
+            SetView::Set(name) => self.worktree_sets.iter().find(|s| s.name == *name),
+            _ => None,
         }
     }
 
@@ -176,6 +196,10 @@ impl Default for UiState {
             category_filters: Vec::new(),
             accent: None,
             icon: None,
+            expanded_worktrees: Vec::new(),
+            worktree_sets: Vec::new(),
+            set_view: SetView::All,
+            set_show_others: false,
         }
     }
 }

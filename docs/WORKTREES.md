@@ -21,16 +21,12 @@ libs needs **the same branch, checked out as a worktree in several repos, side
 by side in one folder**. That is a **Worktree Set** (§5), and it is the main
 reason for this feature.
 
-### What exists today
+### Status
 
-- The folder scan finds linked worktrees (`.git` file) and adds each one as an
-  ordinary, unrelated repo of the project; nothing tells it is a worktree of
-  another repo.
-- Reads and the watcher already handle a linked worktree's split Git
-  directories (`git_dir` vs `common_dir`).
-- No way to list, create, open, lock, prune or remove worktrees from the app.
-  Checking out a branch that is checked out in another worktree fails with
-  Git's raw error.
+Implemented (PLAN Phase 8, ADR 0004) except the items listed in the
+"Implemented" note of SPEC §10. Before it, the folder scan added linked
+worktrees as unrelated repos and checking out a branch held by another
+worktree failed with Git's raw error.
 
 ## 2. Principles
 

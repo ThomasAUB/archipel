@@ -139,6 +139,7 @@ fn env_with(settings: Settings) -> Env {
                 path: p.clone(),
                 alias: None,
                 category: None,
+                copy_to_worktrees: Vec::new(),
             })
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),

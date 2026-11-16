@@ -50,6 +50,7 @@ fn env(extra: &[&str]) -> Env {
                 path: p.clone(),
                 alias: None,
                 category: None,
+                copy_to_worktrees: Vec::new(),
             })
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),
@@ -143,7 +144,8 @@ fn open_fresh(e: &Env) {
     e.app.open_project(&p1()).unwrap();
     wait_until("refresh", || e.app.rows().iter().all(|r| !r.stale));
     // Watches are registered in the background.
-    wait_until("watching", || e.watcher.watch_count() >= e.repos.len());
+    // (hidden repos are not watched).
+    wait_until("watching", || e.watcher.watch_count() >= e.app.rows().len());
 }
 
 #[test]

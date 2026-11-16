@@ -13,6 +13,7 @@
 //!   ([`BatchOps`], [`BatchReport`]) — never a silent all-or-nothing.
 //! * [`commit`]: the multi-repo commit use case ([`MultiCommit`]).
 //! * [`patch`]: builds patches for hunk / line staging.
+//! * [`worktree`]: create, remove (undoable), lock and prune worktrees.
 //!
 //! Dependencies: `archipel-model` traits only (plus `tokio` for scheduling).
 //! Concrete Git backends are injected by the composition root.
@@ -25,11 +26,13 @@ pub mod journal;
 pub mod patch;
 pub mod scheduler;
 pub mod undo;
+pub mod worktree;
 
 pub use actions::{BranchSync, CheckoutOutcome, GitPorts, RepoActions};
-pub use batch::{BatchOps, BatchReport, Outcome};
+pub use batch::{BatchOps, BatchReport, Outcome, WorktreePlan};
 pub use commit::{CommitOptions, CommitPlan, CommitTarget, MultiCommit};
 pub use error::OpError;
 pub use journal::{Journal, Recording};
 pub use scheduler::{OpClass, OpContext, OpEvent, OpEventKind, OpHandle, OpId, OpSpec, Scheduler};
 pub use undo::{Compensation, Direction, UndoPlan, UndoService};
+pub use worktree::{RemoveOptions, WorktreeLoss, WorktreeSetup};

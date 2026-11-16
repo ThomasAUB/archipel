@@ -137,7 +137,13 @@ impl App {
             .iter()
             .filter_map(|r| Some((r.path.id(), r.category.as_deref()?)))
             .collect();
-        let rows = s.rows.iter().filter(|r| !r.hidden).cloned().collect();
+        // Linked worktrees are listed under their repo, not in groups.
+        let rows = s
+            .rows
+            .iter()
+            .filter(|r| !r.hidden && r.parent().is_none())
+            .cloned()
+            .collect();
         group_by_category(
             rows,
             |id| categories.get(&id).copied(),

@@ -30,7 +30,9 @@ mod scan;
 mod source;
 
 pub use format::CURRENT_VERSION;
-pub use presence::{RepoPresence, classify_repos, outermost_repo_root, repo_presence};
+pub use presence::{
+    RepoPresence, classify_repos, linked_worktree_main, outermost_repo_root, repo_presence,
+};
 pub use scan::{FsRepoDiscovery, ScanStrategy};
 pub use source::FileProjectSource;
 

@@ -217,6 +217,7 @@ fn json_id_is_overridden_by_the_column() {
         after: snapshot,
         worktree_snapshot: None,
         stash: None,
+        worktree: None,
         time: Timestamp(0),
         state: EntryState::Done,
     };

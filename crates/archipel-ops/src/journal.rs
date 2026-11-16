@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use archipel_model::journal::{
     BatchId, EntryState, HeadRef, JournalEntry, JournalId, OperationKind, RefSnapshot, StashRecord,
+    WorktreeRecord,
 };
 use archipel_model::ports::{JournalStore, RefReader, WorktreeSnapshots};
 use archipel_model::{GitError, RepoPath, Timestamp};
@@ -32,6 +33,9 @@ pub struct Recording {
     pub snapshot_paths: Vec<String>,
     /// Stash commit affected by a stash operation.
     pub stash: Option<StashRecord>,
+    /// The linked worktree a worktree operation creates or removes, and the
+    /// snapshot of its files taken beforehand (in it).
+    pub worktree: Option<(WorktreeRecord, Option<archipel_model::Oid>)>,
 }
 
 impl Recording {
@@ -46,6 +50,7 @@ impl Recording {
             snapshot_worktree: false,
             snapshot_paths: Vec::new(),
             stash: None,
+            worktree: None,
         }
     }
 
@@ -74,6 +79,17 @@ impl Recording {
     #[must_use]
     pub fn snapshot_paths(mut self, paths: &[String]) -> Self {
         self.snapshot_paths = paths.to_vec();
+        self
+    }
+
+    /// Records the linked worktree involved and the snapshot of its files.
+    #[must_use]
+    pub fn with_worktree(
+        mut self,
+        record: WorktreeRecord,
+        snapshot: Option<archipel_model::Oid>,
+    ) -> Self {
+        self.worktree = Some((record, snapshot));
         self
     }
 
@@ -160,7 +176,9 @@ impl Journal {
             Some(_) => Some(self.refs.snapshot(repo, &names)?),
             None => None,
         };
-        let worktree_snapshot = if !rec.snapshot_paths.is_empty() {
+        let worktree_snapshot = if let Some((_, snapshot)) = &rec.worktree {
+            *snapshot
+        } else if !rec.snapshot_paths.is_empty() {
             self.snapshots.snapshot_paths(repo, &rec.snapshot_paths)?
         } else if rec.snapshot_worktree {
             self.snapshots.snapshot_worktree(repo)?
@@ -184,6 +202,7 @@ impl Journal {
                     after,
                     worktree_snapshot,
                     stash: rec.stash,
+                    worktree: rec.worktree.map(|(w, _)| w),
                     time: Timestamp::now(),
                     state: EntryState::Done,
                 };

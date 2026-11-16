@@ -350,6 +350,8 @@ The largest phase.
 
 UI/UX: [WORKTREES.md](WORKTREES.md) (cited as W§n below). Four slices, each shippable on its own and in this order; a slice ends with its UI.md entries and the spec's "Implemented" note updated.
 
+> Status: 8.1–8.4 done (ADR 0004), with these differences: the other worktree holding a branch is looked up from the app's worktree lists (`App::branch_worktree`, the Repo View's map) rather than a new `BranchInfo` field; the set creation is one batch (one `BatchId`) but undo is still per repo; the idle-RSS exit criterion of 8.1 is not measured yet. Left: the `→` / `←` / `Delete` keys, the drag onto WORKTREES, and the P2 items.
+
 **Decisions.**
 - A linked worktree is a `RepoPath` like any repo, with its own `RepoId` (derived from its path, as today), so every existing per-repo code path (summary, watcher, Quick Edit Pane, Repo View, journal, forge status, forecast) works on it unchanged. What is new is the *relation* to its main worktree, held beside the project's repo list, never inside `RepoEntry`.
 - Worktrees are discovered, not stored: the project file keeps only `copy_to_worktrees`; sets, expanded groups and the Set Selector choice go to the personal UI state (`UiStateStore`).

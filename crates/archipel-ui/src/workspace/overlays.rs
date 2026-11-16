@@ -27,6 +27,12 @@ pub(super) enum PaletteKind {
     Icon,
     Category,
     RenameCategory,
+    /// The Worktree Switcher (spec §10).
+    Worktrees,
+    /// The reason a worktree is locked.
+    LockReason,
+    /// A new name for the active Worktree Set.
+    RenameSet,
 }
 
 /// The overlay shown over the window, its view kept while it is open.
@@ -35,6 +41,21 @@ pub(super) enum Overlay {
     Commit(Entity<CommitPanel>),
     Forge(Entity<ForgePanel>),
     Branches(Entity<BranchesPanel>),
+    NewWorktree(Entity<crate::worktree_dialog::NewWorktreeDialog>),
+    RemoveWorktree(Entity<crate::worktree_dialog::RemoveWorktreeDialog>),
+    NewSet(Entity<crate::worktree_set_dialog::NewSetDialog>),
+    FinishSet(Entity<crate::worktree_set_dialog::FinishSetDialog>),
+}
+
+/// A dialog centered over the window.
+fn centered(view: AnyElement) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(view)
+        .into_any_element()
 }
 
 impl Workspace {
@@ -46,6 +67,10 @@ impl Workspace {
                 Overlay::Commit(c) => c.clone().into_any_element(),
                 Overlay::Forge(f) => f.clone().into_any_element(),
                 Overlay::Branches(b) => b.clone().into_any_element(),
+                Overlay::NewWorktree(d) => centered(d.clone().into_any_element()),
+                Overlay::RemoveWorktree(d) => centered(d.clone().into_any_element()),
+                Overlay::NewSet(d) => centered(d.clone().into_any_element()),
+                Overlay::FinishSet(d) => centered(d.clone().into_any_element()),
             };
             // A click outside the overlay (which occludes its own area)
             // dismisses it, without reaching what lies underneath.
@@ -146,6 +171,7 @@ impl Workspace {
     }
 
     /// Opens the palette of `kind`.
+    #[allow(clippy::too_many_lines)] // one arm per palette
     pub(super) fn open_palette(
         &mut self,
         kind: PaletteKind,
@@ -185,6 +211,27 @@ impl Workspace {
                 Vec::new(),
                 true,
             ),
+            PaletteKind::Worktrees => (
+                "Switch worktree (repo · branch · folder)",
+                self.worktree_items(),
+                false,
+            ),
+            PaletteKind::LockReason => (
+                "Lock the worktree: why? (e.g. on a removable drive)",
+                Vec::new(),
+                true,
+            ),
+            PaletteKind::RenameSet => {
+                let old = self.core.active_set().map(|s| s.name).unwrap_or_default();
+                return self.show_palette(
+                    kind,
+                    format!("Rename worktree set “{old}”"),
+                    Vec::new(),
+                    true,
+                    window,
+                    cx,
+                );
+            }
             PaletteKind::RenameCategory => {
                 // A plain prompt: an empty Enter must not pick (merge into)
                 // another category. Typing an existing name merges into it.
@@ -308,6 +355,21 @@ impl Workspace {
             PaletteKind::RenameCategory => {
                 if let Some(old) = self.renaming_category.take() {
                     self.dispatch(Command::RenameCategory(old, Some(value)), cx);
+                }
+            }
+            PaletteKind::Worktrees => {
+                if let Ok(raw) = value.parse::<u64>() {
+                    self.dispatch(Command::OpenRepoTab(RepoId(raw)), cx);
+                }
+            }
+            PaletteKind::LockReason => {
+                if let Some(id) = self.lock_target.take() {
+                    self.dispatch(Command::LockWorktree(id, Some(value.trim().to_owned())), cx);
+                }
+            }
+            PaletteKind::RenameSet => {
+                if let Some(set) = self.core.active_set() {
+                    self.dispatch(Command::RenameWorktreeSet(set.name, value), cx);
                 }
             }
         }

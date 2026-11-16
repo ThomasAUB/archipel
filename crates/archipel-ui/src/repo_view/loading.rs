@@ -261,6 +261,8 @@ impl RepoView {
     pub(super) fn load_refs(&mut self, cx: &mut Context<Self>) {
         let refs = self.core.repo_actions().ports().refs.clone();
         let path = self.path.clone();
+        let (worktrees, elsewhere) = self.worktree_entries();
+        self.worktree_branches = elsewhere;
         let task = cx.background_spawn(async move {
             let branches = refs.branches(&path)?;
             let tags = refs.tags(&path)?;
@@ -282,6 +284,12 @@ impl RepoView {
                         target: b.target,
                     },
                 }));
+                // After LOCAL, the worktrees of the repo (spec §10).
+                if kind == RefKind::LocalBranch {
+                    list.rows.push(RefRow::Header("WORKTREES", worktrees.len()));
+                    list.rows
+                        .extend(worktrees.iter().cloned().map(RefRow::Worktree));
+                }
             }
             list.rows.push(RefRow::Header("TAGS", tags.len()));
             list.rows

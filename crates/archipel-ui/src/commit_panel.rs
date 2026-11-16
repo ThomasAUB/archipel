@@ -62,11 +62,17 @@ impl CommitPanel {
     }
 
     fn prepare(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // In a Worktree Set view, the set's worktrees (spec §10).
+        let set: Option<Vec<archipel_model::RepoId>> = self
+            .core
+            .active_set()
+            .map(|s| s.members.iter().map(|m| m.path.id()).collect());
         let paths: Vec<RepoPath> = self
             .core
             .rows()
             .into_iter()
             .filter(|r| r.summary().is_some())
+            .filter(|r| set.as_ref().is_none_or(|ids| ids.contains(&r.id)))
             .map(|r| r.path)
             .collect();
         let commit = self.core.multi_commit().clone();
