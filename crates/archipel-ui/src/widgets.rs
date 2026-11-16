@@ -8,9 +8,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, AnyView, App, AppContext, Bounds, Context, Deferred, Div, ElementId, Empty, Hsla,
-    Modifiers, Pixels, Point, SharedString, Stateful, UniformList, UniformListScrollHandle, Window,
-    anchored, deferred, div, px, svg,
+    AnyElement, AnyView, App, AppContext, Bounds, ClickEvent, Context, Deferred, Div, ElementId,
+    Empty, Hsla, Modifiers, Pixels, Point, SharedString, Stateful, UniformList,
+    UniformListScrollHandle, Window, anchored, deferred, div, px, svg,
 };
 
 use crate::theme::{color, radius, text_size, ui_font};
@@ -56,6 +56,100 @@ pub fn icon_button(
         )
 }
 
+/// Clicks on an element that can be disabled (a button, a checkbox).
+pub trait ClickIf: Sized {
+    /// Runs `handler` on click while `enabled`; dimmed, without the hand
+    /// cursor and deaf to clicks otherwise. The one way to disable a
+    /// control: dimming it alone left it clickable.
+    #[must_use]
+    fn on_click_if(
+        self,
+        enabled: bool,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self;
+}
+
+impl ClickIf for Stateful<Div> {
+    fn on_click_if(
+        self,
+        enabled: bool,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        if enabled {
+            self.on_click(handler)
+        } else {
+            self.opacity(0.5).cursor_default()
+        }
+    }
+}
+
+/// A checkbox glyph, for a row that is a checkbox with more in it.
+pub fn check_box(checked: bool, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .text_color(color(cx, if checked { T::AccentText } else { T::FgMuted }))
+        .child(if checked { "☑" } else { "☐" })
+}
+
+/// A checkbox and its label; disable it with [`ClickIf::on_click_if`].
+pub fn check(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    checked: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .flex()
+        .gap_2()
+        .cursor_pointer()
+        .child(check_box(checked, cx))
+        .child(label.into())
+}
+
+/// The frame of a dialog: title, body, error, buttons.
+pub fn dialog_frame(id: &'static str, title: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
+    div()
+        .id(id)
+        .occlude()
+        .w(px(560.0))
+        .max_h(px(640.0))
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .bg(color(cx, T::BgElevated))
+        .border_1()
+        .border_color(color(cx, T::Border))
+        .rounded(radius(cx))
+        .shadow_lg()
+        .child(
+            div()
+                .text_color(color(cx, T::FgDefault))
+                .child(title.into()),
+        )
+}
+
+/// Width of a [`field`]'s label column.
+pub const FIELD_LABEL_WIDTH: f32 = 110.0;
+
+/// A labelled row of a form.
+pub fn field(label: &'static str, input: impl IntoElement, cx: &App) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(FIELD_LABEL_WIDTH))
+                .flex_none()
+                .text_color(color(cx, T::FgMuted))
+                .child(label),
+        )
+        .child(div().flex_1().min_w_0().child(input))
+        .into_any_element()
+}
+
 /// A primary (accent) button.
 pub fn primary_button(
     id: impl Into<ElementId>,
@@ -73,6 +167,52 @@ pub fn primary_button(
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(label.into())
+}
+
+/// A move through a list by keyboard: ↑ ↓, Page Up / Page Down, Home /
+/// End, the same in every list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListMove {
+    /// Down (positive) or up (negative) by this many items.
+    By(i64),
+    /// To the first item.
+    First,
+    /// To the last item.
+    Last,
+}
+
+/// Items a Page Up / Page Down moves.
+pub const PAGE_ITEMS: i64 = 20;
+
+impl ListMove {
+    /// The move of a list key (`down`, `pageup`, `home`, …), if it is one.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "down" => Self::By(1),
+            "up" => Self::By(-1),
+            "pagedown" => Self::By(PAGE_ITEMS),
+            "pageup" => Self::By(-PAGE_ITEMS),
+            "home" => Self::First,
+            "end" => Self::Last,
+            _ => return None,
+        })
+    }
+
+    /// Where it leads from item `from` (`None`: none selected, so it
+    /// starts above the first) in a list of `len` items, kept inside the
+    /// list; `None` when the list is empty.
+    pub fn apply(self, from: Option<usize>, len: usize) -> Option<usize> {
+        let last = len.checked_sub(1)?;
+        Some(match self {
+            Self::First => 0,
+            Self::Last => last,
+            Self::By(delta) => {
+                let from = from.map_or(-1, |i| i64::try_from(i).unwrap_or(i64::MAX));
+                let to = from.saturating_add(delta).max(0);
+                usize::try_from(to).unwrap_or(last).min(last)
+            }
+        })
+    }
 }
 
 /// Hex digits shown of a commit id.
@@ -184,6 +324,18 @@ pub fn check_menu_item(
 /// A rule between groups of [`menu_item`]s.
 pub fn menu_separator(cx: &App) -> Div {
     div().my_1().h(px(1.0)).bg(color(cx, T::BorderSubtle))
+}
+
+/// A clickable row of a list, highlighted while `selected`. Only an
+/// unselected row tints under the pointer: hovering the selected one keeps
+/// its highlight.
+pub fn list_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id(id)
+        .cursor_pointer()
+        .when(selected, |d| d.bg(color(cx, T::BgSelected)))
+        .when(!selected, |d| d.hover(move |s| s.bg(hover)))
 }
 
 /// A filter chip, highlighted when active.
@@ -394,6 +546,20 @@ mod tests {
     use gpui_kit::{point, size};
 
     use super::*;
+
+    #[test]
+    fn list_moves_stay_inside_the_list() {
+        let down = ListMove::from_key("down").unwrap();
+        let page_up = ListMove::from_key("pageup").unwrap();
+        assert_eq!(down.apply(None, 5), Some(0));
+        assert_eq!(down.apply(Some(4), 5), Some(4));
+        assert_eq!(page_up.apply(Some(3), 5), Some(0));
+        assert_eq!(ListMove::By(PAGE_ITEMS).apply(Some(1), 5), Some(4));
+        assert_eq!(ListMove::Last.apply(None, 5), Some(4));
+        assert_eq!(ListMove::First.apply(Some(3), 5), Some(0));
+        assert_eq!(down.apply(None, 0), None);
+        assert_eq!(ListMove::from_key("a"), None);
+    }
 
     #[test]
     fn condense_status_keeps_short_text_and_shortens_long_lists() {

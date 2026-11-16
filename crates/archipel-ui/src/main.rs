@@ -22,6 +22,7 @@
 // and panics stay visible during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod armed;
 mod branches_panel;
 mod ci_tooltip;
 mod commit_panel;

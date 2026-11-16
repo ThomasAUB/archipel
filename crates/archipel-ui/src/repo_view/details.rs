@@ -16,7 +16,7 @@ use gpui_kit::{AnyElement, ClickEvent, Context, SharedString, div, px, uniform_l
 use crate::diff_view::DiffDoc;
 use crate::staging::{self};
 use crate::theme::{color, mono_font, row_height};
-use crate::widgets::{SHORT_OID, button, scroll_list, section};
+use crate::widgets::{SHORT_OID, button, list_row, scroll_list, section};
 
 use super::dialogs::NameForm;
 use super::{OpenDiff, RepoView};
@@ -372,43 +372,42 @@ fn render_changed_file(
             (label, token, file_title(file), stats)
         }
     };
-    let hover = color(cx, T::BgHover);
-    div()
-        .id(SharedString::from(format!(
+    list_row(
+        SharedString::from(format!(
             "cf-{}",
             file.map_or_else(|| "all".to_owned(), |i| i.to_string())
-        )))
-        .w_full()
-        .h(row_height(cx))
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_2()
-        .cursor_pointer()
-        .when(open, |d| d.bg(color(cx, T::BgSelected)))
-        .hover(move |s| s.bg(hover))
-        .on_click(cx.listener(move |v, _, window, cx| {
-            if open {
-                v.close_diff(window, cx);
-            } else {
-                v.focus.focus(window, cx);
-                v.open_commit_file(file, cx);
-            }
-        }))
-        .child(
-            div()
-                .w(px(14.0))
-                .flex_none()
-                .text_color(color(cx, token))
-                .child(label),
-        )
-        .child(div().flex_1().min_w_0().truncate().child(path))
-        .child(
-            div()
-                .flex_none()
-                .text_xs()
-                .text_color(color(cx, T::FgMuted))
-                .child(stats),
-        )
-        .into_any_element()
+        )),
+        open,
+        cx,
+    )
+    .w_full()
+    .h(row_height(cx))
+    .flex()
+    .items_center()
+    .gap_2()
+    .px_2()
+    .on_click(cx.listener(move |v, _, window, cx| {
+        if open {
+            v.close_diff(window, cx);
+        } else {
+            v.focus.focus(window, cx);
+            v.open_commit_file(file, cx);
+        }
+    }))
+    .child(
+        div()
+            .w(px(14.0))
+            .flex_none()
+            .text_color(color(cx, token))
+            .child(label),
+    )
+    .child(div().flex_1().min_w_0().truncate().child(path))
+    .child(
+        div()
+            .flex_none()
+            .text_xs()
+            .text_color(color(cx, T::FgMuted))
+            .child(stats),
+    )
+    .into_any_element()
 }

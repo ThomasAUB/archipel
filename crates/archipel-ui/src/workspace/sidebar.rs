@@ -13,7 +13,7 @@ use gpui_kit::{
 
 use crate::forge_panel::ForgeTab;
 use crate::theme::{clean_dot, color, radius, repo_surface, row_height, text_size, ui_font};
-use crate::widgets::{button, dot, section};
+use crate::widgets::{button, dot, list_row, section};
 
 use super::Workspace;
 use super::dashboard::row_click;
@@ -35,7 +35,6 @@ impl Workspace {
             .map(|u| u.batch_selection())
             .unwrap_or_default();
         let hover = color(cx, T::BgHover);
-        let selected_bg = color(cx, T::BgSelected);
         // Headers only once at least one repo has a category (spec §1).
         let grouped = groups.len() > 1 || groups.first().is_some_and(|g| g.category.is_some());
         let expanded_worktrees = self
@@ -48,71 +47,71 @@ impl Workspace {
             let (token, extra) = side_status(&row.status);
             let worktrees = row.linked_worktrees;
             let expanded = expanded_worktrees.contains(&id);
-            div()
-                .id(SharedString::from(format!("side-{}", row.id)))
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .when(grouped, Styled::pl_5)
-                .h(row_height(cx))
-                .rounded(radius(cx))
-                .cursor_pointer()
-                .when(selected.contains(&id), |d| d.bg(selected_bg))
-                .hover(move |s| s.bg(hover))
-                .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                    // Unlike the dashboard, a plain click opens the repo.
-                    let cmd = row_click(id, e);
-                    if matches!(cmd, Command::Select(_)) {
-                        this.dispatch(cmd, cx);
-                        this.dispatch(Command::OpenRepoTab(id), cx);
-                    } else {
-                        this.dispatch(cmd, cx);
-                    }
-                }))
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.open_menu(Menu::Row(id), e.position, cx);
-                    }),
-                )
-                .child(dot(if token == T::StatusSuccess {
-                    clean_dot()
+            list_row(
+                SharedString::from(format!("side-{}", row.id)),
+                selected.contains(&id),
+                cx,
+            )
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .when(grouped, Styled::pl_5)
+            .h(row_height(cx))
+            .rounded(radius(cx))
+            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                // Unlike the dashboard, a plain click opens the repo.
+                let cmd = row_click(id, e);
+                if matches!(cmd, Command::Select(_)) {
+                    this.dispatch(cmd, cx);
+                    this.dispatch(Command::OpenRepoTab(id), cx);
                 } else {
-                    color(cx, token)
-                }))
-                .child(div().flex_1().min_w_0().truncate().child(row.name))
-                .child(
+                    this.dispatch(cmd, cx);
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    this.open_menu(Menu::Row(id), e.position, cx);
+                }),
+            )
+            .child(dot(if token == T::StatusSuccess {
+                clean_dot()
+            } else {
+                color(cx, token)
+            }))
+            .child(div().flex_1().min_w_0().truncate().child(row.name))
+            .child(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .text_xs()
+                    .text_color(color(cx, T::FgMuted))
+                    .child(extra),
+            )
+            .when(worktrees > 0, |d| {
+                // The Worktree Count: lists or unlists its worktrees.
+                d.child(
                     div()
+                        .id(SharedString::from(format!("side-wt-count-{id}")))
                         .flex_none()
-                        .whitespace_nowrap()
+                        .px_1()
+                        .rounded(radius(cx))
                         .text_xs()
-                        .text_color(color(cx, T::FgMuted))
-                        .child(extra),
+                        .text_color(color(cx, T::FgSubtle))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.dispatch(Command::ToggleWorktrees(id), cx);
+                        }))
+                        .child(format!(
+                            "{}{worktrees}{}",
+                            archipel_app::dashboard::WORKTREE_GLYPH,
+                            if expanded { "▾" } else { "▸" }
+                        )),
                 )
-                .when(worktrees > 0, |d| {
-                    // The Worktree Count: lists or unlists its worktrees.
-                    d.child(
-                        div()
-                            .id(SharedString::from(format!("side-wt-count-{id}")))
-                            .flex_none()
-                            .px_1()
-                            .rounded(radius(cx))
-                            .text_xs()
-                            .text_color(color(cx, T::FgSubtle))
-                            .hover(move |s| s.bg(hover))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.dispatch(Command::ToggleWorktrees(id), cx);
-                            }))
-                            .child(format!(
-                                "{}{worktrees}{}",
-                                archipel_app::dashboard::WORKTREE_GLYPH,
-                                if expanded { "▾" } else { "▸" }
-                            )),
-                    )
-                })
-                .into_any_element()
+            })
+            .into_any_element()
         };
         // Fits the longest visible name (repo or category), never narrower
         // than its footer buttons; capped at half the window.

@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 
 use crate::theme::{color, lane, mono_font, radius, row_height};
-use crate::widgets::{SHORT_OID, scroll_list};
+use crate::widgets::{SHORT_OID, list_row, scroll_list};
 
 use super::details::stash_title;
 use super::menu::MenuTarget;
@@ -223,18 +223,13 @@ impl RepoView {
             },
         )
         .size_full();
-        let hover = color(cx, T::BgHover);
-        div()
-            .id("g-wip")
+        list_row("g-wip", self.wip_selected, cx)
             .w_full()
             .h(row_height(cx))
             .flex()
             .items_center()
             .gap_2()
             .pr_3()
-            .cursor_pointer()
-            .when(self.wip_selected, |d| d.bg(color(cx, T::BgSelected)))
-            .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
                 v.focus.focus(window, cx);
                 v.select_wip(cx);
@@ -397,9 +392,7 @@ impl RepoView {
             .into_iter()
             .chain(worktree_badges)
             .collect();
-        let hover = color(cx, T::BgHover);
-        div()
-            .id(SharedString::from(format!("g-{index}")))
+        list_row(SharedString::from(format!("g-{index}")), selected, cx)
             .relative()
             .w_full()
             .h(row_height(cx))
@@ -407,21 +400,20 @@ impl RepoView {
             .items_center()
             .gap_2()
             .pr_3()
-            .cursor_pointer()
-            // The checked-out commit: tinted, with an accent bar on its edge.
+            // The checked-out commit: tinted (unless selected), with an
+            // accent bar on its edge.
             .when(is_head, |d| {
-                d.bg(color(cx, T::AccentSubtle).opacity(0.5)).child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .h_full()
-                        .w(px(3.0))
-                        .bg(color(cx, T::Accent)),
-                )
+                d.when(!selected, |d| d.bg(color(cx, T::AccentSubtle).opacity(0.5)))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .h_full()
+                            .w(px(3.0))
+                            .bg(color(cx, T::Accent)),
+                    )
             })
-            .when(selected, |d| d.bg(color(cx, T::BgSelected)))
-            .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
                 v.focus.focus(window, cx);
                 let m = e.modifiers();
@@ -515,18 +507,13 @@ impl RepoView {
         let time = stash.entry.time;
         let selected = self.stash_selected == Some(oid);
         let tint = color(cx, T::StatusDirty);
-        let hover = color(cx, T::BgHover);
-        div()
-            .id(SharedString::from(format!("g-stash-{oid}")))
+        list_row(SharedString::from(format!("g-stash-{oid}")), selected, cx)
             .w_full()
             .h(row_height(cx))
             .flex()
             .items_center()
             .gap_2()
             .pr_3()
-            .cursor_pointer()
-            .when(selected, |d| d.bg(color(cx, T::BgSelected)))
-            .hover(move |s| s.bg(hover))
             .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
                 v.focus.focus(window, cx);
                 if e.click_count() > 1 {

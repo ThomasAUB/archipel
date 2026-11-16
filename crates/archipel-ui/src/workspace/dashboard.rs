@@ -22,8 +22,8 @@ use crate::forecast_badge::pill;
 use crate::quick_edit::{QuickEdit, QuickEditEvent};
 use crate::theme::{color, radius, row_height, staging_surface, text_size, tone};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, check_menu_item, chip, primary_button, resize_pane,
-    scroll_menu, splitter, unmodified,
+    Pane, PaneDrag, TextTooltip, button, check_menu_item, chip, list_row, primary_button,
+    resize_pane, scroll_menu, splitter, unmodified,
 };
 
 use super::Workspace;
@@ -528,9 +528,7 @@ fn row_frame(
     hidden: bool,
     cx: &gpui_kit::App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let hover = color(cx, T::BgHover);
-    div()
-        .id(SharedString::from(format!("dash-{id}")))
+    list_row(SharedString::from(format!("dash-{id}")), selected, cx)
         .flex()
         .items_center()
         .px_3()
@@ -538,11 +536,8 @@ fn row_frame(
         .min_h(row_height(cx))
         .border_b_1()
         .border_color(color(cx, T::BorderSubtle))
-        .cursor_pointer()
-        .when(selected, |d| d.bg(color(cx, T::BgSelected)))
         .when(stale && !hidden, |d| d.opacity(0.75))
         .when(hidden, |d| d.opacity(0.45))
-        .hover(move |s| s.bg(hover))
 }
 
 /// Where a row stands among worktrees (spec §10): a worktree row under its

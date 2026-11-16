@@ -12,13 +12,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, KeyDownEvent, ScrollStrategy, Window, div};
 
 use crate::diff_view::{self, DiffDoc};
-use crate::widgets::{SHORT_OID, unmodified};
+use crate::widgets::{ListMove, SHORT_OID, unmodified};
 
 use super::details::file_title;
 use super::{Item, OpenDiff, RepoView, Selected, SharedView, lock};
-
-/// Rows moved by Page Up / Page Down in the graph.
-const PAGE_ROWS: i64 = 20;
 
 impl RepoView {
     /// Opens working-copy file `file`'s diff on `side` in place of the
@@ -268,16 +265,12 @@ impl RepoView {
         self.select_commit(row, oid, cx);
     }
 
-    /// Moves the graph selection by `delta` rows (keyboard navigation).
+    /// Moves the graph selection (keyboard navigation).
     /// Rows are counted in list items, uncommitted changes and stashes included.
-    fn step(&mut self, delta: i64, cx: &mut Context<Self>) {
+    fn step(&mut self, to: ListMove, cx: &mut Context<Self>) {
         let Some(graph) = &self.graph else {
             return;
         };
-        let last = i64::from(self.item_count()) - 1;
-        if last < 0 {
-            return;
-        }
         let from = if self.wip_selected {
             Some(0)
         } else if let Some(oid) = self.stash_selected {
@@ -287,8 +280,11 @@ impl RepoView {
                 .and_then(|s| s.row)
                 .map(|r| self.item_of_row(r))
         };
-        let item = (from.map_or(-1, i64::from) + delta).clamp(0, last);
-        let item = u32::try_from(item).unwrap_or(0);
+        let len = usize::try_from(self.item_count()).unwrap_or(0);
+        let from = from.and_then(|i| usize::try_from(i).ok());
+        let Some(item) = to.apply(from, len).and_then(|i| u32::try_from(i).ok()) else {
+            return;
+        };
         match self.item_at(item) {
             Item::Wip => {
                 self.scroll.scroll_to_item(0, ScrollStrategy::Nearest);
@@ -331,13 +327,12 @@ impl RepoView {
             cx.stop_propagation();
             return;
         }
+        if let Some(to) = ListMove::from_key(&event.keystroke.key) {
+            self.step(to, cx);
+            cx.stop_propagation();
+            return;
+        }
         match event.keystroke.key.as_str() {
-            "down" => self.step(1, cx),
-            "up" => self.step(-1, cx),
-            "pagedown" => self.step(PAGE_ROWS, cx),
-            "pageup" => self.step(-PAGE_ROWS, cx),
-            "home" => self.step(i64::MIN / 2, cx),
-            "end" => self.step(i64::MAX / 2, cx),
             "enter" if self.wip_selected => self.open_first_change(cx),
             "enter" if self.stash_selected.is_some() => {
                 if let Some(oid) = self.stash_selected {

@@ -13,7 +13,7 @@ use gpui_kit::{AnyElement, ClipboardItem, Context, MouseButton, MouseDownEvent, 
 
 use crate::palette::PaletteItem;
 use crate::theme::color;
-use crate::widgets::{check_menu_item, chip, context_menu, menu_item, menu_separator};
+use crate::widgets::{check_menu_item, chip, context_menu, list_row, menu_item, menu_separator};
 use crate::worktree_dialog::{
     NewWorktreeDialog, RemoveWorktreeDialog, WorktreeDialogEvent, WorktreeStart,
 };
@@ -511,8 +511,6 @@ impl Workspace {
         selected: &[RepoId],
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let hover = color(cx, T::BgHover);
-        let selected_bg = color(cx, T::BgSelected);
         self.core
             .rows()
             .into_iter()
@@ -521,65 +519,65 @@ impl Workspace {
                 let wid = row.id;
                 let info = row.worktree.clone().unwrap_or_else(unreachable_info);
                 let (token, extra) = super::sidebar::side_status(&row.status);
-                div()
-                    .id(gpui_kit::ElementId::Name(format!("side-wt-{wid}").into()))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl_6()
-                    .pr_2()
-                    .h(crate::theme::row_height(cx))
-                    .rounded(crate::theme::radius(cx))
-                    .cursor_pointer()
-                    .when(selected.contains(&wid), |d| d.bg(selected_bg))
-                    .when(info.missing, |d| d.opacity(0.5))
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, _, cx| {
-                        let cmd = super::dashboard::row_click(wid, e);
-                        let plain = matches!(cmd, Command::Select(_));
-                        this.dispatch(cmd, cx);
-                        if plain && e.click_count() > 1 {
-                            this.dispatch(Command::OpenRepoTab(wid), cx);
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                            this.open_menu(Menu::Row(wid), e.position, cx);
+                list_row(
+                    gpui_kit::ElementId::Name(format!("side-wt-{wid}").into()),
+                    selected.contains(&wid),
+                    cx,
+                )
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_6()
+                .pr_2()
+                .h(crate::theme::row_height(cx))
+                .rounded(crate::theme::radius(cx))
+                .when(info.missing, |d| d.opacity(0.5))
+                .on_click(cx.listener(move |this, e: &gpui_kit::ClickEvent, _, cx| {
+                    let cmd = super::dashboard::row_click(wid, e);
+                    let plain = matches!(cmd, Command::Select(_));
+                    this.dispatch(cmd, cx);
+                    if plain && e.click_count() > 1 {
+                        this.dispatch(Command::OpenRepoTab(wid), cx);
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        this.open_menu(Menu::Row(wid), e.position, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(color(cx, T::FgSubtle))
+                        .child(WORKTREE_GLYPH),
+                )
+                .child(crate::widgets::dot(if token == T::StatusSuccess {
+                    crate::theme::clean_dot()
+                } else {
+                    color(cx, token)
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(info.label.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(color(cx, T::FgMuted))
+                        .child(if info.missing {
+                            "missing".to_owned()
+                        } else if info.locked.is_some() {
+                            format!("🔒 {extra}")
+                        } else {
+                            extra
                         }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(color(cx, T::FgSubtle))
-                            .child(WORKTREE_GLYPH),
-                    )
-                    .child(crate::widgets::dot(if token == T::StatusSuccess {
-                        crate::theme::clean_dot()
-                    } else {
-                        color(cx, token)
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(info.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(color(cx, T::FgMuted))
-                            .child(if info.missing {
-                                "missing".to_owned()
-                            } else if info.locked.is_some() {
-                                format!("🔒 {extra}")
-                            } else {
-                                extra
-                            }),
-                    )
-                    .into_any_element()
+                )
+                .into_any_element()
             })
             .collect()
     }
