@@ -137,6 +137,9 @@ pub struct RepoView {
     stash_selected: Option<Oid>,
     /// Diff of the selected commit or stash, listed in the details pane.
     details: Option<(Oid, Arc<DiffDoc>)>,
+    /// Diff between the two commits of a two-commit selection: older,
+    /// newer, and the diff from the older to the newer.
+    compare: Option<(Oid, Oid, Arc<DiffDoc>)>,
     /// Full message of the selected commit, shown above its files.
     message: Option<(Oid, SharedString)>,
     changes: Vec<FileChange>,
@@ -224,6 +227,7 @@ impl RepoView {
             stashes: Vec::new(),
             stash_selected: None,
             details: None,
+            compare: None,
             message: None,
             changes: Vec::new(),
             changes_read: 0,

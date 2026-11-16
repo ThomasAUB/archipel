@@ -129,6 +129,8 @@ pub enum DiffSide {
 pub trait DiffReader: Send + Sync {
     /// Diff of a commit against its first parent (or the empty tree).
     fn commit_diff(&self, repo: &RepoPath, commit: Oid) -> Result<Vec<FileDiff>, GitError>;
+    /// Diff from commit `from` to commit `to` (`git diff from to`).
+    fn range_diff(&self, repo: &RepoPath, from: Oid, to: Oid) -> Result<Vec<FileDiff>, GitError>;
     /// Working copy diff, optionally limited to one path.
     fn worktree_diff(
         &self,

@@ -4,10 +4,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use archipel_model::Timestamp;
 use archipel_model::changes::ChangeKind;
 use archipel_model::diff::FileDiff;
 use archipel_model::requests::StashApplyMode;
+use archipel_model::{Oid, Timestamp};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
@@ -59,8 +59,12 @@ impl RepoView {
         staging::render_actions(self, Some(branch), cx)
     }
 
-    /// Details of the selected commit or stash.
+    /// Details of the selected commit or stash, or the comparison of the
+    /// two selected commits.
     fn render_selection(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(pair) = self.compared() {
+            return self.render_compare(pair, cx);
+        }
         let Some((oid, doc)) = &self.details else {
             return div()
                 .p_3()
@@ -138,6 +142,68 @@ impl RepoView {
                 .child(oid.to_hex()),
         );
         Self::render_diff_details(el, &oid.to_hex(), doc, cx)
+    }
+
+    /// The diff between two selected commits, from the older to the newer.
+    fn render_compare(&mut self, (older, newer): (Oid, Oid), cx: &mut Context<Self>) -> AnyElement {
+        let summary = |oid: Oid| {
+            self.multi
+                .iter()
+                .find(|(_, o)| **o == oid)
+                .and_then(|(row, _)| self.meta.get(row))
+                .map(|m| m.summary.clone())
+                .unwrap_or_default()
+        };
+        let line = |label: &'static str, oid: Oid, summary: String, cx: &mut Context<Self>| {
+            div()
+                .flex()
+                .gap_2()
+                .text_xs()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(color(cx, T::FgMuted))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(mono_font(cx))
+                        .text_color(color(cx, T::FgSubtle))
+                        .child(oid.short(SHORT_OID)),
+                )
+                .child(div().truncate().child(summary))
+        };
+        let (old_summary, new_summary) = (summary(older), summary(newer));
+        let header = div()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child("Comparing 2 commits"),
+            )
+            .child(line("From", older, old_summary, cx))
+            .child(line("To", newer, new_summary, cx));
+        let key = format!("compare-{older}-{newer}");
+        match self.listed_doc().cloned() {
+            Some(doc) => Self::render_diff_details(header, &key, doc, cx),
+            None => div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(
+                    div()
+                        .px_2()
+                        .text_color(color(cx, T::FgMuted))
+                        .child("Loading…"),
+                )
+                .into_any_element(),
+        }
     }
 
     /// Details of a stash: its message, the commit it was made on, and

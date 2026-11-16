@@ -67,7 +67,7 @@ impl RepoView {
     /// Opens file `file` of the selected commit's or stash's diff in place
     /// of the graph; `None`: all its files.
     pub(super) fn open_commit_file(&mut self, file: Option<usize>, cx: &mut Context<Self>) {
-        let Some((_, doc)) = &self.details else {
+        let Some(doc) = self.listed_doc() else {
             return;
         };
         let doc = match file {
@@ -94,7 +94,7 @@ impl RepoView {
     fn step_file(&mut self, delta: i64, cx: &mut Context<Self>) {
         match &self.open_diff {
             Some(OpenDiff::Commit(file, _)) => {
-                let count = self.details.as_ref().map_or(0, |(_, d)| d.files.len());
+                let count = self.listed_doc().map_or(0, |d| d.files.len());
                 let last = i64::try_from(count).unwrap_or(i64::MAX) - 1;
                 // "All files" heads the list, at -1.
                 let at = file.map_or(-1, |i| i64::try_from(i).unwrap_or(i64::MAX));
@@ -185,7 +185,75 @@ impl RepoView {
             self.select_commit(shown.0, shown.1, cx);
         }
         self.multi = if set.len() > 1 { set } else { BTreeMap::new() };
+        // A diff opened from the previous selection's files no longer
+        // matches the list.
+        if matches!(self.open_diff, Some(OpenDiff::Commit(..))) {
+            self.open_diff = None;
+        }
+        self.load_compare(cx);
         cx.notify();
+    }
+
+    /// The two commits of a two-commit selection: the older (lower in
+    /// the graph), then the newer.
+    pub(super) fn compared(&self) -> Option<(Oid, Oid)> {
+        if self.multi.len() != 2 {
+            return None;
+        }
+        let mut oids = self.multi.values();
+        let newer = *oids.next()?;
+        let older = *oids.next()?;
+        Some((older, newer))
+    }
+
+    /// The diff whose files the details pane lists: between the two
+    /// selected commits, else of the selected commit or stash.
+    pub(super) fn listed_doc(&self) -> Option<&Arc<DiffDoc>> {
+        match self.compared() {
+            Some(pair) => self
+                .compare
+                .as_ref()
+                .filter(|(older, newer, _)| (*older, *newer) == pair)
+                .map(|(_, _, doc)| doc),
+            None => self.details.as_ref().map(|(_, doc)| doc),
+        }
+    }
+
+    /// Reads the diff between the two selected commits, when two are
+    /// selected and it is not read yet.
+    fn load_compare(&mut self, cx: &mut Context<Self>) {
+        let Some((older, newer)) = self.compared() else {
+            return;
+        };
+        if self
+            .compare
+            .as_ref()
+            .is_some_and(|(o, n, _)| (*o, *n) == (older, newer))
+        {
+            return;
+        }
+        self.compare = None;
+        let diffs = self.core.diff_reader();
+        let path = self.path.clone();
+        let task = cx.background_spawn(async move {
+            diffs
+                .range_diff(&path, older, newer)
+                .map(|d| Arc::new(DiffDoc::new(d)))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                if v.compared() != Some((older, newer)) {
+                    return; // the selection changed meanwhile
+                }
+                match result {
+                    Ok(d) => v.compare = Some((older, newer, d)),
+                    Err(e) => v.status = Some(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Selects graph row `row` and scrolls it into view.
@@ -332,7 +400,14 @@ impl RepoView {
                     Some(_) => doc.files.first().map(file_title).unwrap_or_default(),
                     None => format!("All files ({})", doc.files.len()),
                 };
-                let at = self.details.as_ref().map(|(oid, _)| oid.short(SHORT_OID));
+                let at = match self.compared() {
+                    Some((older, newer)) => Some(format!(
+                        "{}..{}",
+                        older.short(SHORT_OID),
+                        newer.short(SHORT_OID)
+                    )),
+                    None => self.details.as_ref().map(|(oid, _)| oid.short(SHORT_OID)),
+                };
                 (title, at.unwrap_or_default(), None, Some(Arc::clone(doc)))
             }
             Some(OpenDiff::Worktree(file, side, doc)) => (
