@@ -14,14 +14,13 @@ use archipel_model::{CancelToken, HeadState, NoProgress, Oid, RepoSummary, Upstr
 use gpui_kit::Context;
 use gpui_kit::prelude::*;
 
-use crate::diff_view::{self, DiffDoc};
+use crate::diff_view::DiffDoc;
 use crate::staging;
+use crate::working_copy;
 
 use super::graph_paint::{lanes_above, stash_lane};
 use super::refs_panel::{RefList, RefRow};
-use super::{
-    HeadLink, MAX_LANES_SHOWN, OpenDiff, PlacedStash, RepoView, Selected, SharedView, lock,
-};
+use super::{HeadLink, MAX_LANES_SHOWN, PlacedStash, RepoView, Selected, SharedView, lock};
 
 /// Graph rows laid out at a time while looking for the HEAD commit.
 const HEAD_SCAN_ROWS: u32 = 512;
@@ -216,41 +215,6 @@ impl RepoView {
         .detach();
     }
 
-    pub(super) fn load_changes(&mut self, cx: &mut Context<Self>) {
-        let status = self.core.repo_actions().ports().status.clone();
-        let path = self.path.clone();
-        let read = self.loads.changes.begin();
-        let task =
-            cx.background_spawn(async move { status.changes(&path).map_err(|e| e.to_string()) });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                if !v.loads.changes.is_current(read) {
-                    return; // a later read started: it may see a newer state
-                }
-                match result {
-                    Ok(c) => v.changes = c,
-                    Err(e) => v.status = Some(e),
-                }
-                if v.wip_selected && v.changes.is_empty() {
-                    v.wip_selected = false;
-                }
-                // The open file diff follows the working copy: reloaded while
-                // the file has changes on that side, moved to the other side
-                // once they all went there (file or hunks staged), else closed.
-                if let Some(OpenDiff::Worktree(file, side, _)) = &v.open_diff {
-                    let file = file.clone();
-                    match diff_view::follow(&v.changes, &file, *side) {
-                        Some(side) if v.wip_selected => v.open_worktree_file(file, side, cx),
-                        _ => v.open_diff = None,
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// Selects the uncommitted-changes row: the details pane shows the
     /// staging lists.
     pub(super) fn select_wip(&mut self, cx: &mut Context<Self>) {
@@ -332,7 +296,7 @@ impl RepoView {
         self.core.refresh_repo(self.path.id());
         self.load_graph(cx);
         self.load_refs(cx);
-        self.load_changes(cx);
+        working_copy::load_changes(self, cx);
         self.load_submodules(cx);
     }
 
@@ -343,7 +307,7 @@ impl RepoView {
             self.check_refs(summary, cx);
         }
         staging::on_summary(self, summary, cx);
-        self.load_changes(cx);
+        working_copy::load_changes(self, cx);
         self.refresh_browser(cx);
         // A checkout or an update inside a submodule only shows in the
         // working copy, not in the refs.

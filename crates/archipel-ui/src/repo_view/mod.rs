@@ -55,6 +55,7 @@ use crate::theme::{color, radius, repo_surface, staging_surface, tone};
 use crate::widgets::{
     Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter, unmodified,
 };
+use crate::working_copy::{self, WorkingCopy, WorktreeDiff};
 
 use dialogs::{Confirm, NameForm};
 use loading::RefsState;
@@ -70,8 +71,8 @@ enum OpenDiff {
     /// details diff), or all of them (`None`).
     Commit(Option<usize>, Arc<DiffDoc>),
     /// A working-copy file on one side, its hunks staged or unstaged from
-    /// the diff; `None` while it loads.
-    Worktree(String, DiffSide, Option<Arc<DiffDoc>>),
+    /// the diff.
+    Worktree(WorktreeDiff),
     /// A file of the file browser, read-only.
     File(files::OpenFile),
 }
@@ -309,7 +310,7 @@ impl RepoView {
         };
         view.load_graph(cx);
         view.load_refs(cx);
-        view.load_changes(cx);
+        working_copy::load_changes(&mut view, cx);
         view.load_submodules(cx);
         view.load_pull_requests(cx);
         view
@@ -541,7 +542,7 @@ impl Staging for RepoView {
 
     fn open_file(&self) -> Option<(&str, DiffSide)> {
         match &self.open_diff {
-            Some(OpenDiff::Worktree(file, side, _)) => Some((file, *side)),
+            Some(OpenDiff::Worktree(d)) => Some((&d.file, d.side)),
             _ => None,
         }
     }
@@ -557,8 +558,43 @@ impl Staging for RepoView {
             self.close_diff(window, cx);
         } else {
             self.focus.focus(window, cx);
-            self.open_worktree_file(file, side, cx);
+            working_copy::open_worktree_file(self, file, side, cx);
         }
+    }
+}
+
+impl WorkingCopy for RepoView {
+    fn change_reads(&mut self) -> &mut Latest {
+        &mut self.loads.changes
+    }
+
+    fn set_changes(&mut self, changes: Vec<FileChange>) {
+        self.changes = changes;
+        // Nothing left to show in the uncommitted-changes row.
+        if self.wip_selected && self.changes.is_empty() {
+            self.wip_selected = false;
+        }
+    }
+
+    fn worktree_diff(&mut self) -> Option<&mut WorktreeDiff> {
+        match &mut self.open_diff {
+            Some(OpenDiff::Worktree(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    fn show_worktree_diff(&mut self, diff: Option<WorktreeDiff>) {
+        match diff {
+            Some(d) => self.open_diff = Some(OpenDiff::Worktree(d)),
+            None if matches!(self.open_diff, Some(OpenDiff::Worktree(_))) => self.open_diff = None,
+            None => {}
+        }
+    }
+
+    /// Only while the uncommitted-changes row is selected: the diff belongs
+    /// to its file list.
+    fn follows_working_copy(&self) -> bool {
+        self.wip_selected
     }
 }
 

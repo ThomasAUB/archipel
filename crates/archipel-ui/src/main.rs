@@ -45,6 +45,7 @@ mod syntax;
 mod theme;
 mod widgets;
 mod windows;
+mod working_copy;
 mod workspace;
 mod worktree_dialog;
 mod worktree_open;
