@@ -336,6 +336,11 @@ impl Workspace {
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
             AppEvent::RowsChanged(ids) => {
+                // Worktrees of a repo may have moved, appeared or gone:
+                // every open graph marks them (cheap, from memory).
+                for view in self.repo_views.values() {
+                    view.update(cx, crate::repo_view::RepoView::refresh_worktrees);
+                }
                 let rows = self.core.rows();
                 for id in ids {
                     let row = rows.iter().find(|r| r.id == id);
