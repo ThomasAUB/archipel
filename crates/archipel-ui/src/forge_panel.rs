@@ -10,7 +10,6 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use archipel_app::forge::{ci_label, review_label};
 use archipel_app::{
@@ -30,8 +29,9 @@ use gpui_kit::{
     Context, Entity, EventEmitter, PathPromptOptions, SharedString, Subscription, Window, div, px,
 };
 
+use crate::armed::Armed;
 use crate::theme::{color, radius};
-use crate::widgets::{button, chip, primary_button, section};
+use crate::widgets::{ClickIf as _, button, check, check_box, chip, primary_button, section};
 
 /// Which part of the panel is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,9 +57,6 @@ pub enum ForgePanelEvent {
 /// Report line: text, link, error.
 type Line = (String, Option<String>, bool);
 
-/// How long a Merge button waits for the confirming second click.
-const MERGE_ARM_TIME: Duration = Duration::from_secs(4);
-
 /// The panel.
 #[allow(clippy::struct_excessive_bools)] // independent form toggles
 pub struct ForgePanel {
@@ -79,7 +76,7 @@ pub struct ForgePanel {
     method: MergeMethod,
     delete_branch: bool,
     /// The Merge button clicked once: `(repo, number)`.
-    armed: Option<(RepoId, u64)>,
+    armed: Armed<(RepoId, u64)>,
     // New pull requests.
     plan: Option<PullRequestPlan>,
     title: Entity<InputState>,
@@ -172,7 +169,7 @@ impl ForgePanel {
             open: Vec::new(),
             method: MergeMethod::default(),
             delete_branch: true,
-            armed: None,
+            armed: Armed::default(),
             plan: None,
             title,
             description,
@@ -310,7 +307,7 @@ impl ForgePanel {
     // ----- open pull requests ---------------------------------------------
 
     fn list_open(&mut self, ids: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
-        self.armed = None;
+        self.armed.disarm();
         let core = self.core.clone();
         self.run(
             async move { core.open_pull_requests(&ids).await },
@@ -324,7 +321,7 @@ impl ForgePanel {
     }
 
     /// The Merge button: the first click arms it, a second one before
-    /// [`MERGE_ARM_TIME`] merges.
+    /// [`ARM_TIME`](crate::armed::ARM_TIME) merges.
     fn click_merge(
         &mut self,
         repo: RepoId,
@@ -332,22 +329,9 @@ impl ForgePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.armed != Some((repo, number)) {
-            self.armed = Some((repo, number));
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(MERGE_ARM_TIME).await;
-                let _ = this.update(cx, |p, cx| {
-                    if p.armed == Some((repo, number)) {
-                        p.armed = None;
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
-            cx.notify();
+        if !self.armed.click((repo, number), cx, |p| &mut p.armed) {
             return;
         }
-        self.armed = None;
         let found = self.open.iter().find(|r| r.repo == repo).and_then(|r| {
             let pr = r
                 .result
@@ -731,19 +715,12 @@ impl ForgePanel {
             .items_center()
             .children(methods)
             .child(
-                div()
-                    .id("f-delete-branch")
+                check("f-delete-branch", "Delete source branch", delete, cx)
                     .ml_2()
-                    .cursor_pointer()
                     .on_click(cx.listener(|p, _, _, cx| {
                         p.delete_branch = !p.delete_branch;
                         cx.notify();
-                    }))
-                    .child(if delete {
-                        "☑ Delete source branch"
-                    } else {
-                        "☐ Delete source branch"
-                    }),
+                    })),
             )
             .child(div().flex_1())
             .child(button("f-open-refresh", "Refresh", cx).on_click(
@@ -818,7 +795,7 @@ impl ForgePanel {
             MergeState::Blocked(why) => (why.clone(), T::StatusWarning),
         };
         let id = format!("f-open-{ri}-{number}");
-        let merge = if self.armed == Some((repo, number)) {
+        let merge = if self.armed.is(&(repo, number)) {
             primary_button(
                 SharedString::from(format!("{id}-merge")),
                 "Confirm merge",
@@ -902,14 +879,18 @@ impl ForgePanel {
                 .px_2()
                 .py_1()
                 .rounded(radius(cx))
-                .when(t.problem.is_none(), Styled::cursor_pointer)
-                .on_click(cx.listener(move |p, _, _, cx| {
-                    if let Some(plan) = p.plan.as_mut() {
-                        plan.select(id, !selected);
-                    }
-                    cx.notify();
-                }))
-                .child(if selected { "☑" } else { "☐" })
+                .cursor_pointer()
+                // A repo with a problem cannot be part of the plan.
+                .on_click_if(
+                    t.problem.is_none(),
+                    cx.listener(move |p, _, _, cx| {
+                        if let Some(plan) = p.plan.as_mut() {
+                            plan.select(id, !selected);
+                        }
+                        cx.notify();
+                    }),
+                )
+                .child(check_box(selected, cx))
                 .child(t.name.clone())
                 .child(div().text_xs().text_color(color(cx, tone)).child(detail))
         });
@@ -935,16 +916,12 @@ impl ForgePanel {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(
-                        div()
-                            .id("f-draft")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|p, _, _, cx| {
-                                p.draft = !p.draft;
-                                cx.notify();
-                            }))
-                            .child(if draft { "☑ Draft" } else { "☐ Draft" }),
-                    )
+                    .child(check("f-draft", "Draft", draft, cx).on_click(cx.listener(
+                        |p, _, _, cx| {
+                            p.draft = !p.draft;
+                            cx.notify();
+                        },
+                    )))
                     .child(
                         primary_button(
                             "f-create",
@@ -1119,7 +1096,7 @@ impl ForgePanel {
                         }
                         cx.notify();
                     }))
-                    .child(if *on { "☑" } else { "☐" })
+                    .child(check_box(*on, cx))
                     .child(div().flex_none().child(r.path.clone()))
                     .child(
                         div()
@@ -1157,18 +1134,12 @@ impl ForgePanel {
                     .justify_between()
                     .items_center()
                     .child(
-                        div()
-                            .id("f-ssh")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|p, _, _, cx| {
+                        check("f-ssh", "Clone over SSH", ssh, cx).on_click(cx.listener(
+                            |p, _, _, cx| {
                                 p.ssh = !p.ssh;
                                 cx.notify();
-                            }))
-                            .child(if ssh {
-                                "☑ Clone over SSH"
-                            } else {
-                                "☐ Clone over SSH"
-                            }),
+                            },
+                        )),
                     )
                     .child(
                         primary_button("f-clone", format!("Clone {chosen} into the project"), cx)

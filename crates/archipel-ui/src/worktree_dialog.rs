@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use archipel_app::{App as Core, Command};
 use archipel_model::refs::BranchInfo;
@@ -15,12 +14,14 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, KeyDownEvent, SharedString, Subscription, Window,
-    div, px,
+    AnyElement, Context, Entity, EventEmitter, KeyDownEvent, Subscription, Window, div, px,
 };
 
-use crate::theme::{color, radius};
-use crate::widgets::{button, primary_button};
+use crate::armed::Armed;
+use crate::theme::color;
+use crate::widgets::{
+    ClickIf as _, FIELD_LABEL_WIDTH, button, check, dialog_frame, field, primary_button,
+};
 
 /// What a worktree dialog reports to the workspace.
 pub enum WorktreeDialogEvent {
@@ -30,75 +31,6 @@ pub enum WorktreeDialogEvent {
     Notice(String),
     /// Open this worktree's tab instead (it is where the branch is).
     Open(RepoId),
-}
-
-/// Time the second click of "Remove anyway" stays armed.
-const ARM_TIME: Duration = Duration::from_secs(4);
-
-/// The frame of a dialog: title, body, error, buttons.
-pub fn dialog_frame(
-    id: &'static str,
-    title: impl Into<SharedString>,
-    cx: &gpui_kit::App,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(id)
-        .occlude()
-        .w(px(560.0))
-        .max_h(px(640.0))
-        .flex()
-        .flex_col()
-        .gap_3()
-        .p_4()
-        .bg(color(cx, T::BgElevated))
-        .border_1()
-        .border_color(color(cx, T::Border))
-        .rounded(radius(cx))
-        .shadow_lg()
-        .child(
-            div()
-                .text_color(color(cx, T::FgDefault))
-                .child(title.into()),
-        )
-}
-
-/// A labelled row of a form.
-pub fn field(label: &'static str, input: impl IntoElement, cx: &gpui_kit::App) -> AnyElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .w(px(110.0))
-                .flex_none()
-                .text_color(color(cx, T::FgMuted))
-                .child(label),
-        )
-        .child(div().flex_1().min_w_0().child(input))
-        .into_any_element()
-}
-
-/// A checkbox line.
-pub fn check(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    checked: bool,
-    enabled: bool,
-    cx: &gpui_kit::App,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(gpui_kit::ElementId::Name(id.into()))
-        .flex()
-        .gap_2()
-        .when(enabled, gpui_kit::Styled::cursor_pointer)
-        .when(!enabled, |d| d.opacity(0.5))
-        .child(
-            div()
-                .text_color(color(cx, if checked { T::AccentText } else { T::FgMuted }))
-                .child(if checked { "☑" } else { "☐" }),
-        )
-        .child(label.into())
 }
 
 /// What the New Worktree dialog starts from (its entry point, §6.1).
@@ -443,7 +375,7 @@ impl Render for NewWorktreeDialog {
         })
         .child(
             div()
-                .pl(px(118.0))
+                .pl(px(FIELD_LABEL_WIDTH + 8.0))
                 .text_xs()
                 .text_color(color(cx, T::FgMuted))
                 .child(what),
@@ -466,15 +398,15 @@ impl Render for NewWorktreeDialog {
                 .flex_wrap()
                 .gap_4()
                 .child(
-                    check("wt-detached", "Detached", self.detached, true, cx).on_click(
-                        cx.listener(|d, _, window, cx| {
+                    check("wt-detached", "Detached", self.detached, cx).on_click(cx.listener(
+                        |d, _, window, cx| {
                             d.detached = !d.detached;
                             d.sync_folder(window, cx);
-                        }),
-                    ),
+                        },
+                    )),
                 )
                 .child(
-                    check("wt-sub", "Init submodules", self.init_submodules, true, cx).on_click(
+                    check("wt-sub", "Init submodules", self.init_submodules, cx).on_click(
                         cx.listener(|d, _, _, cx| {
                             d.init_submodules = !d.init_submodules;
                             cx.notify();
@@ -483,7 +415,7 @@ impl Render for NewWorktreeDialog {
                 )
                 .when(self.has_copy_patterns, |d| {
                     d.child(
-                        check("wt-copy", "Copy local files", self.copy_files, true, cx).on_click(
+                        check("wt-copy", "Copy local files", self.copy_files, cx).on_click(
                             cx.listener(|d, _, _, cx| {
                                 d.copy_files = !d.copy_files;
                                 cx.notify();
@@ -492,12 +424,12 @@ impl Render for NewWorktreeDialog {
                     )
                 })
                 .child(
-                    check("wt-open", "Open in a tab", self.open_tab, true, cx).on_click(
-                        cx.listener(|d, _, _, cx| {
+                    check("wt-open", "Open in a tab", self.open_tab, cx).on_click(cx.listener(
+                        |d, _, _, cx| {
                             d.open_tab = !d.open_tab;
                             cx.notify();
-                        }),
-                    ),
+                        },
+                    )),
                 ),
         )
         .children(
@@ -532,7 +464,7 @@ pub struct RemoveWorktreeDialog {
     loss: Option<Result<WorktreeLoss, String>>,
     delete_branch: bool,
     /// "Remove anyway" was clicked once.
-    armed: bool,
+    armed: Armed<()>,
 }
 
 impl EventEmitter<WorktreeDialogEvent> for RemoveWorktreeDialog {}
@@ -553,7 +485,7 @@ impl RemoveWorktreeDialog {
             path,
             loss: None,
             delete_branch: false,
-            armed: false,
+            armed: Armed::default(),
         };
         dialog.load(cx);
         dialog
@@ -580,17 +512,7 @@ impl RemoveWorktreeDialog {
         if loss.in_progress.is_some() {
             return;
         }
-        if !loss.is_safe() && !self.armed {
-            self.armed = true;
-            cx.notify();
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(ARM_TIME).await;
-                let _ = this.update(cx, |d, cx| {
-                    d.armed = false;
-                    cx.notify();
-                });
-            })
-            .detach();
+        if !loss.is_safe() && !self.armed.click((), cx, |d| &mut d.armed) {
             return;
         }
         let command = Command::RemoveWorktree {
@@ -681,7 +603,7 @@ impl Render for RemoveWorktreeDialog {
                 }
             }
         }
-        let remove_label = match (in_progress, safe, self.armed) {
+        let remove_label = match (in_progress, safe, self.armed.is(&())) {
             (true, _, _) | (false, true, _) => "Remove",
             (false, false, false) => "Remove anyway…",
             (false, false, true) => "Click again to remove",
@@ -709,7 +631,6 @@ impl Render for RemoveWorktreeDialog {
                     "rm-branch",
                     format!("Also delete branch {b}"),
                     self.delete_branch,
-                    true,
                     cx,
                 )
                 .on_click(cx.listener(|d, _, _, cx| {
@@ -735,9 +656,8 @@ impl Render for RemoveWorktreeDialog {
                 )
                 .child(
                     primary_button("rm-ok", remove_label, cx)
-                        .when(!ready, |b| b.opacity(0.5))
                         .when(!safe && ready, |b| b.bg(color(cx, T::StatusError)))
-                        .on_click(cx.listener(|d, _, _, cx| d.remove(cx))),
+                        .on_click_if(ready, cx.listener(|d, _, _, cx| d.remove(cx))),
                 ),
         )
     }

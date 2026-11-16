@@ -16,8 +16,9 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, EventEmitter, SharedString, Window, div, px};
 
+use crate::armed::Armed;
 use crate::theme::{color, radius};
-use crate::widgets::{button, primary_button, section};
+use crate::widgets::{ClickIf as _, button, check_box, primary_button, section};
 
 /// What the panel reports to the workspace.
 pub enum BranchesPanelEvent {
@@ -26,9 +27,6 @@ pub enum BranchesPanelEvent {
     /// A delete run finished, with a one-line summary.
     Finished(String),
 }
-
-/// How long the Delete button waits for the confirming second click.
-const ARM_TIME: Duration = Duration::from_secs(4);
 
 /// A branch row of one repo: repo and branch name.
 type Key = (RepoId, String);
@@ -45,7 +43,7 @@ pub struct BranchesPanel {
     in_worktree: HashSet<Key>,
     busy: bool,
     /// Delete clicked once: the next click deletes.
-    armed: bool,
+    armed: Armed<()>,
     errors: Vec<String>,
     report: Vec<(String, String, bool)>,
 }
@@ -64,7 +62,7 @@ impl BranchesPanel {
             selected: HashSet::new(),
             in_worktree: HashSet::new(),
             busy: true,
-            armed: false,
+            armed: Armed::default(),
             errors: Vec::new(),
             report: Vec::new(),
         };
@@ -114,21 +112,9 @@ impl BranchesPanel {
         if self.selected.is_empty() || self.busy {
             return;
         }
-        if !self.armed {
-            self.armed = true;
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(ARM_TIME).await;
-                let _ = this.update(cx, |p, cx| {
-                    p.armed = false;
-                    cx.notify();
-                });
-            })
-            .detach();
-            cx.notify();
-            return;
+        if self.armed.click((), cx, |p| &mut p.armed) {
+            self.delete(cx);
         }
-        self.armed = false;
-        self.delete(cx);
     }
 
     fn delete(&mut self, cx: &mut Context<Self>) {
@@ -208,7 +194,7 @@ impl BranchesPanel {
                 self.selected.remove(&k);
             }
         }
-        self.armed = false;
+        self.armed.disarm();
     }
 
     fn render_section(
@@ -277,10 +263,10 @@ impl BranchesPanel {
                         if !p.selected.remove(&k) {
                             p.selected.insert(k.clone());
                         }
-                        p.armed = false;
+                        p.armed.disarm();
                         cx.notify();
                     }))
-                    .child(if checked { "☑" } else { "☐" })
+                    .child(check_box(checked, cx))
                     .child(
                         div()
                             .text_color(color(cx, T::FgMuted))
@@ -345,19 +331,21 @@ impl Render for BranchesPanel {
             cx,
         );
         let count = self.selected.len();
-        let label = match (self.armed, count) {
+        let label = match (self.armed.is(&()), count) {
             (true, 1) => "Confirm: delete 1 branch".to_owned(),
             (true, n) => format!("Confirm: delete {n} branches"),
             (false, 1) => "Delete 1 branch".to_owned(),
             (false, n) => format!("Delete {n} branches"),
         };
-        let delete = if self.armed {
+        let delete = if self.armed.is(&()) {
             primary_button("b-delete", label, cx)
         } else {
             button("b-delete", label, cx)
         }
-        .when(count == 0 || self.busy, |b| b.opacity(0.5))
-        .on_click(cx.listener(|p, _, _, cx| p.click_delete(cx)));
+        .on_click_if(
+            count > 0 && !self.busy,
+            cx.listener(|p, _, _, cx| p.click_delete(cx)),
+        );
         let report = self.report.iter().map(|(name, text, failed)| {
             div()
                 .text_xs()

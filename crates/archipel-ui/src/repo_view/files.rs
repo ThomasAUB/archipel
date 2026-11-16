@@ -23,7 +23,7 @@ use gpui_kit::{
 
 use crate::file_edit::{self, language_of};
 use crate::theme::{color, mono_font, row_height};
-use crate::widgets::{SHORT_OID, button, scroll_list, section, unmodified};
+use crate::widgets::{ListMove, SHORT_OID, button, list_row, scroll_list, section, unmodified};
 
 use super::{OpenDiff, RepoView};
 
@@ -460,20 +460,17 @@ impl RepoView {
 
     /// Moves the tree selection by `delta` rows; while a file is open, the
     /// file selected opens in its place.
-    fn step_tree(&mut self, delta: i64, cx: &mut Context<Self>) {
+    fn step_tree(&mut self, to: ListMove, cx: &mut Context<Self>) {
         let Some(b) = &mut self.browser else {
             return;
         };
-        let last = i64::try_from(b.rows.len()).unwrap_or(i64::MAX) - 1;
-        if last < 0 {
-            return;
-        }
         let at = b
             .selected
             .as_deref()
-            .and_then(|s| b.rows.iter().position(|r| r.path == s))
-            .map_or(-1, |i| i64::try_from(i).unwrap_or(0));
-        let i = usize::try_from((at + delta).clamp(0, last)).unwrap_or(0);
+            .and_then(|s| b.rows.iter().position(|r| r.path == s));
+        let Some(i) = to.apply(at, b.rows.len()) else {
+            return;
+        };
         let row = b.rows[i].clone();
         b.selected = Some(row.path.clone());
         b.scroll.scroll_to_item(i, ScrollStrategy::Nearest);
@@ -519,20 +516,19 @@ impl RepoView {
         let row = self
             .selected_index()
             .and_then(|i| self.browser.as_ref().map(|b| b.rows[i].clone()));
+        if let Some(to) = ListMove::from_key(&event.keystroke.key) {
+            self.step_tree(to, cx);
+            cx.stop_propagation();
+            return;
+        }
         match (event.keystroke.key.as_str(), row) {
-            ("down", _) => self.step_tree(1, cx),
-            ("up", _) => self.step_tree(-1, cx),
-            ("pagedown", _) => self.step_tree(20, cx),
-            ("pageup", _) => self.step_tree(-20, cx),
-            ("home", _) => self.step_tree(i64::MIN / 2, cx),
-            ("end", _) => self.step_tree(i64::MAX / 2, cx),
             ("enter", _) => self.activate_selected(window, cx),
             ("right", Some(row)) => match row.kind {
                 RowKind::Folder { open: false } => {
                     self.toggle_folder(&row.path, true, cx);
                     cx.notify();
                 }
-                RowKind::Folder { open: true } => self.step_tree(1, cx),
+                RowKind::Folder { open: true } => self.step_tree(ListMove::By(1), cx),
                 RowKind::File(_) => self.activate_selected(window, cx),
             },
             ("left", Some(row)) => match (row.kind, parent(&row.path)) {
@@ -807,7 +803,6 @@ fn render_tree_row(
     open: bool,
     cx: &mut Context<RepoView>,
 ) -> AnyElement {
-    let hover = color(cx, T::BgHover);
     let (glyph, note) = match row.kind {
         RowKind::Folder { open: true } => ("▾", None),
         RowKind::Folder { open: false } => ("▸", None),
@@ -819,8 +814,7 @@ fn render_tree_row(
     let path = row.path.clone();
     let kind = row.kind;
     let depth = f32::from(u16::try_from(row.depth).unwrap_or(u16::MAX));
-    div()
-        .id(SharedString::from(format!("tree-{}", row.path)))
+    list_row(SharedString::from(format!("tree-{}", row.path)), open, cx)
         .w_full()
         .h(row_height(cx))
         .flex()
@@ -828,10 +822,9 @@ fn render_tree_row(
         .gap_1()
         .pl(px(8.0 + depth * INDENT))
         .pr_2()
-        .cursor_pointer()
-        .when(open, |d| d.bg(color(cx, T::BgSelected)))
-        .when(selected && !open, |d| d.bg(color(cx, T::BgHover)))
-        .hover(move |s| s.bg(hover))
+        // The keyboard cursor, when not on the open file: not the hover
+        // tint, which the pointer gives any row.
+        .when(selected && !open, |d| d.bg(color(cx, T::AccentSubtle)))
         .on_click(cx.listener(move |v, _, window, cx| {
             if let Some(b) = &mut v.browser {
                 b.selected = Some(path.clone());

@@ -9,6 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, EventEmitter, KeyDownEvent, SharedString, Subscription, Window, div, px};
 
 use crate::theme::{color, radius};
+use crate::widgets::{ListMove, list_row};
 
 /// One entry of the palette.
 #[derive(Clone, Debug)]
@@ -123,16 +124,17 @@ impl Palette {
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let count = self.matches(cx).len();
         match event.keystroke.key.as_str() {
-            "down" if count > 0 => {
-                self.selected = (self.selected + 1).min(count - 1);
-                self.moved = true;
-            }
-            "up" => {
-                self.selected = self.selected.saturating_sub(1);
-                self.moved = true;
-            }
             "escape" => cx.emit(PaletteEvent::Dismissed),
-            _ => return,
+            // Home and End stay the text field's.
+            key => match ListMove::from_key(key) {
+                Some(to @ ListMove::By(_)) => {
+                    if let Some(i) = to.apply(Some(self.selected), count) {
+                        self.selected = i;
+                        self.moved = true;
+                    }
+                }
+                _ => return,
+            },
         }
         cx.notify();
     }
@@ -142,8 +144,6 @@ impl Render for Palette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let matches = self.matches(cx);
         let first = self.selected.saturating_sub(VISIBLE_ITEMS - 1);
-        let selected_bg = color(cx, T::BgSelected);
-        let hover = color(cx, T::BgHover);
         let rows = matches
             .into_iter()
             .enumerate()
@@ -151,34 +151,34 @@ impl Render for Palette {
             .take(VISIBLE_ITEMS)
             .map(|(i, item)| {
                 let id = item.id.clone();
-                div()
-                    .id(SharedString::from(format!("palette-item-{i}")))
-                    .flex()
-                    .justify_between()
-                    .gap_4()
-                    .px_3()
-                    .py_1()
-                    .rounded(radius(cx))
-                    .cursor_pointer()
-                    .when(i == self.selected, |d| d.bg(selected_bg))
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(PaletteEvent::Confirmed(id.clone()));
-                    }))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(color(cx, T::FgDefault))
-                            .child(item.label),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(color(cx, T::FgMuted))
-                            .child(item.detail),
-                    )
+                list_row(
+                    SharedString::from(format!("palette-item-{i}")),
+                    i == self.selected,
+                    cx,
+                )
+                .flex()
+                .justify_between()
+                .gap_4()
+                .px_3()
+                .py_1()
+                .rounded(radius(cx))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(PaletteEvent::Confirmed(id.clone()));
+                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(color(cx, T::FgDefault))
+                        .child(item.label),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(color(cx, T::FgMuted))
+                        .child(item.detail),
+                )
             });
         div()
             .absolute()

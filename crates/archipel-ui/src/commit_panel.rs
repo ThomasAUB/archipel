@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, SharedString, Window, div, px};
 
 use crate::theme::{color, radius};
-use crate::widgets::{SHORT_OID, button, primary_button, section};
+use crate::widgets::{ClickIf as _, SHORT_OID, button, check, check_box, primary_button, section};
 
 /// What the panel reports to the workspace.
 pub enum CommitPanelEvent {
@@ -248,7 +248,7 @@ impl Render for CommitPanel {
                             div()
                                 .flex()
                                 .gap_2()
-                                .child(if t.selected { "☑" } else { "☐" })
+                                .child(check_box(t.selected, cx))
                                 .child(t.path.name())
                                 .child(
                                     div().text_color(color(cx, T::FgMuted)).child(
@@ -334,18 +334,12 @@ impl Render for CommitPanel {
                     .justify_between()
                     .items_center()
                     .child(
-                        div()
-                            .id("c-push")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|p, _, _, cx| {
+                        check("c-push", "Push after commit", push, cx).on_click(cx.listener(
+                            |p, _, _, cx| {
                                 p.push_after = !p.push_after;
                                 cx.notify();
-                            }))
-                            .child(if push {
-                                "☑ Push after commit"
-                            } else {
-                                "☐ Push after commit"
-                            }),
+                            },
+                        )),
                     )
                     .child(
                         primary_button(
@@ -357,8 +351,7 @@ impl Render for CommitPanel {
                             },
                             cx,
                         )
-                        .when(self.busy, |b| b.opacity(0.5))
-                        .on_click(cx.listener(|p, _, _, cx| p.run(cx))),
+                        .on_click_if(!self.busy, cx.listener(|p, _, _, cx| p.run(cx))),
                     ),
             )
             .children(

@@ -6,7 +6,6 @@
 //! behavior live here, so both places show and do exactly the same.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use archipel_app::forge::{ForgeStatus, pick_remote};
 use archipel_app::{App as Core, Command};
@@ -29,18 +28,15 @@ use gpui_kit::{
     div, px,
 };
 
+use crate::armed::Armed;
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
 use crate::ignore::{self, IgnoreDialog};
 use crate::theme::{color, row_height};
-use crate::widgets::{TextTooltip, button, icon_button, primary_button, section};
+use crate::widgets::{TextTooltip, button, check, icon_button, list_row, primary_button, section};
 
 /// Height of the branch switcher list before it scrolls.
 const BRANCH_LIST_HEIGHT: f32 = 160.0;
-
-/// How long a Discard (or Force push) button waits for the confirming
-/// second click.
-const DISCARD_ARM_TIME: Duration = Duration::from_secs(3);
 
 /// The armed-discard key of the "Discard all" button (no file is named so).
 const ALL_FILES: &str = "\0all";
@@ -92,7 +88,7 @@ pub struct Panel {
     /// checked: unchecking Amend clears it again if left untouched.
     amend_prefill: Option<String>,
     /// The Discard button clicked once ([`ALL_FILES`] for "Discard all").
-    armed: Option<String>,
+    armed: Armed<String>,
     /// The last summary of the repo (head, upstream, stashes, …).
     summary: Option<RepoSummary>,
     /// The new branch name; Enter creates it.
@@ -105,8 +101,9 @@ pub struct Panel {
     /// The dialog adding a file to the `.gitignore`, while open.
     pub(crate) ignore: Option<IgnoreDialog>,
     /// The force push armed by Push on a diverged branch: the button turns
-    /// red, and a second click before [`DISCARD_ARM_TIME`] force pushes.
-    force_push: Option<ForcePush>,
+    /// red, and a second click before [`ARM_TIME`](crate::armed::ARM_TIME)
+    /// force pushes.
+    force_push: Armed<ForcePush>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -149,20 +146,20 @@ impl Panel {
             message,
             amend: false,
             amend_prefill: None,
-            armed: None,
+            armed: Armed::default(),
             summary,
             branch_input,
             branches: None,
             edit: None,
             ignore: None,
-            force_push: None,
+            force_push: Armed::default(),
             _subscriptions: subscriptions,
         }
     }
 
     /// The Discard button clicked once, waiting for its second click.
     pub fn armed(&self) -> Option<&str> {
-        self.armed.as_deref()
+        self.armed.get().map(String::as_str)
     }
 
     /// The last summary of the repo.
@@ -242,39 +239,23 @@ pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {
 }
 
 /// A file's Discard button: the first click arms it, a second one before
-/// [`DISCARD_ARM_TIME`] discards.
+/// [`ARM_TIME`](crate::armed::ARM_TIME) discards.
 fn click_discard<V: Staging>(v: &mut V, file: String, cx: &mut Context<V>) {
     let files = vec![file.clone()];
     arm_discard(v, file, cx, move |a, p, _| a.discard(p, &files));
 }
 
 /// A Discard button: the first click arms `key`, a second one on the same
-/// key before [`DISCARD_ARM_TIME`] runs `job`.
+/// key before [`ARM_TIME`](crate::armed::ARM_TIME) runs `job`.
 pub(crate) fn arm_discard<V: Staging>(
     v: &mut V,
     key: String,
     cx: &mut Context<V>,
     job: impl FnOnce(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError> + Send + 'static,
 ) {
-    let armed = &mut v.panel().armed;
-    if armed.as_ref() == Some(&key) {
-        *armed = None;
+    if v.panel().armed.click(key, cx, |v| &mut v.panel().armed) {
         v.run_job("Discard".into(), cx, Box::new(job));
-        return;
     }
-    *armed = Some(key.clone());
-    cx.spawn(async move |this, cx| {
-        cx.background_executor().timer(DISCARD_ARM_TIME).await;
-        let _ = this.update(cx, |v, cx| {
-            let armed = &mut v.panel().armed;
-            if armed.as_ref() == Some(&key) {
-                *armed = None;
-                cx.notify();
-            }
-        });
-    })
-    .detach();
-    cx.notify();
 }
 
 /// Commits the staged files (or amends), then pushes when `push`.
@@ -499,21 +480,11 @@ fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
 }
 
 /// Turns Push into a red Force push button until a second click or
-/// [`DISCARD_ARM_TIME`].
+/// [`ARM_TIME`](crate::armed::ARM_TIME).
 fn arm_force_push<V: Staging>(v: &mut V, force: ForcePush, cx: &mut Context<V>) {
-    v.panel().force_push = Some(force.clone());
-    cx.spawn(async move |this, cx| {
-        cx.background_executor().timer(DISCARD_ARM_TIME).await;
-        let _ = this.update(cx, |v, cx| {
-            let armed = &mut v.panel().force_push;
-            if armed.as_ref() == Some(&force) {
-                *armed = None;
-                cx.notify();
-            }
-        });
-    })
-    .detach();
-    cx.notify();
+    v.panel()
+        .force_push
+        .arm(force, cx, |v| &mut v.panel().force_push);
 }
 
 /// Runs the armed force push, leased on the upstream tip.
@@ -612,7 +583,7 @@ pub fn small(b: Stateful<Div>) -> Stateful<Div> {
 /// Push, or once armed on a diverged branch a red "Force push?" like the
 /// armed Discard buttons, explained by its tooltip.
 fn push_button<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Stateful<Div> {
-    let label = match v.panel().force_push.as_ref() {
+    let label = match v.panel().force_push.get() {
         Some(force) => {
             let danger = color(cx, T::StatusError);
             let explanation = force.explanation();
@@ -867,7 +838,7 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
         }
     }
     let open = v.open_file().map(|(f, s)| (f.to_owned(), s));
-    let (amend, armed) = (v.panel().amend, v.panel().armed.clone());
+    let (amend, armed) = (v.panel().amend, v.panel().armed().map(str::to_owned));
     let staged_rows: Vec<_> = staged
         .iter()
         .map(|c| file_row(c, DiffSide::Staged, open.as_ref(), armed.as_deref(), cx))
@@ -983,7 +954,6 @@ fn file_row<V: Staging>(
     armed: Option<&str>,
     cx: &mut Context<V>,
 ) -> AnyElement {
-    let hover = color(cx, T::BgHover);
     let path = c.path.clone();
     // The marker follows the change on the side shown: a file deleted in
     // the worktree reads as deleted, not edited.
@@ -1009,89 +979,89 @@ fn file_row<V: Staging>(
         ("Stage", IconName::Plus)
     };
     let danger = color(cx, T::StatusError);
-    div()
-        .id(SharedString::from(format!("f-{side:?}-{path}")))
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_2()
-        .h(row_height(cx))
-        .cursor_pointer()
-        .on_click(cx.listener(move |v: &mut V, _, window, cx| {
-            v.click_file(p1.clone(), side, window, cx);
-        }))
-        .when(is_open, |d| d.bg(color(cx, T::BgSelected)))
-        .hover(move |s| s.bg(hover))
-        .child(
-            div()
-                .w(px(14.0))
-                .flex_none()
-                .text_color(color(cx, token))
-                .child(label),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .when(deleted, |d| {
-                    d.line_through().text_color(color(cx, T::FgMuted))
-                })
-                .child(path),
-        )
-        .when(side == DiffSide::Unstaged, |d| {
-            d.child(
-                icon_button(
-                    SharedString::from(format!("ignore-{p4}")),
-                    IconName::EyeOff,
-                    "Add to .gitignore…",
-                    cx,
-                )
-                .on_click(cx.listener(move |v: &mut V, _, window, cx| {
-                    cx.stop_propagation();
-                    ignore::open(v, p4.clone(), tracked, window, cx);
-                })),
-            )
-        })
-        .when(side == DiffSide::Unstaged, |d| {
-            let id = SharedString::from(format!("discard-{p3}"));
-            let discard = if armed == Some(p3.as_str()) {
-                button(id, "Discard?", cx)
-                    .py_0()
-                    .text_color(danger)
-                    .border_color(danger)
-            } else {
-                icon_button(id, IconName::Undo2, "Discard (click twice)", cx)
-            };
-            // Kept apart from Stage so a slip does not hit it.
-            d.child(
-                discard
-                    .mr_3()
-                    .on_click(cx.listener(move |v: &mut V, _, _, cx| {
-                        cx.stop_propagation();
-                        click_discard(v, p3.clone(), cx);
-                    })),
-            )
-        })
-        .child(
+    list_row(
+        SharedString::from(format!("f-{side:?}-{path}")),
+        is_open,
+        cx,
+    )
+    .flex()
+    .items_center()
+    .gap_2()
+    .px_2()
+    .h(row_height(cx))
+    .on_click(cx.listener(move |v: &mut V, _, window, cx| {
+        v.click_file(p1.clone(), side, window, cx);
+    }))
+    .child(
+        div()
+            .w(px(14.0))
+            .flex_none()
+            .text_color(color(cx, token))
+            .child(label),
+    )
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .when(deleted, |d| {
+                d.line_through().text_color(color(cx, T::FgMuted))
+            })
+            .child(path),
+    )
+    .when(side == DiffSide::Unstaged, |d| {
+        d.child(
             icon_button(
-                SharedString::from(format!("stage-{side:?}-{p2}")),
-                icon,
-                action,
+                SharedString::from(format!("ignore-{p4}")),
+                IconName::EyeOff,
+                "Add to .gitignore…",
                 cx,
             )
-            .on_click(cx.listener(move |v: &mut V, _, _, cx| {
+            .on_click(cx.listener(move |v: &mut V, _, window, cx| {
                 cx.stop_propagation();
-                let files = vec![p2.clone()];
-                let job: Job = if side == DiffSide::Staged {
-                    Box::new(move |a, p, _| a.unstage(p, &files))
-                } else {
-                    Box::new(move |a, p, _| a.stage(p, &files))
-                };
-                v.run_job(action.into(), cx, job);
+                ignore::open(v, p4.clone(), tracked, window, cx);
             })),
         )
-        .into_any_element()
+    })
+    .when(side == DiffSide::Unstaged, |d| {
+        let id = SharedString::from(format!("discard-{p3}"));
+        let discard = if armed == Some(p3.as_str()) {
+            button(id, "Discard?", cx)
+                .py_0()
+                .text_color(danger)
+                .border_color(danger)
+        } else {
+            icon_button(id, IconName::Undo2, "Discard (click twice)", cx)
+        };
+        // Kept apart from Stage so a slip does not hit it.
+        d.child(
+            discard
+                .mr_3()
+                .on_click(cx.listener(move |v: &mut V, _, _, cx| {
+                    cx.stop_propagation();
+                    click_discard(v, p3.clone(), cx);
+                })),
+        )
+    })
+    .child(
+        icon_button(
+            SharedString::from(format!("stage-{side:?}-{p2}")),
+            icon,
+            action,
+            cx,
+        )
+        .on_click(cx.listener(move |v: &mut V, _, _, cx| {
+            cx.stop_propagation();
+            let files = vec![p2.clone()];
+            let job: Job = if side == DiffSide::Staged {
+                Box::new(move |a, p, _| a.unstage(p, &files))
+            } else {
+                Box::new(move |a, p, _| a.stage(p, &files))
+            };
+            v.run_job(action.into(), cx, job);
+        })),
+    )
+    .into_any_element()
 }
 
 fn commit_box<V: Staging>(
@@ -1113,18 +1083,11 @@ fn commit_box<V: Staging>(
                 .items_center()
                 .justify_between()
                 .child(
-                    div()
-                        .id("amend")
-                        .cursor_pointer()
+                    check("amend", "Amend last commit", amend, cx)
                         .text_color(color(cx, if amend { T::Accent } else { T::FgMuted }))
                         .on_click(cx.listener(|v: &mut V, _, window, cx| {
                             toggle_amend(v, window, cx);
-                        }))
-                        .child(if amend {
-                            "☑ Amend last commit"
-                        } else {
-                            "☐ Amend last commit"
-                        }),
+                        })),
                 )
                 .child(
                     div()

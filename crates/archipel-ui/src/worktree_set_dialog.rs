@@ -22,8 +22,9 @@ use gpui_kit::{
 };
 
 use crate::theme::color;
+use crate::widgets::{ClickIf as _, check, dialog_frame, field};
 use crate::widgets::{button, primary_button, section};
-use crate::worktree_dialog::{WorktreeDialogEvent, check, dialog_frame, field};
+use crate::worktree_dialog::WorktreeDialogEvent;
 
 /// Wait after the last keystroke before checking the branch in every repo.
 const CHECK_DELAY: Duration = Duration::from_millis(350);
@@ -279,19 +280,21 @@ impl NewSetDialog {
                             SharedString::from(format!("set-repo-{i}")),
                             r.info.name.clone(),
                             r.checked,
-                            blocked.is_none(),
                             cx,
                         )
                         .w(px(170.0))
                         .flex_none()
-                        .on_click(cx.listener(move |d, _, _, cx| {
-                            if let Some(row) = d.rows.get_mut(i)
-                                && row.info.checked_out_in.is_none()
-                            {
-                                row.checked = !row.checked;
-                            }
-                            cx.notify();
-                        })),
+                        .on_click_if(
+                            blocked.is_none(),
+                            cx.listener(move |d, _, _, cx| {
+                                if let Some(row) = d.rows.get_mut(i)
+                                    && row.info.checked_out_in.is_none()
+                                {
+                                    row.checked = !row.checked;
+                                }
+                                cx.notify();
+                            }),
+                        ),
                     )
                     .child(
                         div()
@@ -402,11 +405,12 @@ impl Render for NewSetDialog {
                     .gap_4()
                     .when(any_submodules, |d| {
                         d.child(
-                            check("set-sub", "Init submodules", self.init_submodules, true, cx)
-                                .on_click(cx.listener(|d, _, _, cx| {
+                            check("set-sub", "Init submodules", self.init_submodules, cx).on_click(
+                                cx.listener(|d, _, _, cx| {
                                     d.init_submodules = !d.init_submodules;
                                     cx.notify();
-                                })),
+                                }),
+                            ),
                         )
                     })
                     .child(
@@ -414,7 +418,6 @@ impl Render for NewSetDialog {
                             "set-copy-files",
                             "Copy local files (.env, …)",
                             self.copy_files,
-                            true,
                             cx,
                         )
                         .on_click(cx.listener(|d, _, _, cx| {
@@ -447,12 +450,10 @@ impl Render for NewSetDialog {
                         ))
                         .child(
                             primary_button("set-create", format!("Create {count} worktree(s)"), cx)
-                                .when(self.busy, |b| b.opacity(0.5))
-                                .on_click(cx.listener(|d, _, _, cx| {
-                                    if !d.busy {
-                                        d.create(cx, None);
-                                    }
-                                })),
+                                .on_click_if(
+                                    !self.busy,
+                                    cx.listener(|d, _, _, cx| d.create(cx, None)),
+                                ),
                         ),
                 )
             })
@@ -602,13 +603,13 @@ impl Render for FinishSetDialog {
                                     SharedString::from(format!("fin-{i}")),
                                     r.state.name.clone(),
                                     r.remove,
-                                    checkable,
                                     cx,
                                 )
                                 .w(px(170.0))
                                 .flex_none()
-                                .on_click(cx.listener(
-                                    move |d, _, _, cx| {
+                                .on_click_if(
+                                    checkable,
+                                    cx.listener(move |d, _, _, cx| {
                                         if checkable
                                             && let Some(row) =
                                                 d.rows.as_mut().and_then(|r| r.get_mut(i))
@@ -616,8 +617,8 @@ impl Render for FinishSetDialog {
                                             row.remove = !row.remove;
                                         }
                                         cx.notify();
-                                    },
-                                )),
+                                    }),
+                                ),
                             )
                             .child(
                                 div()
@@ -634,20 +635,21 @@ impl Render for FinishSetDialog {
                                         SharedString::from(format!("fin-br-{i}")),
                                         format!("delete {b}"),
                                         r.delete_branch,
-                                        r.remove,
                                         cx,
                                     )
                                     .text_xs()
-                                    .on_click(cx.listener(
-                                        move |d, _, _, cx| {
+                                    // Only for a member being removed.
+                                    .on_click_if(
+                                        r.remove,
+                                        cx.listener(move |d, _, _, cx| {
                                             if let Some(row) =
                                                 d.rows.as_mut().and_then(|r| r.get_mut(i))
                                             {
                                                 row.delete_branch = !row.delete_branch;
                                             }
                                             cx.notify();
-                                        },
-                                    )),
+                                        }),
+                                    ),
                                 )
                             })
                             .into_any_element(),

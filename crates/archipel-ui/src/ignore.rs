@@ -13,7 +13,7 @@ use gpui_kit::{
 
 use crate::staging::Staging;
 use crate::theme::{color, mono_font, radius};
-use crate::widgets::{button, modal, primary_button};
+use crate::widgets::{button, list_row, modal, primary_button};
 
 /// A pattern proposed for a file, with what it ignores.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,44 +199,43 @@ fn pick<V: Staging>(v: &mut V, pattern: String, window: &mut Window, cx: &mut Co
 pub(crate) fn render<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
     let dialog = v.panel().ignore.as_ref()?;
     let current = dialog.input.read(cx).value().to_string();
-    let (hover, selected) = (color(cx, T::BgHover), color(cx, T::BgSelected));
     let rows: Vec<AnyElement> = dialog
         .choices
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let pattern = c.pattern.clone();
-            div()
-                .id(SharedString::from(format!("ignore-choice-{i}")))
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_2()
-                .py_1()
-                .rounded(radius(cx))
-                .cursor_pointer()
-                .when(current == c.pattern, |d| d.bg(selected))
-                .hover(move |s| s.bg(hover))
-                .on_click(cx.listener(move |v: &mut V, _, window, cx| {
-                    pick(v, pattern.clone(), window, cx);
-                }))
-                .child(
-                    div()
-                        .w(px(190.0))
-                        .flex_none()
-                        .truncate()
-                        .font_family(mono_font(cx))
-                        .child(c.pattern.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(color(cx, T::FgMuted))
-                        .child(c.what.clone()),
-                )
-                .into_any_element()
+            list_row(
+                SharedString::from(format!("ignore-choice-{i}")),
+                current == c.pattern,
+                cx,
+            )
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_2()
+            .py_1()
+            .rounded(radius(cx))
+            .on_click(cx.listener(move |v: &mut V, _, window, cx| {
+                pick(v, pattern.clone(), window, cx);
+            }))
+            .child(
+                div()
+                    .w(px(190.0))
+                    .flex_none()
+                    .truncate()
+                    .font_family(mono_font(cx))
+                    .child(c.pattern.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(color(cx, T::FgMuted))
+                    .child(c.what.clone()),
+            )
+            .into_any_element()
         })
         .collect();
     let note = dialog.tracked.then(|| {
