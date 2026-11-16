@@ -1,11 +1,16 @@
-//! Right-click menus of the window: repo row, sidebar category header and
-//! tab.
+//! Menus of the window: the right-click menus (repo row, sidebar category
+//! header, tab) and the dropdowns (category filter, theme, Set Selector).
+//!
+//! One menu is open at a time, in [`Workspace::menu`] with what it acts on:
+//! opening one closes the other, and Escape, a click outside or running an
+//! action closes it.
 
 use archipel_app::Command;
 use archipel_model::RepoId;
+use archipel_model::ui_state::TabState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, div};
+use gpui_kit::{AnyElement, Context, MouseDownEvent, Pixels, Point, div};
 
 use crate::forge_panel::ForgeTab;
 use crate::theme::color;
@@ -14,7 +19,98 @@ use crate::widgets::{context_menu, menu_item, menu_separator, popup_at};
 use super::Workspace;
 use super::overlays::PaletteKind;
 
+/// A menu of the window and what it acts on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Menu {
+    /// Right-click menu of a repo or worktree row.
+    Row(RepoId),
+    /// Right-click menu of a sidebar category header.
+    Category(String),
+    /// Right-click menu of a tab: the tab itself, not its index, so it
+    /// still acts on that tab when others close meanwhile.
+    Tab(TabState),
+    /// The dashboard's category filter dropdown.
+    CategoryFilter,
+    /// The status bar's theme picker.
+    Theme,
+    /// The dashboard's Set Selector dropdown.
+    SetSelector,
+}
+
 impl Workspace {
+    /// Opens `menu` at `position`, closing any other.
+    pub(super) fn open_menu(
+        &mut self,
+        menu: Menu,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = Some((menu, position));
+        self.menu_closed_at = None;
+        cx.notify();
+    }
+
+    /// Closes the open menu, if any.
+    pub(super) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// A left mouse down on the button of dropdown `menu`: opens it, or
+    /// closes it when open. A click outside a menu closes it before the
+    /// button hears of the click, so the click that just closed it from
+    /// its own button does not reopen it.
+    pub(super) fn toggle_menu(&mut self, menu: Menu, e: &MouseDownEvent, cx: &mut Context<Self>) {
+        let just_closed = self.menu_closed_at.take() == Some((menu.clone(), e.position));
+        let open = self.menu.as_ref().is_some_and(|(m, _)| *m == menu);
+        if just_closed || open {
+            self.close_menu(cx);
+        } else {
+            self.open_menu(menu, e.position, cx);
+        }
+        cx.stop_propagation();
+    }
+
+    /// Where `menu` is open, if it is the open menu.
+    pub(super) fn menu_position(&self, menu: &Menu) -> Option<Point<Pixels>> {
+        self.menu
+            .as_ref()
+            .filter(|(m, _)| m == menu)
+            .map(|(_, p)| *p)
+    }
+
+    /// `body` as the open menu's popup at `position`; a click outside it
+    /// closes it.
+    pub(super) fn menu_popup(
+        position: Point<Pixels>,
+        body: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let frame = div()
+            .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                if let Some((menu, _)) = this.menu.take() {
+                    this.menu_closed_at = Some((menu, e.position));
+                    cx.notify();
+                }
+            }))
+            .child(body);
+        popup_at(position, frame).into_any_element()
+    }
+
+    /// The open right-click menu, drawn over the window. The dropdowns are
+    /// drawn by their button.
+    pub(super) fn render_context_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (menu, position) = self.menu.clone()?;
+        let body = match menu {
+            Menu::Row(id) => self.row_menu(id, cx)?,
+            Menu::Category(category) => Self::category_menu(category, cx),
+            Menu::Tab(tab) => self.tab_menu(&tab, cx)?,
+            Menu::CategoryFilter | Menu::Theme | Menu::SetSelector => return None,
+        };
+        Some(Self::menu_popup(position, body, cx))
+    }
+
     /// Row menu entry: open the repo's pull request, or create pull requests
     /// for the targeted repos (spec §8).
     fn forge_menu_item(
@@ -23,56 +119,45 @@ impl Workspace {
         targets: Vec<RepoId>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let hover = color(cx, T::BgHover);
         let open = self
             .core
             .row(id)
             .and_then(|r| r.forge.pull_request().map(|pr| (pr.number, pr.url.clone())));
-        let base = div()
-            .id("menu-forge")
-            .px_3()
-            .py_1()
-            .cursor_pointer()
-            .hover(move |s| s.bg(hover));
         match open {
-            Some((number, url)) => base
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.row_menu = None;
-                    cx.open_url(&url);
-                    cx.notify();
-                }))
-                .child(format!("Open pull request #{number}"))
-                .into_any_element(),
-            None => base
+            Some((number, url)) => menu_item(
+                "menu-forge",
+                format!("Open pull request #{number}"),
+                false,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.menu = None;
+                cx.open_url(&url);
+                cx.notify();
+            }))
+            .into_any_element(),
+            None => menu_item("menu-forge", "Create pull request…", false, cx)
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.row_menu = None;
+                    this.menu = None;
                     this.open_forge(ForgeTab::Create(targets.clone()), window, cx);
                 }))
-                .child("Create pull request…")
                 .into_any_element(),
         }
     }
 
     /// Row menu entry: open the CI run of the repo's branch, when it has one.
     fn ci_menu_item(&self, id: RepoId, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let hover = color(cx, T::BgHover);
         let url = self
             .core
             .row(id)
             .and_then(|r| r.ci.run().and_then(|run| run.url.clone()))?;
         Some(
-            div()
-                .id("menu-ci")
-                .px_3()
-                .py_1()
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
+            menu_item("menu-ci", "Open CI run", false, cx)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.row_menu = None;
+                    this.menu = None;
                     cx.open_url(&url);
                     cx.notify();
                 }))
-                .child("Open CI run")
                 .into_any_element(),
         )
     }
@@ -96,68 +181,49 @@ impl Workspace {
             1 => "Rerun failed jobs".to_owned(),
             n => format!("Rerun failed jobs of {n} repos"),
         };
-        let hover = color(cx, T::BgHover);
         Some(
-            div()
-                .id("menu-ci-rerun")
-                .px_3()
-                .py_1()
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
+            menu_item("menu-ci-rerun", label, false, cx)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.row_menu = None;
+                    this.menu = None;
                     this.dispatch(Command::RerunFailedCi(failing.clone()), cx);
                 }))
-                .child(label)
                 .into_any_element(),
         )
     }
 
     /// Right-click menu of a sidebar category header: rename, remove.
-    pub(super) fn render_category_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (category, position) = self.category_menu.clone()?;
-        let hover = color(cx, T::BgHover);
+    fn category_menu(category: String, cx: &mut Context<Self>) -> AnyElement {
         let rename = category.clone();
-        let menu = context_menu(cx)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.category_menu = None;
-                cx.notify();
-            }))
+        context_menu(cx)
             .child(
-                div()
-                    .id("category-menu-rename")
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.category_menu = None;
-                        this.renaming_category = Some(rename.clone());
-                        this.open_palette(PaletteKind::RenameCategory, window, cx);
-                    }))
-                    .child("Rename category…"),
+                menu_item("category-menu-rename", "Rename category…", false, cx).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.menu = None;
+                        this.open_palette(PaletteKind::RenameCategory(rename.clone()), window, cx);
+                    }),
+                ),
             )
             .child(
-                div()
-                    .id("category-menu-remove")
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .text_color(color(cx, T::StatusError))
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.category_menu = None;
-                        this.dispatch(Command::RenameCategory(category.clone(), None), cx);
-                    }))
-                    .child("Remove category (repos stay in the project)"),
-            );
-        Some(popup_at(position, menu).into_any_element())
+                menu_item(
+                    "category-menu-remove",
+                    "Remove category (repos stay in the project)",
+                    true,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.menu = None;
+                    this.dispatch(Command::RenameCategory(category.clone(), None), cx);
+                })),
+            )
+            .into_any_element()
     }
 
-    /// Right-click menu of a tab: close it, the others, those to its right, all.
-    pub(super) fn render_tab_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (index, position) = self.tab_menu?;
-        let count = self.core.ui_state()?.tabs.len();
+    /// Right-click menu of a tab: close it, the others, those to its right,
+    /// all. None once the tab is closed.
+    fn tab_menu(&mut self, tab: &TabState, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tabs = self.core.ui_state()?.tabs;
+        let index = tabs.iter().position(|t| t == tab)?;
+        let count = tabs.len();
         let mut entries = Vec::new();
         if index > 0 {
             entries.push(("Close", Command::CloseTab(index)));
@@ -169,16 +235,12 @@ impl Workspace {
         let rows = entries.into_iter().enumerate().map(|(k, (label, cmd))| {
             menu_item(("tab-menu", k), label, false, cx)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.tab_menu = None;
+                    this.menu = None;
                     this.dispatch(cmd.clone(), cx);
                 }))
                 .into_any_element()
         });
         let menu = context_menu(cx)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.tab_menu = None;
-                cx.notify();
-            }))
             .children(rows)
             .when(index > 0 || index + 1 < count, |m| {
                 m.child(menu_separator(cx))
@@ -186,18 +248,17 @@ impl Workspace {
             .child(
                 menu_item("tab-menu-all", "Close all", false, cx).on_click(cx.listener(
                     |this, _, _, cx| {
-                        this.tab_menu = None;
+                        this.menu = None;
                         this.dispatch(Command::CloseAllTabs, cx);
                     },
                 )),
             );
-        Some(popup_at(position, menu).into_any_element())
+        Some(menu.into_any_element())
     }
 
     /// The context menu of a repo row (right click).
     #[allow(clippy::too_many_lines)] // declarative element tree
-    pub(super) fn render_row_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (id, position) = self.row_menu?;
+    fn row_menu(&mut self, id: RepoId, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ui = self.core.ui_state()?;
         // Acting on a selected row acts on the whole selection.
         let selection = ui.batch_selection();
@@ -227,7 +288,7 @@ impl Workspace {
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.row_menu = None;
+                    this.menu = None;
                     this.dispatch(command.clone(), cx);
                 }))
                 .child(label)
@@ -244,10 +305,6 @@ impl Workspace {
             (format!("Hide{plural}"), Some("Ctrl+H"))
         };
         let menu = context_menu(cx)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.row_menu = None;
-                cx.notify();
-            }))
             .child(item(
                 "menu-open",
                 "Open".into(),
@@ -264,21 +321,17 @@ impl Workspace {
             ))
             .child({
                 let targets = targets.clone();
-                div()
-                    .id("menu-category")
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.row_menu = None;
+                let label = if n > 1 {
+                    format!("Set category of{plural}…")
+                } else {
+                    "Set category…".to_owned()
+                };
+                menu_item("menu-category", label, false, cx).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.menu = None;
                         this.set_category(targets.clone(), window, cx);
-                    }))
-                    .child(if n > 1 {
-                        format!("Set category of{plural}…")
-                    } else {
-                        "Set category…".to_owned()
-                    })
+                    },
+                ))
             })
             .child(item(
                 "menu-fetch",
@@ -294,20 +347,14 @@ impl Workspace {
             .when(!is_worktree, |d| d.child(menu_separator(cx)))
             .when(!is_worktree, |d| {
                 d.child(
-                    div()
-                        .id("menu-remove")
-                        .px_3()
-                        .py_1()
-                        .cursor_pointer()
-                        .text_color(color(cx, T::StatusError))
-                        .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.row_menu = None;
+                    menu_item("menu-remove", "Remove from project", true, cx).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
                             this.dispatch(Command::RemoveRepo(id), cx);
-                        }))
-                        .child("Remove from project"),
+                        }),
+                    ),
                 )
             });
-        Some(popup_at(position, menu).into_any_element())
+        Some(menu.into_any_element())
     }
 }

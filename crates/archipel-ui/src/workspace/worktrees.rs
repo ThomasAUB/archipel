@@ -13,13 +13,14 @@ use gpui_kit::{AnyElement, ClipboardItem, Context, MouseButton, MouseDownEvent, 
 
 use crate::palette::PaletteItem;
 use crate::theme::color;
-use crate::widgets::{chip, context_menu, menu_item, menu_separator, popup_at};
+use crate::widgets::{check_menu_item, chip, context_menu, menu_item, menu_separator};
 use crate::worktree_dialog::{
     NewWorktreeDialog, RemoveWorktreeDialog, WorktreeDialogEvent, WorktreeStart,
 };
 use crate::worktree_set_dialog::{FinishSetDialog, NewSetDialog};
 
 use super::Workspace;
+use super::menus::Menu;
 use super::overlays::{Overlay, PaletteKind};
 
 impl Workspace {
@@ -54,8 +55,7 @@ impl Workspace {
         let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| {
             this.on_worktree_dialog(e, window, cx);
         });
-        self.overlay = Some((Overlay::NewWorktree(dialog), sub));
-        cx.notify();
+        self.show_overlay(Overlay::NewWorktree(dialog), sub, cx);
     }
 
     /// Opens the Remove Worktree confirmation for linked worktree row `id`.
@@ -86,8 +86,7 @@ impl Workspace {
         let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| {
             this.on_worktree_dialog(e, window, cx);
         });
-        self.overlay = Some((Overlay::RemoveWorktree(dialog), sub));
-        cx.notify();
+        self.show_overlay(Overlay::RemoveWorktree(dialog), sub, cx);
     }
 
     /// Opens the New Worktree Set dialog on the selected repos (all when
@@ -102,8 +101,7 @@ impl Workspace {
         let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| {
             this.on_worktree_dialog(e, window, cx);
         });
-        self.overlay = Some((Overlay::NewSet(dialog), sub));
-        cx.notify();
+        self.show_overlay(Overlay::NewSet(dialog), sub, cx);
     }
 
     /// Opens the Finish dialog of set `name` (the active set when `None`).
@@ -124,8 +122,7 @@ impl Workspace {
         let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| {
             this.on_worktree_dialog(e, window, cx);
         });
-        self.overlay = Some((Overlay::FinishSet(dialog), sub));
-        cx.notify();
+        self.show_overlay(Overlay::FinishSet(dialog), sub, cx);
     }
 
     /// Sends a set report to the open set dialog, or tells it in the
@@ -204,8 +201,7 @@ impl Workspace {
         match row.and_then(|r| r.worktree) {
             Some(w) if w.locked.is_some() => self.dispatch(Command::LockWorktree(id, None), cx),
             Some(_) => {
-                self.lock_target = Some(id);
-                self.open_palette(PaletteKind::LockReason, window, cx);
+                self.open_palette(PaletteKind::LockReason(id), window, cx);
             }
             None => self.notice = Some("The main worktree cannot be locked".into()),
         }
@@ -286,7 +282,7 @@ impl Workspace {
                     run: MenuRun| {
             menu_item(eid, label, danger, cx)
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.row_menu = None;
+                    this.menu = None;
                     run(this, window, cx);
                     cx.notify();
                 }))
@@ -403,32 +399,22 @@ impl Workspace {
         let button = chip("set-selector", label, active, cx).on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                this.set_menu = match this.set_menu {
-                    Some(_) => None,
-                    None => Some(e.position),
-                };
-                cx.stop_propagation();
-                cx.notify();
+                this.toggle_menu(Menu::SetSelector, e, cx);
             }),
         );
-        let menu = self.set_menu.map(|position| {
+        let menu = self.menu_position(&Menu::SetSelector).map(|position| {
             let mut entries: Vec<AnyElement> = Vec::new();
             let pick = |eid: String,
                         label: String,
                         checked: bool,
                         command: Command,
                         cx: &mut Context<Self>| {
-                menu_item(
-                    gpui_kit::ElementId::Name(eid.into()),
-                    format!("{} {label}", if checked { "✓" } else { "  " }),
-                    false,
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_menu = None;
-                    this.dispatch(command.clone(), cx);
-                }))
-                .into_any_element()
+                check_menu_item(gpui_kit::ElementId::Name(eid.into()), label, checked, cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.dispatch(command.clone(), cx);
+                    }))
+                    .into_any_element()
             };
             entries.push(pick(
                 "set-all".into(),
@@ -475,7 +461,7 @@ impl Workspace {
                  run: fn(&mut Self, &mut Window, &mut Context<Self>)| {
                     menu_item(eid, label, danger, cx)
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_menu = None;
+                            this.menu = None;
                             run(this, window, cx);
                             cx.notify();
                         }))
@@ -513,13 +499,8 @@ impl Workspace {
                     },
                 ));
             }
-            let menu = context_menu(cx)
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.set_menu = None;
-                    cx.notify();
-                }))
-                .children(entries);
-            popup_at(position, menu)
+            let menu = context_menu(cx).children(entries);
+            Self::menu_popup(position, menu, cx)
         });
         div().child(button).children(menu).into_any_element()
     }
@@ -565,8 +546,7 @@ impl Workspace {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                            this.row_menu = Some((wid, e.position));
-                            cx.notify();
+                            this.open_menu(Menu::Row(wid), e.position, cx);
                         }),
                     )
                     .child(

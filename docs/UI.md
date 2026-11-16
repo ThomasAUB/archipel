@@ -76,7 +76,7 @@ too; prefer the names of this document in prose and in new code.
 | ---- | ---------- |
 | **Dashboard Tab** | Always the first tab; shows the Dashboard. |
 | **Repo Tab** | One per opened repo; shows its Repo View. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs. Drag a repo tab onto another to reorder them (the Dashboard Tab stays first). |
-| **Tab Menu** | Right-click on a tab: Close, Close others, Close tabs to the right, Close all. (`Workspace::render_tab_menu`) |
+| **Tab Menu** | Right-click on a tab: Close, Close others, Close tabs to the right, Close all. (`Menu::Tab`, `Workspace::tab_menu`) |
 
 ## 4. Dashboard
 
@@ -103,12 +103,12 @@ The project overview, one row per repo (spec §3). Rendered by
 | **Dashboard Toolbar** | Above the rows: Filter Chips, Category Filter, View Chips, and the scan progress ("Scanning the folder… N found" + Stop). (`render_dashboard_toolbar`) |
 | **Filter Chips** | Toggle filters (Dirty, Behind remote, Open pull request, CI failing, Will conflict, …); they combine with AND. |
 | **Forecast Badge** | Pill after the Sync cell's text: **will conflict · n** when the current branch would conflict with its upstream or its pull request target (default branch), else **touches n modified** when a pull would change locally changed files; files on hover (spec §3). Also in the Quick Edit Header and the Repo Toolbar. ([forecast_badge.rs](../crates/archipel-ui/src/forecast_badge.rs)) |
-| **Category Filter** | Dropdown button "Category: …" with a checklist of categories. (`render_category_filter`, `render_category_menu`) |
+| **Category Filter** | Dropdown button "Category: …" with a checklist of categories. (`render_category_filter`, `Menu::CategoryFilter`) |
 | **View Chips** | **Tree** (shows the Dependency Tree), **Branches…** (opens the Branches Panel) and **Hidden (N)** (shows hidden repos). |
 | **Column Header** | Column titles; click sorts. Columns: Repo, Branch, Sync, Changes, Version, Fetch, then forge columns Pull request and CI. |
 | **Dashboard Row** | One repo. Click: select it and open the Quick Edit Pane; Ctrl+click: add to the selection; double-click: open its Repo Tab. |
 | **Dependency Tree** | Replaces the flat rows when Tree is on: repos and nested submodules with connectors, each **Tree Node** with its state and actions (init / update / open / add); a submodule that is a project repo keeps its dashboard columns and shows its init / update buttons on hover. (`render_tree`) |
-| **Row Menu** | Right-click on a row: Open, Fetch, Hide / Unhide, Set category…, Remove from project, forge entries (pull request, CI run, Rerun failed jobs when the CI fails). (`render_row_menu`) |
+| **Row Menu** | Right-click on a row: Open, Fetch, Hide / Unhide, Set category…, Remove from project, forge entries (pull request, CI run, Rerun failed jobs when the CI fails). (`Menu::Row`, `Workspace::row_menu`) |
 | **Quick Edit Pane** | Resizable pane over the right edge of the rows, for everyday edits without the Repo Tab: a **Quick Edit Header** (repo name, branch, sync, Forecast Badge, Open, Close) above a Staging Panel. A click on the same row or Esc closes it. ([quick_edit.rs](../crates/archipel-ui/src/quick_edit.rs)) |
 | **Quick Edit Diff** | A file clicked in the Quick Edit Pane shows its Diff View in place of the rows (toolbar and header included). |
 

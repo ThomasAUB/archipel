@@ -8,10 +8,11 @@ use gpui_kit::component::{Colorize as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{Anchor, Context, MouseButton, MouseDownEvent, SharedString, Window, div, px};
 
-use crate::theme::{UiTheme, color, radius, text_size, ui_font};
-use crate::widgets::{TextTooltip, popup_at, section};
+use crate::theme::{UiTheme, color, radius};
+use crate::widgets::{TextTooltip, check_menu_item, scroll_menu, section};
 
 use super::Workspace;
+use super::menus::Menu;
 
 impl Workspace {
     fn set_theme(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -176,7 +177,6 @@ impl Workspace {
             .map(|t| (t.id.clone(), t.name.clone()))
             .collect();
         let name = ui.theme.name.clone();
-        let hover = color(cx, T::BgHover);
         let fg = color(cx, T::FgDefault);
         let label = div()
             .id("theme-picker")
@@ -189,70 +189,24 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                    let closed_now = this.theme_menu_closed_at.take() == Some(e.position);
-                    this.theme_menu = match this.theme_menu {
-                        Some(_) => None,
-                        None if closed_now => None,
-                        None => Some(e.position),
-                    };
-                    cx.stop_propagation();
-                    cx.notify();
+                    this.toggle_menu(Menu::Theme, e, cx);
                 }),
             )
             // The status bar's click dismisses its notice; not this one.
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(format!("{name} ▾"));
-        let menu = self.theme_menu.map(|position| {
-            let accent = color(cx, T::AccentText);
+        let menu = self.menu_position(&Menu::Theme).map(|position| {
             let items = themes.into_iter().map(|(id, name)| {
                 let checked = id == current;
-                div()
-                    .id(SharedString::from(format!("theme-{id}")))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
+                check_menu_item(SharedString::from(format!("theme-{id}")), name, checked, cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.theme_menu = None;
+                        this.menu = None;
                         this.set_theme(&id, window, cx);
                         cx.stop_propagation();
                     }))
-                    .child(div().w(px(14.0)).text_color(accent).child(if checked {
-                        "✓"
-                    } else {
-                        ""
-                    }))
-                    .child(name)
             });
-            let menu = div()
-                .id("theme-menu")
-                .occlude()
-                .min_w(px(160.0))
-                .max_h(px(360.0))
-                .overflow_y_scrollbar()
-                .py_1()
-                .flex()
-                .flex_col()
-                .font_family(ui_font(cx))
-                .font_weight(crate::theme::ui_weight(cx))
-                .text_size(text_size(cx))
-                .text_color(color(cx, T::FgDefault))
-                .whitespace_nowrap()
-                .bg(color(cx, T::BgElevated))
-                .border_1()
-                .border_color(color(cx, T::Border))
-                .rounded(radius(cx))
-                .shadow_md()
-                .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                    this.theme_menu = None;
-                    this.theme_menu_closed_at = Some(e.position);
-                    cx.notify();
-                }))
-                .children(items);
-            popup_at(position, menu)
+            let menu = scroll_menu("theme-menu", cx).children(items);
+            Self::menu_popup(position, menu, cx)
         });
         div().child(label).children(menu)
     }

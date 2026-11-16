@@ -52,7 +52,9 @@ use crate::diff_view::DiffDoc;
 use crate::latest::Latest;
 use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, repo_surface, staging_surface, tone};
-use crate::widgets::{Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter};
+use crate::widgets::{
+    Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter, unmodified,
+};
 
 use dialogs::{Confirm, NameForm};
 use loading::RefsState;
@@ -621,6 +623,18 @@ impl Render for RepoView {
             .relative()
             .flex()
             .flex_col()
+            // Escape closes the right-click menu wherever the focus is,
+            // before the focused pane hears the key.
+            .capture_key_down(cx.listener(|v, e: &KeyDownEvent, _, cx| {
+                if v.menu.is_some()
+                    && e.keystroke.key == "escape"
+                    && unmodified(e.keystroke.modifiers)
+                {
+                    v.menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .child(self.render_toolbar(cx))
             .children(name_form)
             .child(body)

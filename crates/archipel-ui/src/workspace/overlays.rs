@@ -5,7 +5,9 @@ use archipel_app::Command;
 use archipel_model::project::ProjectLocation;
 use archipel_model::{ProjectId, RepoId};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Context, Entity, MouseDownEvent, SharedString, Window, div};
+use gpui_kit::{
+    AnyElement, App, Context, Entity, MouseDownEvent, SharedString, Subscription, Window, div,
+};
 
 use crate::branches_panel::{BranchesPanel, BranchesPanelEvent};
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
@@ -14,8 +16,9 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 
 use super::Workspace;
 
-/// What a palette overlay is for.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// What a palette overlay is for, with what it acts on: the palette holds
+/// it, so nothing is left behind when it is dismissed.
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum PaletteKind {
     Projects,
     Actions,
@@ -25,12 +28,14 @@ pub(super) enum PaletteKind {
     Color,
     BackgroundTint,
     Icon,
-    Category,
-    RenameCategory,
+    /// The category of these repos.
+    Category(Vec<RepoId>),
+    /// A new name for this category.
+    RenameCategory(String),
     /// The Worktree Switcher (spec §10).
     Worktrees,
-    /// The reason a worktree is locked.
-    LockReason,
+    /// The reason this worktree is locked.
+    LockReason(RepoId),
     /// A new name for the active Worktree Set.
     RenameSet,
 }
@@ -178,7 +183,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (title, items, prompt) = match kind {
+        let (title, items, prompt) = match &kind {
             PaletteKind::Projects => ("Switch project", self.project_items(window, cx), false),
             PaletteKind::Actions => ("Actions", self.action_items(), false),
             PaletteKind::Checkout => (
@@ -216,7 +221,7 @@ impl Workspace {
                 self.worktree_items(),
                 false,
             ),
-            PaletteKind::LockReason => (
+            PaletteKind::LockReason(_) => (
                 "Lock the worktree: why? (e.g. on a removable drive)",
                 Vec::new(),
                 true,
@@ -232,10 +237,10 @@ impl Workspace {
                     cx,
                 );
             }
-            PaletteKind::RenameCategory => {
+            PaletteKind::RenameCategory(old) => {
                 // A plain prompt: an empty Enter must not pick (merge into)
                 // another category. Typing an existing name merges into it.
-                let old = self.renaming_category.clone().unwrap_or_default();
+                let old = old.clone();
                 return self.show_palette(
                     kind,
                     format!("Rename category “{old}” (an existing name merges into it)"),
@@ -245,8 +250,8 @@ impl Workspace {
                     cx,
                 );
             }
-            PaletteKind::Category => {
-                let n = self.category_targets.len();
+            PaletteKind::Category(targets) => {
+                let n = targets.len();
                 let title = if n > 1 {
                     format!("Category of {n} repos: pick one or type a new name")
                 } else {
@@ -297,19 +302,30 @@ impl Workspace {
             &palette,
             window,
             move |this: &mut Self, _, event: &PaletteEvent, window, cx| {
-                this.overlay = None;
-                this.focus.focus(window, cx);
+                this.close_overlay(window, cx);
                 if let PaletteEvent::Confirmed(value) = event {
-                    this.on_palette(kind, value.clone(), window, cx);
+                    this.on_palette(kind.clone(), value.clone(), window, cx);
                 }
-                cx.notify();
             },
         );
-        self.overlay = Some((Overlay::Palette(palette), sub));
+        self.show_overlay(Overlay::Palette(palette), sub, cx);
+    }
+
+    /// Shows `overlay` (its events heard through `sub`) in place of any
+    /// other overlay or menu. Every overlay opens through here.
+    pub(super) fn show_overlay(
+        &mut self,
+        overlay: Overlay,
+        sub: Subscription,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.overlay = Some((overlay, sub));
         cx.notify();
     }
 
-    /// Dismisses the open overlay (as Escape / Close would).
+    /// Dismisses the open overlay (as Escape / Close would) and gives the
+    /// keyboard back to the window. Every overlay closes through here.
     pub(super) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = None;
         self.focus.focus(window, cx);
@@ -347,25 +363,20 @@ impl Workspace {
                 self.dispatch(Command::SetBackgroundTint(Some(value)), cx);
             }
             PaletteKind::Icon => self.dispatch(Command::SetIcon(Some(value)), cx),
-            PaletteKind::Category => {
-                let ids = std::mem::take(&mut self.category_targets);
+            PaletteKind::Category(ids) => {
                 let category = Some(value).filter(|v| !v.is_empty());
                 self.dispatch(Command::SetCategory(ids, category), cx);
             }
-            PaletteKind::RenameCategory => {
-                if let Some(old) = self.renaming_category.take() {
-                    self.dispatch(Command::RenameCategory(old, Some(value)), cx);
-                }
+            PaletteKind::RenameCategory(old) => {
+                self.dispatch(Command::RenameCategory(old, Some(value)), cx);
             }
             PaletteKind::Worktrees => {
                 if let Ok(raw) = value.parse::<u64>() {
                     self.dispatch(Command::OpenRepoTab(RepoId(raw)), cx);
                 }
             }
-            PaletteKind::LockReason => {
-                if let Some(id) = self.lock_target.take() {
-                    self.dispatch(Command::LockWorktree(id, Some(value.trim().to_owned())), cx);
-                }
+            PaletteKind::LockReason(id) => {
+                self.dispatch(Command::LockWorktree(id, Some(value.trim().to_owned())), cx);
             }
             PaletteKind::RenameSet => {
                 if let Some(set) = self.core.active_set() {
@@ -385,8 +396,7 @@ impl Workspace {
         if targets.is_empty() {
             return;
         }
-        self.category_targets = targets;
-        self.open_palette(PaletteKind::Category, window, cx);
+        self.open_palette(PaletteKind::Category(targets), window, cx);
     }
 
     pub(super) fn open_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -400,16 +410,13 @@ impl Workspace {
             window,
             |this: &mut Self, _, event: &CommitPanelEvent, window, cx| {
                 match event {
-                    CommitPanelEvent::Closed => {
-                        this.overlay = None;
-                        this.focus.focus(window, cx);
-                    }
+                    CommitPanelEvent::Closed => this.close_overlay(window, cx),
                     CommitPanelEvent::Finished(summary) => this.notice = Some(summary.clone()),
                 }
                 cx.notify();
             },
         );
-        self.overlay = Some((Overlay::Commit(panel), sub));
+        self.show_overlay(Overlay::Commit(panel), sub, cx);
     }
 
     /// Opens the forge panel on `tab` (reusing it when already open).
@@ -430,17 +437,13 @@ impl Workspace {
             window,
             |this: &mut Self, _, event: &ForgePanelEvent, window, cx| {
                 match event {
-                    ForgePanelEvent::Closed => {
-                        this.overlay = None;
-                        this.focus.focus(window, cx);
-                    }
+                    ForgePanelEvent::Closed => this.close_overlay(window, cx),
                     ForgePanelEvent::Notice(text) => this.notice = Some(text.clone()),
                 }
                 cx.notify();
             },
         );
-        self.overlay = Some((Overlay::Forge(panel), sub));
-        cx.notify();
+        self.show_overlay(Overlay::Forge(panel), sub, cx);
     }
 
     /// Opens the branches panel on the selected repos (all when none).
@@ -455,16 +458,12 @@ impl Workspace {
             window,
             |this: &mut Self, _, event: &BranchesPanelEvent, window, cx| {
                 match event {
-                    BranchesPanelEvent::Closed => {
-                        this.overlay = None;
-                        this.focus.focus(window, cx);
-                    }
+                    BranchesPanelEvent::Closed => this.close_overlay(window, cx),
                     BranchesPanelEvent::Finished(summary) => this.notice = Some(summary.clone()),
                 }
                 cx.notify();
             },
         );
-        self.overlay = Some((Overlay::Branches(panel), sub));
-        cx.notify();
+        self.show_overlay(Overlay::Branches(panel), sub, cx);
     }
 }

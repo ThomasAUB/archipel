@@ -15,6 +15,7 @@ use crate::staging::StagingEvent;
 use crate::theme::{color, radius};
 
 use super::Workspace;
+use super::menus::Menu;
 
 /// Drag payload of a repo tab: its index.
 struct TabDrag(usize);
@@ -92,9 +93,11 @@ impl Workspace {
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.tab_menu = Some((i, e.position));
-                        cx.notify();
+                    cx.listener({
+                        let tab = tab.clone();
+                        move |this, e: &MouseDownEvent, _, cx| {
+                            this.open_menu(Menu::Tab(tab.clone()), e.position, cx);
+                        }
                     }),
                 )
                 // Every tab takes drops (on the dashboard: becomes the first
@@ -187,8 +190,7 @@ impl Workspace {
                 self.open_palette(super::overlays::PaletteKind::Worktrees, window, cx);
             }
             StagingEvent::WorktreeMenu(id, position) => {
-                self.row_menu = Some((*id, *position));
-                cx.notify();
+                self.open_menu(Menu::Row(*id), *position, cx);
             }
         }
     }
