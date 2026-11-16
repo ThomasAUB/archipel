@@ -184,6 +184,8 @@ pub struct RepoView {
     pull_requests: Arc<Vec<PullRequestStatus>>,
     /// Branches checked out in another worktree of the repo (spec §10).
     worktree_branches: worktrees::Elsewhere,
+    /// Commits other worktrees are on, marked in the graph.
+    worktree_heads: worktrees::WorktreeHeads,
     /// Shown instead of checking out a branch checked out elsewhere.
     worktree_prompt: Option<worktrees::WorktreePrompt>,
     scroll: UniformListScrollHandle,
@@ -257,6 +259,7 @@ impl RepoView {
             forecast,
             pull_requests: Arc::default(),
             worktree_branches: worktrees::Elsewhere::new(),
+            worktree_heads: worktrees::WorktreeHeads::new(),
             worktree_prompt: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),

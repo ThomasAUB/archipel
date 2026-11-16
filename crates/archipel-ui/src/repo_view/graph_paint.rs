@@ -286,6 +286,8 @@ impl RepoView {
             self.selected.is_some_and(|(r, _)| r == row.row) || self.multi.contains_key(&row.row);
         // Same width on every row so the text columns line up.
         let width = px(lane_x(self.lane_count()));
+        // Before the lanes, which keep `cx` borrowed.
+        let worktree_badges = self.worktree_badges(row.oid, row.row, cx);
         let lanes = graph_cell(row, stash_lane, wip_lane, cx);
         let (summary, author, time) = meta.map_or_else(
             || (String::new(), String::new(), None),
@@ -377,9 +379,24 @@ impl RepoView {
                     )
                     // Drag onto another branch to merge or rebase.
                     .when(is_branch(r), |d| branch_drag_and_drop(d, &tip, cx))
-                    .child(r.name.clone()),
+                    // Checked out in another worktree (spec §10).
+                    .child(
+                        if r.kind == RefKind::LocalBranch
+                            && self.worktree_branches.contains_key(&r.name)
+                        {
+                            format!("{} {}", archipel_app::dashboard::WORKTREE_GLYPH, r.name)
+                        } else {
+                            r.name.clone()
+                        },
+                    ),
             )
         });
+        let badges: Vec<AnyElement> = badges
+            .map(IntoElement::into_any_element)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .chain(worktree_badges)
+            .collect();
         let hover = color(cx, T::BgHover);
         div()
             .id(SharedString::from(format!("g-{index}")))

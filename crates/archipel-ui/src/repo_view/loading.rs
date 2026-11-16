@@ -261,8 +261,8 @@ impl RepoView {
     pub(super) fn load_refs(&mut self, cx: &mut Context<Self>) {
         let refs = self.core.repo_actions().ports().refs.clone();
         let path = self.path.clone();
-        let (worktrees, elsewhere) = self.worktree_entries();
-        self.worktree_branches = elsewhere;
+        let (worktrees, _) = self.worktree_entries();
+        self.refresh_worktrees(cx);
         let task = cx.background_spawn(async move {
             let branches = refs.branches(&path)?;
             let tags = refs.tags(&path)?;
