@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use archipel_graph::GraphError;
-use archipel_model::ports::DiffSide;
 use archipel_model::requests::StashApplyMode;
 use archipel_model::{CancelToken, NoProgress, Oid};
 use gpui_kit::prelude::*;
@@ -13,55 +12,12 @@ use gpui_kit::{AnyElement, Context, KeyDownEvent, ScrollStrategy, Window, div};
 
 use crate::diff_view::{self, DiffDoc};
 use crate::widgets::{ListMove, SHORT_OID, unmodified};
+use crate::working_copy;
 
 use super::details::file_title;
 use super::{Item, OpenDiff, RepoView, Selected, SharedView, lock};
 
 impl RepoView {
-    /// Opens working-copy file `file`'s diff on `side` in place of the
-    /// graph. The diff shown stays until the new one is read when it is the
-    /// same file (a reload), so the view does not flicker.
-    pub(super) fn open_worktree_file(
-        &mut self,
-        file: String,
-        side: DiffSide,
-        cx: &mut Context<Self>,
-    ) {
-        let shown = match self.open_diff.take() {
-            Some(OpenDiff::Worktree(f, s, doc)) if f == file && s == side => doc,
-            _ => None,
-        };
-        self.open_diff = Some(OpenDiff::Worktree(file.clone(), side, shown));
-        let diffs = self.core.diff_reader();
-        let path = self.path.clone();
-        let task = {
-            let file = file.clone();
-            cx.background_spawn(async move {
-                diffs
-                    .worktree_diff(&path, side, Some(&file))
-                    .map(|d| Arc::new(DiffDoc::new(d)))
-            })
-        };
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                let Some(OpenDiff::Worktree(f, s, doc)) = &mut v.open_diff else {
-                    return;
-                };
-                if *f != file || *s != side {
-                    return; // another file was opened meanwhile
-                }
-                match result {
-                    Ok(d) => *doc = Some(d),
-                    Err(e) => v.status = Some(e.to_string()),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     /// Opens file `file` of the selected commit's or stash's diff in place
     /// of the graph; `None`: all its files.
     pub(super) fn open_commit_file(&mut self, file: Option<usize>, cx: &mut Context<Self>) {
@@ -83,7 +39,7 @@ impl RepoView {
     /// uncommitted-changes row).
     pub(super) fn open_first_change(&mut self, cx: &mut Context<Self>) {
         if let Some((file, side)) = diff_view::worktree_files(&self.changes).into_iter().next() {
-            self.open_worktree_file(file, side, cx);
+            working_copy::open_worktree_file(self, file, side, cx);
         }
     }
 
@@ -99,11 +55,8 @@ impl RepoView {
                 let next = (at + delta).clamp(-1, last.max(-1));
                 self.open_commit_file(usize::try_from(next).ok(), cx);
             }
-            Some(OpenDiff::Worktree(file, side, _)) => {
-                let files = diff_view::worktree_files(&self.changes);
-                if let Some((file, side)) = diff_view::step(&files, file, *side, delta) {
-                    self.open_worktree_file(file, side, cx);
-                }
+            Some(OpenDiff::Worktree(_)) => {
+                working_copy::step_worktree_file(self, delta, cx);
             }
             Some(OpenDiff::File(_)) => self.step_open_file(delta, cx),
             None => {}
@@ -448,11 +401,11 @@ impl RepoView {
                 };
                 (title, at.unwrap_or_default(), None, Some(Arc::clone(doc)))
             }
-            Some(OpenDiff::Worktree(file, side, doc)) => (
-                file.clone(),
-                diff_view::side_note(*side).to_owned(),
-                Some(*side),
-                doc.clone(),
+            Some(OpenDiff::Worktree(d)) => (
+                d.file.clone(),
+                diff_view::side_note(d.side).to_owned(),
+                Some(d.side),
+                d.doc.clone(),
             ),
             Some(OpenDiff::File(_)) | None => return div().into_any_element(),
         };

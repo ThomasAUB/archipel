@@ -17,11 +17,13 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, EventEmitter, FocusHandle, KeyDownEvent, Window, div};
 
-use crate::diff_view::{self, DiffDoc};
+use crate::diff_view;
 use crate::forecast_badge::forecast_badge;
+use crate::latest::Latest;
 use crate::staging::{self, NotedJob, Staging, StagingEvent};
 use crate::theme::{color, staging_surface};
 use crate::widgets::{SHORT_OID, button, icon_button};
+use crate::working_copy::{self, WorkingCopy, WorktreeDiff};
 
 /// What the pane reports to the workspace.
 pub enum QuickEditEvent {
@@ -38,14 +40,14 @@ pub struct QuickEdit {
     path: RepoPath,
     name: String,
     changes: Vec<FileChange>,
-    /// Counts the reads of [`Self::changes`]: only the latest one lands.
-    changes_read: u64,
+    /// The reads of [`Self::changes`]: only the latest one lands.
+    change_reads: Latest,
     /// Actions, branch, files and commit box, as in the repo tab.
     staging: staging::Panel,
     status: Option<String>,
     /// The working-copy file whose diff is open, in place of the
-    /// dashboard rows; its diff is `None` while it loads.
-    open_diff: Option<(String, DiffSide, Option<Arc<DiffDoc>>)>,
+    /// dashboard rows.
+    open_diff: Option<WorktreeDiff>,
     /// Whether the branch would conflict with its upstream or its target.
     forecast: ConflictForecast,
     focus: FocusHandle,
@@ -69,14 +71,14 @@ impl QuickEdit {
             path: row.path.clone(),
             name: row.label(),
             changes: Vec::new(),
-            changes_read: 0,
+            change_reads: Latest::default(),
             staging,
             status: None,
             open_diff: None,
             forecast: row.forecast.clone(),
             focus: cx.focus_handle(),
         };
-        pane.load_changes(cx);
+        working_copy::load_changes(&mut pane, cx);
         pane
     }
 
@@ -88,7 +90,7 @@ impl QuickEdit {
     /// The repo was refreshed (file watcher, focus, F5).
     pub fn on_summary(&mut self, summary: Option<&RepoSummary>, cx: &mut Context<Self>) {
         staging::on_summary(self, summary, cx);
-        self.load_changes(cx);
+        working_copy::load_changes(self, cx);
     }
 
     /// The conflict forecast of the repo was computed again.
@@ -99,76 +101,6 @@ impl QuickEdit {
         }
     }
 
-    fn load_changes(&mut self, cx: &mut Context<Self>) {
-        let status = self.core.repo_actions().ports().status.clone();
-        let path = self.path.clone();
-        self.changes_read += 1;
-        let read = self.changes_read;
-        let task =
-            cx.background_spawn(async move { status.changes(&path).map_err(|e| e.to_string()) });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                if read != v.changes_read {
-                    return; // a later read started: it may see a newer state
-                }
-                match result {
-                    Ok(c) => v.changes = c,
-                    Err(e) => v.status = Some(e),
-                }
-                // The open diff follows the file, as in the repo tab.
-                if let Some((file, side, _)) = &v.open_diff {
-                    let file = file.clone();
-                    match diff_view::follow(&v.changes, &file, *side) {
-                        Some(side) => v.open_worktree_file(file, side, cx),
-                        None => v.open_diff = None,
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Opens the diff of `file` on `side` in place of the dashboard rows.
-    /// The diff shown stays until the new one is read when it is the same
-    /// file (a reload), so the view does not flicker.
-    fn open_worktree_file(&mut self, file: String, side: DiffSide, cx: &mut Context<Self>) {
-        let shown = match self.open_diff.take() {
-            Some((f, s, doc)) if f == file && s == side => doc,
-            _ => None,
-        };
-        self.open_diff = Some((file.clone(), side, shown));
-        let diffs = self.core.diff_reader();
-        let path = self.path.clone();
-        let task = {
-            let file = file.clone();
-            cx.background_spawn(async move {
-                diffs
-                    .worktree_diff(&path, side, Some(&file))
-                    .map(|d| Arc::new(DiffDoc::new(d)))
-            })
-        };
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                let Some((f, s, doc)) = &mut v.open_diff else {
-                    return;
-                };
-                if *f != file || *s != side {
-                    return; // another file was opened meanwhile
-                }
-                match result {
-                    Ok(d) => *doc = Some(d),
-                    Err(e) => v.status = Some(e.to_string()),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     /// Whether the pane itself has focus (not one of its inputs).
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
@@ -176,7 +108,7 @@ impl QuickEdit {
 
     /// The open diff, drawn by the workspace in place of the dashboard rows.
     pub fn render_diff(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (file, side, doc) = self.open_diff.clone()?;
+        let WorktreeDiff { file, side, doc } = self.open_diff.clone()?;
         Some(diff_view::render_open(
             self,
             file,
@@ -204,14 +136,7 @@ impl QuickEdit {
             "up" => -1,
             _ => return false,
         };
-        let Some((file, side, _)) = &self.open_diff else {
-            return false;
-        };
-        let files = diff_view::worktree_files(&self.changes);
-        if let Some((file, side)) = diff_view::step(&files, file, *side, delta) {
-            self.open_worktree_file(file, side, cx);
-        }
-        true
+        working_copy::step_worktree_file(self, delta, cx)
     }
 
     /// Runs a write on a background thread, then refreshes the repo.
@@ -227,7 +152,7 @@ impl QuickEdit {
             |v, status, cx| {
                 v.status = Some(status);
                 v.core.refresh_repo(v.id);
-                v.load_changes(cx);
+                working_copy::load_changes(v, cx);
             },
         );
         cx.notify();
@@ -368,7 +293,7 @@ impl Staging for QuickEdit {
     }
 
     fn open_file(&self) -> Option<(&str, DiffSide)> {
-        self.open_diff.as_ref().map(|(f, s, _)| (f.as_str(), *s))
+        self.open_diff.as_ref().map(|d| (d.file.as_str(), d.side))
     }
 
     fn click_file(
@@ -383,7 +308,25 @@ impl Staging for QuickEdit {
             cx.notify();
         } else {
             self.focus.focus(window, cx);
-            self.open_worktree_file(file, side, cx);
+            working_copy::open_worktree_file(self, file, side, cx);
         }
+    }
+}
+
+impl WorkingCopy for QuickEdit {
+    fn change_reads(&mut self) -> &mut Latest {
+        &mut self.change_reads
+    }
+
+    fn set_changes(&mut self, changes: Vec<FileChange>) {
+        self.changes = changes;
+    }
+
+    fn worktree_diff(&mut self) -> Option<&mut WorktreeDiff> {
+        self.open_diff.as_mut()
+    }
+
+    fn show_worktree_diff(&mut self, diff: Option<WorktreeDiff>) {
+        self.open_diff = diff;
     }
 }
