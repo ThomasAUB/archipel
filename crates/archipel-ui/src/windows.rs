@@ -102,23 +102,23 @@ pub fn open(cx: &mut App, dir: Option<&Path>) {
 }
 
 /// Opens the first window, on the base core session prepared at startup,
-/// in fullscreen.
+/// maximized.
 pub fn open_first(cx: &mut App, core: Arc<Core>, warnings: Vec<String>) {
     cx.global_mut::<Windows>().base_free = false;
     open_with(cx, core, warnings, true);
 }
 
-/// Opens a window on `core`; `fullscreen` opens it in fullscreen, restoring
-/// to the default windowed bounds.
-fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>, fullscreen: bool) {
+/// Opens a window on `core`; `maximized` opens it maximized, restoring to
+/// the default windowed bounds.
+fn open_with(cx: &mut App, core: Arc<Core>, warnings: Vec<String>, maximized: bool) {
     let offset =
         px(28.0 * f32::from(u8::try_from(cx.global::<Windows>().open.len() % 8).unwrap_or(0)));
     let mut bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
     bounds.origin.x += offset;
     bounds.origin.y += offset;
     let options = WindowOptions {
-        window_bounds: Some(if fullscreen {
-            WindowBounds::Fullscreen(bounds)
+        window_bounds: Some(if maximized {
+            WindowBounds::Maximized(bounds)
         } else {
             WindowBounds::Windowed(bounds)
         }),
