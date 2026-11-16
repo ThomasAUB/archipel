@@ -18,8 +18,11 @@ pub fn install(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    // Cmd+H is the app's, as in every Mac app: the keymap's Ctrl+H (hide
+    // repos) stays on Control there (see `keys`).
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("cmd-alt-h", HideOthers, None),
     ]);
     cx.set_menus([Menu::new("Archipel").items([
