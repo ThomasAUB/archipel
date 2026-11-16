@@ -1,21 +1,26 @@
-//! The dependency tree view of the dashboard (spec §9): repos and their
-//! submodules, with the submodule state and update actions.
+//! The dependency tree view of the dashboard (spec §9): repos, their linked
+//! worktrees and their submodules, with every dashboard column on the
+//! project's repos and worktrees, the submodule state and update actions,
+//! and worktree actions on hover.
 
 use std::collections::HashMap;
 
 use archipel_app::Command;
-use archipel_app::dashboard::DashboardRow;
+use archipel_app::dashboard::{DashboardRow, RepoStatus, WORKTREE_GLYPH};
 use archipel_app::deptree::TreeRow;
+use archipel_model::ui_state::UiState;
 use archipel_model::{RepoId, RepoPath, Timestamp};
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, div, px};
 
 use crate::theme::{color, row_height};
-use crate::widgets::{SHORT_OID, button};
+use crate::widgets::{SHORT_OID, TextTooltip, button};
+use crate::worktree_dialog::WorktreeStart;
 
 use super::Workspace;
-use super::dashboard::{WIDTHS, row_cells};
+use super::dashboard::{WIDTHS, nested_cell, nesting, row_cells};
+use super::worktrees::HandOff;
 
 impl Workspace {
     /// Opens a submodule in a tab off the UI thread, showing it as opening
@@ -50,6 +55,7 @@ impl Workspace {
         tree: &[TreeRow],
         rows: &[DashboardRow],
         selected: &[RepoId],
+        ui: &UiState,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let ext = self.core.extensions().clone();
@@ -57,6 +63,11 @@ impl Workspace {
         let by_id: HashMap<RepoId, &DashboardRow> = rows.iter().map(|r| (r.id, r)).collect();
         let rest: f32 = WIDTHS[1..].iter().sum();
         let opening = self.opening.as_ref();
+        let all_worktrees = ui
+            .filters
+            .iter()
+            .any(|f| f == archipel_app::dashboard::WORKTREES_FILTER);
+        let workspace = cx.weak_entity();
         tree.iter()
             .enumerate()
             .map(|(i, node)| {
@@ -67,12 +78,44 @@ impl Workspace {
                     (true, false) => "▾",
                 };
                 let out_of_sync = node.state.as_ref().is_some_and(|s| s.out_of_sync);
+                let row = node.repo.and_then(|id| by_id.get(&id).copied());
+                // A project repo or worktree shows its Repo cell (path line,
+                // tooltip, Worktree Count); a plain submodule its name.
+                let label = match row {
+                    Some(row) if node.worktree => Self::worktree_label(node, row, cx),
+                    Some(row) => {
+                        let cell = row_cells(&ext, &self.core, row, now, 0, cx)
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| div().into_any_element());
+                        let id = row.id;
+                        let toggle = workspace.clone();
+                        nested_cell(
+                            cell,
+                            nesting(row, None, ui, all_worktrees),
+                            id,
+                            cx,
+                            move |cx| {
+                                let _ = toggle.update(cx, |this, cx| {
+                                    this.dispatch(Command::ToggleWorktrees(id), cx);
+                                });
+                            },
+                        )
+                    }
+                    None => div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(node.name.clone())
+                        .into_any_element(),
+                };
                 let name = div()
                     .flex_grow(WIDTHS[0])
                     .flex_basis(px(0.0))
+                    .min_w_0()
                     .overflow_hidden()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .child(
                         div()
                             .flex_none()
@@ -93,23 +136,26 @@ impl Workspace {
                             }))
                             .child(arrow),
                     )
-                    .child(div().truncate().child(node.name.clone()))
+                    .child(label)
                     .when(out_of_sync, |d| {
                         d.child(
                             div()
+                                .flex_none()
                                 .ml_2()
                                 .text_xs()
                                 .text_color(color(cx, T::StatusConflict))
                                 .child("≠ pinned"),
                         )
                     });
-                match node.repo.and_then(|id| by_id.get(&id)) {
+                match row {
                     Some(row) => {
                         let cells = row_cells(&ext, &self.core, row, now, 1, cx);
-                        let actions = Self::node_actions(i, node, true, opening, cx);
+                        let mut actions = Self::row_actions(i, row, cx);
+                        actions.extend(Self::node_actions(i, node, true, opening, cx));
                         let group = SharedString::from(format!("tree-row-{i}"));
                         let hover = color(cx, T::BgHover);
                         Self::row_shell(row, selected, cx)
+                            .when(row.context_only, |d| d.opacity(0.5))
                             .relative()
                             .group(group.clone())
                             .child(name)
@@ -158,6 +204,145 @@ impl Workspace {
                 }
             })
             .collect()
+    }
+
+    /// The name of a linked worktree node: Worktree Glyph, branch, lock,
+    /// and its folder below; dimmed when its folder is gone.
+    fn worktree_label(node: &TreeRow, row: &DashboardRow, cx: &mut Context<Self>) -> AnyElement {
+        let info = row.worktree.clone();
+        let locked = info.as_ref().and_then(|w| w.locked.clone());
+        let missing = info.as_ref().is_some_and(|w| w.missing);
+        let path = row.path.as_path().display().to_string();
+        let token = if missing {
+            T::FgMuted
+        } else if matches!(row.status, RepoStatus::Missing | RepoStatus::Error(_)) {
+            T::StatusConflict
+        } else {
+            T::FgDefault
+        };
+        let mut tooltip = vec![
+            match &info {
+                Some(w) => format!("Worktree of {} on {}", w.main_name, w.label),
+                None => row.name.clone(),
+            },
+            path.clone(),
+        ];
+        match locked.as_deref() {
+            Some("") => tooltip.push("Locked".into()),
+            Some(reason) => tooltip.push(format!("Locked: {reason}")),
+            None => {}
+        }
+        if missing {
+            tooltip.push("Its folder is gone: prune it, or restore the folder".into());
+        }
+        let detail = match &info {
+            Some(w) if w.parent.is_none() => format!("worktree of {} · {path}", w.main_name),
+            _ if missing => format!("missing · {path}"),
+            _ => path,
+        };
+        div()
+            .id(SharedString::from(format!("tree-wt-{}", row.id)))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .text_color(color(cx, token))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child(WORKTREE_GLYPH),
+                    )
+                    .child(div().truncate().child(node.name.clone()))
+                    .when(locked.is_some(), |d| d.child(div().flex_none().child("🔒"))),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .text_xs()
+                    .text_color(color(cx, T::FgSubtle))
+                    .child(detail),
+            )
+            .tooltip(move |_, cx| TextTooltip::view(&tooltip, cx))
+            .into_any_element()
+    }
+
+    /// Hover buttons of a project repo or worktree node: a new worktree on
+    /// a repo; open, terminal, lock and remove (or prune) on a worktree.
+    fn row_actions(i: usize, row: &DashboardRow, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let id = row.id;
+        let Some(info) = row.worktree.clone() else {
+            return vec![
+                button(
+                    SharedString::from(format!("tree-new-wt-{i}")),
+                    "+ Worktree",
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_new_worktree(id, &WorktreeStart::default(), window, cx);
+                }))
+                .into_any_element(),
+            ];
+        };
+        if info.missing {
+            return vec![
+                button(SharedString::from(format!("tree-prune-{i}")), "Prune", cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.dispatch(Command::PruneWorktrees(vec![id]), cx);
+                    }))
+                    .into_any_element(),
+            ];
+        }
+        let mut out = vec![
+            button(SharedString::from(format!("tree-open-wt-{i}")), "Open", cx)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.dispatch(Command::OpenRepoTab(id), cx);
+                }))
+                .into_any_element(),
+            button(
+                SharedString::from(format!("tree-term-wt-{i}")),
+                "Terminal",
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.hand_off(id, HandOff::Terminal, cx);
+            }))
+            .into_any_element(),
+        ];
+        let lock = if info.locked.is_some() {
+            "Unlock"
+        } else {
+            "Lock…"
+        };
+        out.push(
+            button(SharedString::from(format!("tree-lock-wt-{i}")), lock, cx)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.lock_or_unlock(id, window, cx);
+                }))
+                .into_any_element(),
+        );
+        if info.parent.is_some() && info.locked.is_none() {
+            out.push(
+                button(SharedString::from(format!("tree-rm-wt-{i}")), "Remove…", cx)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.open_remove_worktree(id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        out
     }
 
     fn node_state(node: &TreeRow, cx: &mut Context<Self>) -> AnyElement {

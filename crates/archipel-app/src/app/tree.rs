@@ -20,11 +20,9 @@ impl App {
         let Some(s) = guard.as_ref().filter(|s| s.ui.show_dependency_tree) else {
             return Vec::new();
         };
-        // Worktrees are not dependencies: the tree shows repos.
-        let rows: Vec<_> = Self::visible_rows_of(&self.ext, s)
-            .into_iter()
-            .filter(|r| r.parent().is_none())
-            .collect();
+        // Linked worktrees listed (expanded, matching, in the set) go under
+        // their repo, as in the flat list.
+        let rows = Self::visible_rows_of(&self.ext, s);
         let skip: HashSet<RepoId> = if s.ui.show_hidden {
             HashSet::new()
         } else {

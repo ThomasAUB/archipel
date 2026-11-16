@@ -104,6 +104,15 @@ libbar               dev           ok                      1h ago
   folder path (click copies it).
 - Batch actions take worktree rows as targets (pull, push, stash, commit,
   check out — see §7 for checkout).
+- In the **Tree** view (Dependency Tree), the same Worktree Rows are nodes
+  under their repo, before its submodules, with every column: Worktree
+  Glyph, branch, lock, and the folder path below (dimmed and "missing" when
+  it is gone). The repo node keeps its Worktree Count toggle; collapsing the
+  node hides its worktrees too. Click, double-click and the Row Menu behave
+  as on the list; hover shows **+ Worktree** on a repo node and **Open ·
+  Terminal · Lock… / Unlock · Remove…** (or **Prune** when missing) on a
+  worktree node. A worktree whose repo is not shown (set view, repo outside
+  the project) is a root node.
 
 ### 4.3 Tabs
 
