@@ -504,6 +504,18 @@ impl DiffReader for GitCli {
         ))
     }
 
+    fn range_diff(&self, repo: &RepoPath, from: Oid, to: Oid) -> Result<Vec<FileDiff>, GitError> {
+        let out = self.runner.run(
+            Cmd::new(repo.as_path(), CmdKind::Read, &["diff"])
+                .args(DIFF_ARGS)
+                .args([from.to_hex(), to.to_hex()]),
+        )?;
+        Ok(parse_unified_diff(
+            &String::from_utf8_lossy(&out.stdout),
+            self.max_diff_bytes,
+        ))
+    }
+
     fn worktree_diff(
         &self,
         repo: &RepoPath,
