@@ -3,7 +3,8 @@
 //! Pure: [`build_tree`] turns the dashboard rows and the submodules read for
 //! each repo into flat, render-ready [`TreeRow`]s (indentation, connectors,
 //! collapsed nodes). Repos of the project that are submodules of another
-//! project repo appear under their parent instead of twice.
+//! project repo appear under their parent instead of twice, and linked
+//! worktrees appear under the repo they belong to, before its submodules.
 //!
 //! Dependency sources are pluggable: [`DependencySource`] is the extension
 //! point, registered in `Extensions::dependencies` (submodules are the
@@ -146,11 +147,15 @@ pub struct TreeRow {
     pub has_children: bool,
     /// Children are hidden.
     pub collapsed: bool,
+    /// The node is a linked worktree (its `repo` is the worktree row).
+    pub worktree: bool,
 }
 
 /// Inputs of [`build_tree`].
 pub struct TreeInput<'a> {
     /// Visible dashboard rows, in display order (after filters and sort).
+    /// Linked worktree rows go under their repo when it is a root, else
+    /// they are roots themselves (a set view, a repo outside the project).
     pub rows: &'a [DashboardRow],
     /// Submodules read per project repo.
     pub dependencies: &'a HashMap<RepoId, Vec<SubmoduleNode>>,
@@ -163,22 +168,46 @@ pub struct TreeInput<'a> {
 /// Builds the rows of the dependency tree.
 #[must_use]
 pub fn build_tree(input: &TreeInput<'_>) -> Vec<TreeRow> {
-    let visible: HashMap<RepoId, &DashboardRow> = input.rows.iter().map(|r| (r.id, r)).collect();
+    let visible: HashMap<RepoId, &DashboardRow> = input
+        .rows
+        .iter()
+        .filter(|r| !r.is_worktree())
+        .map(|r| (r.id, r))
+        .collect();
     // Project repos reachable as a submodule of another visible project repo.
     let mut nested = HashSet::new();
-    for row in input.rows {
+    for row in input.rows.iter().filter(|r| !r.is_worktree()) {
         if let Some(children) = input.dependencies.get(&row.id) {
             mark_nested(children, row.id, &visible, &mut nested, 0);
+        }
+    }
+    let shown = |id: RepoId| visible.contains_key(&id) && !input.skip.contains(&id);
+    // Linked worktrees listed under a shown repo, in display order.
+    let mut worktrees: HashMap<RepoId, Vec<&DashboardRow>> = HashMap::new();
+    for row in input.rows {
+        if let Some(parent) = row.parent().filter(|p| shown(*p)) {
+            worktrees.entry(parent).or_default().push(row);
         }
     }
     let mut out = Vec::new();
     let roots: Vec<&DashboardRow> = input
         .rows
         .iter()
-        .filter(|r| !nested.contains(&r.id))
+        .filter(|r| match r.parent() {
+            Some(parent) => !shown(parent),
+            None => !r.is_worktree() && !nested.contains(&r.id),
+        })
         .collect();
-    let builder = Builder { input, visible };
+    let builder = Builder {
+        input,
+        visible,
+        worktrees,
+    };
     for row in roots {
+        if row.is_worktree() {
+            out.push(worktree_row(row, &[]));
+            continue;
+        }
         let mut seen = HashSet::from([row.id]);
         let children = input
             .dependencies
@@ -198,6 +227,26 @@ pub fn build_tree(input: &TreeInput<'_>) -> Vec<TreeRow> {
         );
     }
     out
+}
+
+/// The tree line of linked worktree `row`, under ancestors `last`.
+fn worktree_row(row: &DashboardRow, last: &[bool]) -> TreeRow {
+    let name = row
+        .worktree
+        .as_ref()
+        .map_or_else(|| row.name.clone(), |w| w.label.clone());
+    TreeRow {
+        key: row.id.to_string(),
+        depth: last.len(),
+        prefix: prefix(last),
+        name,
+        path: row.path.clone(),
+        repo: Some(row.id),
+        state: None,
+        has_children: false,
+        collapsed: false,
+        worktree: true,
+    }
 }
 
 fn mark_nested(
@@ -230,11 +279,14 @@ struct Node<'a> {
 struct Builder<'a> {
     input: &'a TreeInput<'a>,
     visible: HashMap<RepoId, &'a DashboardRow>,
+    /// Linked worktree rows per repo.
+    worktrees: HashMap<RepoId, Vec<&'a DashboardRow>>,
 }
 
 impl Builder<'_> {
-    /// Emits `node` then its children; `last` holds, per ancestor level,
-    /// whether that ancestor was the last of its siblings.
+    /// Emits `node` then its children (its linked worktrees, then its
+    /// submodules); `last` holds, per ancestor level, whether that ancestor
+    /// was the last of its siblings.
     fn push(
         &self,
         out: &mut Vec<TreeRow>,
@@ -249,6 +301,10 @@ impl Builder<'_> {
             .iter()
             .filter(|c| !self.input.skip.contains(&c.info.path.id()))
             .collect();
+        let worktrees: &[&DashboardRow] = node
+            .repo
+            .and_then(|r| self.worktrees.get(&r))
+            .map_or(&[], Vec::as_slice);
         let collapsed = self.input.collapsed.contains(&key);
         out.push(TreeRow {
             key,
@@ -258,14 +314,21 @@ impl Builder<'_> {
             path: node.path.clone(),
             repo: node.repo,
             state: node.state,
-            has_children: !children.is_empty(),
+            has_children: !children.is_empty() || !worktrees.is_empty(),
             collapsed,
+            worktree: false,
         });
         if collapsed || last.len() >= MAX_DEPTH {
             return;
         }
-        let count = children.len();
+        let count = worktrees.len() + children.len();
+        for (i, row) in worktrees.iter().enumerate() {
+            last.push(i + 1 == count);
+            out.push(worktree_row(row, last));
+            last.pop();
+        }
         for (i, child) in children.into_iter().enumerate() {
+            let i = i + worktrees.len();
             let child_id = child.info.path.id();
             if !seen.insert(child_id) {
                 continue; // cycle
@@ -417,6 +480,54 @@ mod tests {
         let rows = build(std::slice::from_ref(&app), &deps, &[app.id.to_string()]);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].has_children && rows[0].collapsed);
+    }
+
+    fn worktree(parent: &DashboardRow, branch: &str) -> DashboardRow {
+        let mut r = row(&format!(
+            "{}.worktrees/{branch}",
+            parent.path.as_path().display()
+        ));
+        r.name = parent.name.clone();
+        r.worktree = Some(crate::dashboard::WorktreeRowInfo {
+            parent: Some(parent.id),
+            main_name: parent.name.clone(),
+            label: branch.into(),
+            locked: None,
+            missing: false,
+            listed: false,
+        });
+        r
+    }
+
+    #[test]
+    fn worktrees_nest_under_their_repo_before_its_submodules() {
+        let mut app = row("/w/app");
+        app.linked_worktrees = 2;
+        let (a, b) = (worktree(&app, "feat"), worktree(&app, "fix"));
+        let deps = HashMap::from([(app.id, vec![sub("/w/app", "lib", vec![])])]);
+        let rows = build(&[app.clone(), a.clone(), b.clone()], &deps, &[]);
+        let lines: Vec<String> = rows
+            .iter()
+            .map(|r| format!("{}{}", r.prefix, r.name))
+            .collect();
+        assert_eq!(lines, ["app", "├─ feat", "├─ fix", "└─ lib"]);
+        assert!(rows[0].has_children && !rows[0].worktree);
+        assert_eq!(rows[1].repo, Some(a.id));
+        assert!(rows[1].worktree && rows[2].worktree && !rows[3].worktree);
+        // Collapsing the repo hides its worktrees too.
+        let rows = build(&[app.clone(), a, b], &deps, &[app.id.to_string()]);
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn worktree_whose_repo_is_not_shown_is_a_root() {
+        let app = row("/w/app");
+        let wt = worktree(&app, "feat");
+        // A set view: the worktree in place of its repo.
+        let rows = build(std::slice::from_ref(&wt), &HashMap::new(), &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].depth, rows[0].worktree), (0, true));
+        assert_eq!(rows[0].name, "feat");
     }
 
     #[test]

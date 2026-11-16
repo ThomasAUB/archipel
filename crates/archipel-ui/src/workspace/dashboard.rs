@@ -254,7 +254,7 @@ impl Workspace {
         let selected = ui.batch_selection();
         let body: Vec<AnyElement> = if ui.show_dependency_tree {
             let tree = self.core.dependency_tree();
-            self.render_tree(&tree, &rows, &selected, cx)
+            self.render_tree(&tree, &rows, &selected, &ui, cx)
         } else {
             self.dash_rows
                 .retain(|id, _| rows.iter().any(|r| r.id == *id));
