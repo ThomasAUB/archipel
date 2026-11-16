@@ -1,6 +1,6 @@
 # Spec — Archipel, a multi-repo Git client
 
-This spec defines **what** the product is and **why**. The implementation path (architecture, phases, measurements) lives in [PLAN.md](PLAN.md), which refers to the feature sections below as §1–§9.
+This spec defines **what** the product is and **why**. The implementation path (architecture, phases, measurements) lives in [PLAN.md](PLAN.md), which refers to the feature sections below as §1–§10.
 
 ## Vision
 
@@ -163,6 +163,14 @@ Show how the repos of a project depend on each other, as a small tree:
 - Compact rendering (indentation + connectors), collapsible nodes; works with the dashboard filters.
 - Actions from a node: init / update a submodule (recursive or not), open it as a repo, add it to the project.
 - Later: other dependency sources through the same extension point (e.g. `repo` manifests, package-manager path / git dependencies).
+
+### 10. Worktrees — P1
+> Not implemented yet: linked worktrees found by the folder scan show up as unrelated repos. Full UI/UX spec: [WORKTREES.md](WORKTREES.md).
+
+- Linked worktrees are shown **under the repo they belong to** (Sidebar, Dashboard, Refs Panel), discovered from Git and never written to `archipel.toml`; each one works like a repo (columns, Quick Edit Pane, its own Repo Tab, staging, commit, forge status).
+- Create (from a branch, commit or tag, with a location template and optional copy of local files such as `.env`), open (tab, folder, terminal, external editor), lock, prune and remove a worktree; removing says what would be lost and is undoable.
+- **Worktree Sets**, for agent runs across repos: the same branch checked out as a worktree in several repos under one folder; the Dashboard can switch to a set so batch actions, the Commit Panel and pull requests target its worktrees; **Finish** removes the set and its merged branches.
+- Git's "already checked out in another worktree" refusals become choices (open that worktree, check out detached).
 
 ## Non-functional requirements
 
