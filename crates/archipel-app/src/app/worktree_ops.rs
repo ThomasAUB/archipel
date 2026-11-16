@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use archipel_model::worktree::{LocationVars, SetView, WorktreeAddRequest, expand_location};
 use archipel_model::{RepoId, RepoPath};
-use archipel_ops::{OpClass, OpError, RemoveOptions, WorktreeLoss, WorktreeSetup};
+use archipel_ops::{OpClass, OpError, RemoveOptions, WorktreeLoss, WorktreeSetup, same_folder};
 
 use super::{App, AppError, AppEvent, lock};
 use crate::actions::Command;
@@ -109,7 +109,6 @@ impl App {
                 .file_name()
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
         );
-        let new = RepoPath::new(request.path.clone()).id();
         let _h = self.submit_repo_job(&path, OpClass::Write, label, move |a, p, ctx| {
             let result = a
                 .add_worktree(p, &request, &setup, ctx, ctx.cancel())
@@ -128,6 +127,12 @@ impl App {
                             ui.expanded_worktrees.push(main);
                         }
                     });
+                    // Its row, as Git spells its path.
+                    let new = app
+                        .worktrees_of(main)
+                        .into_iter()
+                        .find(|w| same_folder(w.path.as_path(), &request.path))
+                        .map_or_else(|| RepoPath::new(request.path.clone()).id(), |w| w.path.id());
                     if open && let Err(e) = app.dispatch(Command::OpenRepoTab(new)) {
                         tracing::warn!(error = %e, "cannot open the new worktree");
                     }

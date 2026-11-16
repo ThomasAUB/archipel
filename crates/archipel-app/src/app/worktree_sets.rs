@@ -13,7 +13,7 @@ use archipel_model::worktree::{
 use archipel_model::{RepoId, RepoPath};
 use archipel_ops::batch::BatchTarget;
 use archipel_ops::{
-    BatchReport, Outcome, RemoveOptions, WorktreeLoss, WorktreePlan, WorktreeSetup,
+    BatchReport, Outcome, RemoveOptions, WorktreeLoss, WorktreePlan, WorktreeSetup, same_folder,
 };
 
 use super::session::Session;
@@ -322,29 +322,32 @@ impl App {
         names: &HashMap<RepoId, (String, PathBuf)>,
         report: &BatchReport<Vec<String>>,
     ) {
-        let mut results = Vec::new();
-        let mut created = Vec::new();
-        for (repo, outcome) in &report.per_repo {
-            let (repo_name, path) = names.get(repo).cloned().unwrap_or_default();
-            let result = match outcome {
-                Outcome::Done(_) => {
-                    created.push(SetMember {
-                        repo: *repo,
-                        path: RepoPath::new(path),
-                    });
-                    Ok(())
-                }
-                Outcome::Failed(e) => Err(e.to_string()),
-                Outcome::Skipped(why) => Err(why.clone()),
-            };
-            results.push((*repo, repo_name, result));
-        }
         // The lists first: the set's members must be rows when it shows.
         for repo in report.per_repo.iter().map(|(r, _)| *r) {
             if let Some(path) = self.path_of(repo) {
                 let list = self.services.git.worktrees.worktrees(&path);
                 self.apply_worktrees(repo, list);
             }
+        }
+        let mut results = Vec::new();
+        let mut created = Vec::new();
+        for (repo, outcome) in &report.per_repo {
+            let (repo_name, path) = names.get(repo).cloned().unwrap_or_default();
+            let result = match outcome {
+                Outcome::Done(_) => {
+                    // As Git spells it: the member is found by its row.
+                    let path = self
+                        .worktrees_of(*repo)
+                        .into_iter()
+                        .find(|w| same_folder(w.path.as_path(), &path))
+                        .map_or_else(|| RepoPath::new(path), |w| w.path);
+                    created.push(SetMember { repo: *repo, path });
+                    Ok(())
+                }
+                Outcome::Failed(e) => Err(e.to_string()),
+                Outcome::Skipped(why) => Err(why.clone()),
+            };
+            results.push((*repo, repo_name, result));
         }
         if !created.is_empty() {
             self.update_ui_state(|ui| {

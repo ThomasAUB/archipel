@@ -101,6 +101,20 @@ const DEFAULT_BRANCHES: &[&str] = &[
     "refs/remotes/origin/master",
 ];
 
+/// Whether `a` and `b` are the same folder. Git reports a worktree's path
+/// resolved (long names on Windows, symlinks followed on macOS) while a
+/// path typed or templated may spell it otherwise (`C:\Users\RUNNER~1`,
+/// `/var` → `/private/var`): equal ids, or the same folder on disk.
+#[must_use]
+pub fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use archipel_model::RepoId;
+    RepoId::from_path(a) == RepoId::from_path(b)
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
+}
+
 fn branch_ref(name: &str) -> String {
     format!("refs/heads/{name}")
 }
