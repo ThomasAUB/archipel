@@ -87,6 +87,9 @@ pub enum Command {
     CancelScan,
     /// Add repositories to the open project.
     AddRepos(Vec<RepoPath>),
+    /// Remove a repository from the open project (its files are untouched),
+    /// with its linked worktrees unless listed themselves.
+    RemoveRepo(RepoId),
     /// Show the repo dependency tree, or the flat list (spec §9).
     ToggleDependencyTree,
     /// Collapse or expand a node of the dependency tree (its path key).

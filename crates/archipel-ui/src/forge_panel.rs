@@ -61,11 +61,13 @@ type Line = (String, Option<String>, bool);
 const MERGE_ARM_TIME: Duration = Duration::from_secs(4);
 
 /// The panel.
-#[allow(clippy::struct_excessive_bools)] // independent form toggles and the busy flag
+#[allow(clippy::struct_excessive_bools)] // independent form toggles
 pub struct ForgePanel {
     core: Arc<Core>,
     tab: ForgeTab,
-    busy: bool,
+    /// Jobs started by [`Self::run`] and not finished: several can run at
+    /// once (picking another account while namespaces load).
+    running: usize,
     error: Option<String>,
     // Accounts.
     accounts: Vec<ForgeAccount>,
@@ -162,7 +164,7 @@ impl ForgePanel {
             accounts: core.forge_accounts(),
             core,
             tab: ForgeTab::Accounts,
-            busy: false,
+            running: 0,
             error: None,
             kind: None,
             host,
@@ -223,6 +225,11 @@ impl ForgePanel {
         cx.notify();
     }
 
+    /// Whether a job started by [`Self::run`] is still running.
+    fn busy(&self) -> bool {
+        self.running > 0
+    }
+
     /// Runs `job` on the app runtime, then `done` on the UI thread.
     fn run<T, F>(
         &mut self,
@@ -234,13 +241,13 @@ impl ForgePanel {
         T: Send + 'static,
         F: Future<Output = T> + Send + 'static,
     {
-        self.busy = true;
+        self.running += 1;
         self.error = None;
         let handle = self.core.scheduler().runtime().spawn(job);
         cx.spawn_in(window, async move |this, cx| {
             let result = handle.await;
             let _ = this.update_in(cx, |p, window, cx| {
-                p.busy = false;
+                p.running -= 1;
                 match result {
                     Ok(value) => done(p, value, window, cx),
                     Err(e) => p.error = Some(e.to_string()),
@@ -467,11 +474,14 @@ impl ForgePanel {
         self.namespace = None;
         self.repos.clear();
         let core = self.core.clone();
+        let picked = account.clone();
         self.run(
             async move { core.forge_namespaces(&account).await },
             window,
             cx,
-            |p, result, window, cx| match result {
+            move |p, result, window, cx| match result {
+                // Another account was picked meanwhile.
+                _ if p.account.as_ref() != Some(&picked) => {}
                 Ok(namespaces) => {
                     let first = namespaces.first().cloned();
                     p.namespaces = namespaces;
@@ -496,11 +506,15 @@ impl ForgePanel {
         self.namespace = Some(namespace.clone());
         self.repos.clear();
         let core = self.core.clone();
+        let picked = (account.clone(), namespace.clone());
         self.run(
             async move { core.forge_repositories(&account, &namespace).await },
             window,
             cx,
-            |p, result, _, _| match result {
+            move |p, result, _, _| match result {
+                // Another account or namespace was picked meanwhile.
+                _ if p.account.as_ref() != Some(&picked.0)
+                    || p.namespace.as_ref() != Some(&picked.1) => {}
                 Ok(repos) => p.repos = repos.into_iter().map(|r| (r, false)).collect(),
                 Err(e) => p.error = Some(e.to_string()),
             },
@@ -561,7 +575,7 @@ impl ForgePanel {
 
     /// Clones the URLs typed in the URL field.
     fn clone_urls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy() {
             return;
         }
         let urls = split_clone_urls(&self.url.read(cx).value());
@@ -1254,7 +1268,7 @@ impl Render for ForgePanel {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ForgePanelEvent::Closed))),
                     ),
             )
-            .when(self.busy, |d| {
+            .when(self.busy(), |d| {
                 d.child(div().text_color(color(cx, T::FgMuted)).child("Working…"))
             })
             .child(

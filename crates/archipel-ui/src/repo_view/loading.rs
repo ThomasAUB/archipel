@@ -19,7 +19,9 @@ use crate::staging;
 
 use super::graph_paint::{lanes_above, stash_lane};
 use super::refs_panel::{RefList, RefRow};
-use super::{HeadLink, MAX_LANES_SHOWN, OpenDiff, PlacedStash, RepoView, SharedView, lock};
+use super::{
+    HeadLink, MAX_LANES_SHOWN, OpenDiff, PlacedStash, RepoView, Selected, SharedView, lock,
+};
 
 /// Graph rows laid out at a time while looking for the HEAD commit.
 const HEAD_SCAN_ROWS: u32 = 512;
@@ -60,6 +62,7 @@ impl RepoView {
     pub(super) fn load_graph(&mut self, cx: &mut Context<Self>) {
         let mut graph = self.core.history_view();
         let path = self.path.clone();
+        let run = self.loads.graph.begin();
         let task = cx.background_spawn(async move {
             let report = graph
                 .open(&path, &NoProgress, &CancelToken::new())
@@ -72,6 +75,9 @@ impl RepoView {
             let result = task.await;
             let mut pending = None;
             let _ = this.update(cx, |v, cx| {
+                if !v.loads.graph.is_current(run) {
+                    return; // reloaded meanwhile: a newer history is coming
+                }
                 match result {
                     Ok((graph, rows, lanes, completion)) => {
                         let graph = Arc::new(Mutex::new(graph));
@@ -87,6 +93,7 @@ impl RepoView {
                         v.head_link = None;
                         v.load_stashes(cx);
                         v.load_head_link(cx);
+                        v.place_selection(cx);
                     }
                     Err(e) => v.graph_error = Some(e),
                 }
@@ -212,14 +219,13 @@ impl RepoView {
     pub(super) fn load_changes(&mut self, cx: &mut Context<Self>) {
         let status = self.core.repo_actions().ports().status.clone();
         let path = self.path.clone();
-        self.changes_read += 1;
-        let read = self.changes_read;
+        let read = self.loads.changes.begin();
         let task =
             cx.background_spawn(async move { status.changes(&path).map_err(|e| e.to_string()) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
-                if read != v.changes_read {
+                if !v.loads.changes.is_current(read) {
                     return; // a later read started: it may see a newer state
                 }
                 match result {
@@ -263,6 +269,7 @@ impl RepoView {
         let path = self.path.clone();
         let (worktrees, _) = self.worktree_entries();
         self.refresh_worktrees(cx);
+        let run = self.loads.refs.begin();
         let task = cx.background_spawn(async move {
             let branches = refs.branches(&path)?;
             let tags = refs.tags(&path)?;
@@ -306,6 +313,9 @@ impl RepoView {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
+                if !v.loads.refs.is_current(run) {
+                    return; // reloaded meanwhile
+                }
                 match result {
                     Ok(list) => v.refs = Arc::new(list),
                     Err(e) => v.status = Some(e.to_string()),
@@ -413,10 +423,14 @@ impl RepoView {
     pub(super) fn load_submodules(&mut self, cx: &mut Context<Self>) {
         let reader = self.core.repo_actions().ports().submodules.clone();
         let path = self.path.clone();
+        let run = self.loads.submodules.begin();
         let task = cx.background_spawn(async move { reader.submodules(&path) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
+                if !v.loads.submodules.is_current(run) {
+                    return; // reloaded meanwhile
+                }
                 match result {
                     Ok(list) if *v.submodules != list => v.submodules = Arc::new(list),
                     Ok(_) => return,
@@ -460,7 +474,7 @@ impl RepoView {
     }
 
     pub(super) fn select_commit(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
-        self.selected = Some((row, oid));
+        self.selected = Some(Selected::at(row, oid));
         self.multi.clear();
         self.reword = None;
         self.wip_selected = false;
@@ -479,7 +493,7 @@ impl RepoView {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
-                if v.selected.is_none_or(|(_, o)| o != oid) {
+                if v.selected.is_none_or(|s| s.oid != oid) {
                     return; // another row was selected meanwhile
                 }
                 match result {

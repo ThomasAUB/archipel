@@ -45,7 +45,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let Some(row) = self.core.rows().into_iter().find(|r| r.id == id) else {
+        let Some(row) = self.core.row(id) else {
             return;
         };
         let core = self.core.clone();

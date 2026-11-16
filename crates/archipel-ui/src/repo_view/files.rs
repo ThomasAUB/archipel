@@ -256,7 +256,7 @@ impl RepoView {
         if self.wip_selected {
             None
         } else {
-            self.stash_selected.or(self.selected.map(|(_, oid)| oid))
+            self.stash_selected.or(self.selected.map(|s| s.oid))
         }
     }
 

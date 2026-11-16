@@ -28,7 +28,7 @@ use gpui_kit::component::Colorize as _;
 use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Action, AnyElement, Context, Entity, FocusHandle, KeyDownEvent, Pixels, Point, ScrollHandle,
+    AnyElement, Context, Entity, FocusHandle, KeyDownEvent, Pixels, Point, ScrollHandle,
     Subscription, Window, div, px,
 };
 
@@ -37,59 +37,20 @@ use crate::repo_view::RepoView;
 use crate::theme::{color, text_size, ui_font};
 
 use dashboard::DashRow;
-use overlays::{Overlay, PaletteKind};
+use overlays::Overlay;
 
-gpui_kit::actions!(
-    archipel,
-    [
-        OpenProjects,
-        OpenActions,
-        NextTab,
-        PreviousTab,
-        Undo,
-        Redo,
-        ToggleDrawer,
-        Refresh,
-        FetchAll,
-        OpenCommit,
-        SubmitCommit,
-        ToggleHide,
-        ShowHidden,
-        ToggleTree,
-        NewWindow,
-        NextWindow,
-        PreviousWindow,
-        OpenWorktrees
-    ]
-);
+// The macOS application menu's "New Window" (keyboard shortcuts go
+// through [`RunAction`]).
+gpui_kit::actions!(archipel, [NewWindow]);
+
+/// Runs the action of the registry with this id: every keymap binding is
+/// bound to it, so a shortcut does exactly what the palette entry does.
+#[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
+#[action(namespace = archipel, no_json)]
+pub struct RunAction(pub String);
 
 /// Height of the project color band at the top of the window.
 const BAND_HEIGHT: f32 = 3.0;
-
-/// The GPUI action for an `archipel-app` action id (keymap bindings).
-pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
-    Some(match id {
-        "palette.projects" => Box::new(OpenProjects),
-        "palette.actions" => Box::new(OpenActions),
-        "tabs.next" => Box::new(NextTab),
-        "tabs.previous" => Box::new(PreviousTab),
-        "history.undo" => Box::new(Undo),
-        "history.redo" => Box::new(Redo),
-        "drawer.toggle" => Box::new(ToggleDrawer),
-        "repos.refresh" => Box::new(Refresh),
-        "repos.fetch_all" => Box::new(FetchAll),
-        "commit.open" => Box::new(OpenCommit),
-        "commit.submit" => Box::new(SubmitCommit),
-        "repos.toggle_hidden" => Box::new(ToggleHide),
-        "repos.show_hidden" => Box::new(ShowHidden),
-        "view.dependency_tree" => Box::new(ToggleTree),
-        "window.new" => Box::new(NewWindow),
-        "window.next" => Box::new(NextWindow),
-        "window.previous" => Box::new(PreviousWindow),
-        "palette.worktrees" => Box::new(OpenWorktrees),
-        _ => return None,
-    })
-}
 
 /// The project color band at the top of the window; striped while a
 /// Worktree Set is shown, so it is obvious which checkouts batch actions
@@ -341,7 +302,8 @@ impl Workspace {
                 for view in self.repo_views.values() {
                     view.update(cx, crate::repo_view::RepoView::refresh_worktrees);
                 }
-                let rows = self.core.rows();
+                // Hidden repos too: their tab stays open while they are shown.
+                let rows = self.core.all_rows();
                 for id in ids {
                     let row = rows.iter().find(|r| r.id == id);
                     let summary = row.and_then(|r| r.summary());
@@ -444,62 +406,8 @@ impl Render for Workspace {
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 this.quick_edit_key(e, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &OpenProjects, w, cx| {
-                this.open_palette(PaletteKind::Projects, w, cx);
-            }))
-            .on_action(cx.listener(|this, _: &OpenActions, w, cx| {
-                this.open_palette(PaletteKind::Actions, w, cx);
-            }))
-            .on_action(cx.listener(|this, _: &OpenWorktrees, w, cx| {
-                this.open_palette(PaletteKind::Worktrees, w, cx);
-            }))
-            .on_action(
-                cx.listener(|this, _: &NextTab, _, cx| this.dispatch(Command::CycleTab(true), cx)),
-            )
-            .on_action(cx.listener(|this, _: &PreviousTab, _, cx| {
-                this.dispatch(Command::CycleTab(false), cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleDrawer, _, cx| {
-                this.dispatch(Command::ToggleDrawer, cx);
-            }))
-            .on_action(
-                cx.listener(|this, _: &Refresh, _, cx| this.dispatch(Command::RefreshAll, cx)),
-            )
-            .on_action(cx.listener(|this, _: &FetchAll, _, cx| {
-                let t = this.selected_or_all();
-                this.dispatch(Command::Fetch(t), cx);
-            }))
-            .on_action(cx.listener(|this, _: &OpenCommit, w, cx| this.open_commit(w, cx)))
-            .on_action(cx.listener(|this, _: &ToggleHide, w, cx| {
-                this.run_action("repos.toggle_hidden", w, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ShowHidden, _, cx| {
-                this.dispatch(Command::ToggleShowHidden, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleTree, _, cx| {
-                this.dispatch(Command::ToggleDependencyTree, cx);
-            }))
+            .on_action(cx.listener(|this, a: &RunAction, w, cx| this.run_action(&a.0, w, cx)))
             .on_action(cx.listener(|_, _: &NewWindow, _, cx| crate::windows::open(cx, None)))
-            .on_action(cx.listener(|this, _: &NextWindow, w, cx| this.cycle_window(true, w, cx)))
-            .on_action(cx.listener(|this, _: &PreviousWindow, w, cx| {
-                this.cycle_window(false, w, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SubmitCommit, w, cx| this.open_commit(w, cx)))
-            .on_action(cx.listener(|this, _: &Undo, _, cx| {
-                let ctx = this.core.action_context();
-                if let Some(repo) = ctx.active_repo.or(ctx.selected.first().copied()) {
-                    this.dispatch(Command::Undo(repo), cx);
-                } else {
-                    this.notice = Some("Select a repository to undo its last operation".into());
-                    cx.notify();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &Redo, _, cx| {
-                let ctx = this.core.action_context();
-                if let Some(repo) = ctx.active_repo.or(ctx.selected.first().copied()) {
-                    this.dispatch(Command::Redo(repo), cx);
-                }
-            }))
             .when_some(identity.as_ref(), |d, identity| {
                 d.child(project_band(identity.set.is_some(), cx))
             })

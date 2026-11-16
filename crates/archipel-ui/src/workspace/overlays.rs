@@ -310,7 +310,7 @@ impl Workspace {
     }
 
     /// Dismisses the open overlay (as Escape / Close would).
-    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = None;
         self.focus.focus(window, cx);
         cx.notify();

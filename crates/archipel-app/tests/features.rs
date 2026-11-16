@@ -620,7 +620,9 @@ fn refresh_reloads_the_project_definition() {
     other
         .dispatch(Command::SetAccent(Some("#22c55e".into())))
         .unwrap();
-    other.remove_repo(e.repos[2].id()).unwrap();
+    other
+        .dispatch(Command::RemoveRepo(e.repos[2].id()))
+        .unwrap();
     assert_eq!(e.app.identity().unwrap().accent, before);
 
     e.app.dispatch(Command::RefreshAll).unwrap();

@@ -31,13 +31,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
-            WorktreeDialogEvent::Closed => {
-                self.overlay = None;
-                self.focus.focus(window, cx);
-            }
+            WorktreeDialogEvent::Closed => self.close_overlay(window, cx),
             WorktreeDialogEvent::Notice(text) => self.notice = Some(text.clone()),
             WorktreeDialogEvent::Open(id) => {
-                self.overlay = None;
+                self.close_overlay(window, cx);
                 self.dispatch(Command::OpenRepoTab(*id), cx);
             }
         }
@@ -68,7 +65,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let row = self.core.all_rows().into_iter().find(|r| r.id == id);
+        let row = self.core.row(id);
         let Some(info) = row.as_ref().and_then(|r| r.worktree.clone()) else {
             self.notice = Some("The main worktree cannot be removed".into());
             cx.notify();
@@ -203,7 +200,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let row = self.core.all_rows().into_iter().find(|r| r.id == id);
+        let row = self.core.row(id);
         match row.and_then(|r| r.worktree) {
             Some(w) if w.locked.is_some() => self.dispatch(Command::LockWorktree(id, None), cx),
             Some(_) => {
@@ -216,13 +213,7 @@ impl Workspace {
 
     /// Reveals, copies, or opens a terminal or editor on row `id`'s folder.
     pub(super) fn hand_off(&mut self, id: RepoId, action: HandOff, cx: &mut Context<Self>) {
-        let Some(path) = self
-            .core
-            .all_rows()
-            .into_iter()
-            .find(|r| r.id == id)
-            .map(|r| r.path.as_path().to_path_buf())
-        else {
+        let Some(path) = self.core.row(id).map(|r| r.path.as_path().to_path_buf()) else {
             return;
         };
         let settings = self.core.settings();
@@ -284,7 +275,7 @@ impl Workspace {
         id: RepoId,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let row = self.core.all_rows().into_iter().find(|r| r.id == id);
+        let row = self.core.row(id);
         let Some(row) = row else { return Vec::new() };
         let info = row.worktree.clone();
         let mut out = vec![menu_separator(cx).into_any_element()];

@@ -78,14 +78,16 @@ impl RepoView {
         );
     }
 
-    /// Checks out the commit of graph row `row`: through a branch pointing
-    /// at it when there is one, detached otherwise.
-    pub(super) fn checkout_row(&mut self, row: u32, cx: &mut Context<Self>) {
+    /// Checks out commit `oid`, shown at graph row `row`: through a branch
+    /// pointing at it when there is one, detached otherwise. Does nothing
+    /// when the row now holds another commit (the graph was reloaded).
+    pub(super) fn checkout_row(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
         let Some(graph_row) = self
             .graph
             .as_ref()
             .and_then(|g| lock(g).rows(row..row + 1).ok())
             .and_then(|mut r| r.pop())
+            .filter(|r| r.oid == oid)
         else {
             return;
         };

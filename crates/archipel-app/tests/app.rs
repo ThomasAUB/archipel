@@ -174,6 +174,32 @@ fn all_fresh(app: &App) -> bool {
 }
 
 #[test]
+fn removing_a_repo_closes_its_tab_and_saves_the_ui_state() {
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    let (gone, kept) = (e.repos[1].id(), e.repos[2].id());
+    e.app.dispatch(Command::OpenRepoTab(kept)).unwrap();
+    e.app.dispatch(Command::OpenRepoTab(gone)).unwrap();
+    e.app.dispatch(Command::Select(Some(gone))).unwrap();
+    e.app.dispatch(Command::ToggleSelect(kept)).unwrap();
+
+    e.app.dispatch(Command::RemoveRepo(gone)).unwrap();
+
+    let ui = e.app.ui_state().unwrap();
+    assert!(!ui.tabs.contains(&TabState::Repo(gone)));
+    // Its tab was the active one: the dashboard takes over, not a neighbor.
+    assert_eq!(ui.active_tab, 0);
+    assert_eq!(e.app.action_context().active_repo, None);
+    assert_eq!(ui.selected_repo, Some(kept));
+    assert!(ui.selection.is_empty());
+    assert!(e.app.row(gone).is_none());
+    let saved = e.store.load_ui_state(&p1_id()).unwrap().unwrap();
+    assert_eq!(saved.tabs, ui.tabs);
+    drop(e.dir);
+}
+
+#[test]
 fn opening_paints_from_cache_then_refreshes() {
     let e = env();
     let id = p1_id();

@@ -148,7 +148,7 @@ impl NewWorktreeDialog {
         cx: &mut Context<Self>,
     ) -> Self {
         let main = core.main_repo_of(repo);
-        let row = core.all_rows().into_iter().find(|r| r.id == main);
+        let row = core.row(main);
         let repo_name = row.as_ref().map(|r| r.name.clone()).unwrap_or_default();
         let has_submodules = row
             .as_ref()
@@ -231,11 +231,7 @@ impl NewWorktreeDialog {
     }
 
     fn path(&self) -> Option<RepoPath> {
-        self.core
-            .all_rows()
-            .into_iter()
-            .find(|r| r.id == self.repo)
-            .map(|r| r.path)
+        self.core.row(self.repo).map(|r| r.path)
     }
 
     /// The folder follows the branch until typed.
@@ -544,7 +540,7 @@ impl EventEmitter<WorktreeDialogEvent> for RemoveWorktreeDialog {}
 impl RemoveWorktreeDialog {
     /// The confirmation for linked worktree row `worktree`.
     pub fn new(core: Arc<Core>, worktree: RepoId, cx: &mut Context<Self>) -> Self {
-        let row = core.all_rows().into_iter().find(|r| r.id == worktree);
+        let row = core.row(worktree);
         let label = row
             .as_ref()
             .and_then(|r| r.worktree.as_ref().map(|w| w.label.clone()))

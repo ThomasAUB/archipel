@@ -49,6 +49,7 @@ use gpui_kit::{
 
 use crate::ci_tooltip::CiTooltip;
 use crate::diff_view::DiffDoc;
+use crate::latest::Latest;
 use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, repo_surface, staging_surface, tone};
 use crate::widgets::{Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter};
@@ -75,6 +76,45 @@ enum OpenDiff {
 
 /// A stash drawn in the graph, in a row of its own just above the commit
 /// it was made on.
+/// The selected commit. Its row is known only for the graph it was found
+/// in: a reload clears it until the commit is found again, so nothing acts
+/// on the commit that took its old row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Selected {
+    oid: Oid,
+    row: Option<u32>,
+}
+
+impl Selected {
+    fn at(row: u32, oid: Oid) -> Self {
+        Self {
+            oid,
+            row: Some(row),
+        }
+    }
+
+    /// Whether it is the commit shown at graph row `row`.
+    fn is_row(self, row: u32) -> bool {
+        self.row == Some(row)
+    }
+
+    /// Its row and commit, once placed in the current graph.
+    fn placed(self) -> Option<(u32, Oid)> {
+        self.row.map(|r| (r, self.oid))
+    }
+}
+
+/// The loads of a [`RepoView`] that can run several times at once.
+#[derive(Debug, Default)]
+struct Loads {
+    graph: Latest,
+    refs: Latest,
+    changes: Latest,
+    submodules: Latest,
+    /// Finding the selected commit again in a reloaded graph.
+    placing: Latest,
+}
+
 struct PlacedStash {
     entry: StashEntry,
     /// Graph row of `entry.base`.
@@ -123,7 +163,7 @@ pub struct RepoView {
     graph_error: Option<String>,
     meta: HashMap<u32, Arc<CommitMeta>>,
     pending: Option<Range<u32>>,
-    selected: Option<(u32, Oid)>,
+    selected: Option<Selected>,
     /// Commits selected together (Ctrl+click, Shift+click), by graph row,
     /// `selected` among them; empty when only `selected` is.
     multi: BTreeMap<u32, Oid>,
@@ -144,8 +184,9 @@ pub struct RepoView {
     /// Full message of the selected commit, shown above its files.
     message: Option<(Oid, SharedString)>,
     changes: Vec<FileChange>,
-    /// Counts the reads of [`Self::changes`]: only the latest one lands.
-    changes_read: u64,
+    /// Runs of the loads that can overlap (an operation's reload and a
+    /// file watcher event): only the latest one's result lands.
+    loads: Loads,
     /// Diff shown in place of the graph.
     open_diff: Option<OpenDiff>,
     /// The file browser, while **Files** is on.
@@ -201,7 +242,7 @@ impl RepoView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let row = core.rows().into_iter().find(|r| r.id == path.id());
+        let row = core.row(path.id());
         let summary = row.as_ref().and_then(|r| r.summary().cloned());
         let (ci, forge, forge_limit, forecast) = row
             .map(|r| (r.ci, r.forge, r.forge_limit, r.forecast))
@@ -237,7 +278,7 @@ impl RepoView {
             compare: None,
             message: None,
             changes: Vec::new(),
-            changes_read: 0,
+            loads: Loads::default(),
             open_diff: None,
             browser: None,
             staging,

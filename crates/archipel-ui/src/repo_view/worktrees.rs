@@ -330,7 +330,7 @@ impl RepoView {
     /// Worktree Switcher.
     pub(super) fn render_worktree_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let here = self.path.id();
-        let row = self.core.all_rows().into_iter().find(|r| r.id == here)?;
+        let row = self.core.row(here)?;
         let label = match (&row.worktree, row.linked_worktrees) {
             (Some(w), _) => format!("{WORKTREE_GLYPH} worktree of {} · {}", w.main_name, w.label),
             (None, 0) => return None,

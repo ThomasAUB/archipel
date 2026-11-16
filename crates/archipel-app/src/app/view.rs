@@ -24,6 +24,15 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The row of `repo`, hidden or not. Looking a repo up by id goes
+    /// through it: [`Self::rows`] leaves hidden repos out, and copies them all.
+    #[must_use]
+    pub fn row(&self, repo: RepoId) -> Option<DashboardRow> {
+        lock(&self.session)
+            .as_ref()
+            .and_then(|s| s.rows.iter().find(|r| r.id == repo).cloned())
+    }
+
     /// Every row, hidden ones included.
     #[must_use]
     pub fn all_rows(&self) -> Vec<DashboardRow> {
@@ -247,12 +256,7 @@ impl App {
                     ui.selected_repo = None;
                 }
                 ui.selection.retain(|r| !ids.contains(r));
-                let active = ui.tabs.get(ui.active_tab).cloned();
-                ui.tabs
-                    .retain(|t| !matches!(t, TabState::Repo(r) if ids.contains(r)));
-                ui.active_tab = active
-                    .and_then(|a| ui.tabs.iter().position(|t| *t == a))
-                    .unwrap_or(0);
+                ui.close_repo_tabs(ids);
             } else {
                 ui.hidden_repos.retain(|r| !ids.contains(r));
             }

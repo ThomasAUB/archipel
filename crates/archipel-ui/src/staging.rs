@@ -630,7 +630,7 @@ fn push_button<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Stateful<Div> {
 /// merge it), else "Create PR…"; none when the repo is not on a forge.
 fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Option<Stateful<Div>> {
     let id = v.repo_path().id();
-    let forge = v.core().rows().into_iter().find(|r| r.id == id)?.forge;
+    let forge = v.core().row(id)?.forge;
     let (label, tab) = match &forge {
         ForgeStatus::NotOnForge => return None,
         ForgeStatus::Open(pr) => (format!("PR #{}", pr.number), ForgeTab::Open(vec![id])),

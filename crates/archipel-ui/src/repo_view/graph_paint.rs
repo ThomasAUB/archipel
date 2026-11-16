@@ -283,7 +283,7 @@ impl RepoView {
     ) -> AnyElement {
         let meta = self.meta.get(&row.row).cloned();
         let selected =
-            self.selected.is_some_and(|(r, _)| r == row.row) || self.multi.contains_key(&row.row);
+            self.selected.is_some_and(|s| s.is_row(row.row)) || self.multi.contains_key(&row.row);
         // Same width on every row so the text columns line up.
         let width = px(lane_x(self.lane_count()));
         // Before the lanes, which keep `cx` borrowed.
@@ -362,7 +362,7 @@ impl RepoView {
                                 cx.listener(move |v, e: &MouseDownEvent, window, cx| {
                                     cx.stop_propagation();
                                     v.focus.focus(window, cx);
-                                    if v.selected.is_none_or(|(r, _)| r != index) {
+                                    if !v.selected.is_some_and(|s| s.is_row(index)) {
                                         v.select_commit(index, oid, cx);
                                     }
                                     // The badge's own actions, then its
@@ -426,7 +426,7 @@ impl RepoView {
                 v.focus.focus(window, cx);
                 let m = e.modifiers();
                 if e.click_count() > 1 {
-                    v.checkout_row(index, cx);
+                    v.checkout_row(index, oid, cx);
                 } else if m.shift {
                     v.select_commit_span(index, oid, cx);
                 } else if m.control || m.platform {
@@ -446,7 +446,7 @@ impl RepoView {
                         v.open_menu(MenuTarget::Commits(commits), e.position, cx);
                         return;
                     }
-                    if v.selected.is_none_or(|(r, _)| r != index) {
+                    if !v.selected.is_some_and(|s| s.is_row(index)) {
                         v.select_commit(index, oid, cx);
                     }
                     let target = MenuTarget::Commit {

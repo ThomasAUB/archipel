@@ -320,8 +320,11 @@ impl App {
         Ok(())
     }
 
-    /// Removes a repository from the open project (files are untouched).
-    pub fn remove_repo(&self, repo: RepoId) -> Result<(), AppError> {
+    /// Removes a repository from the open project (files are untouched),
+    /// with its tab and selection. Run through
+    /// [`Command::RemoveRepo`](crate::Command::RemoveRepo), which also
+    /// saves the UI state.
+    pub(super) fn remove_repo(&self, repo: RepoId) -> Result<(), AppError> {
         self.edit_definition(|s| {
             // Its linked worktrees go with it (they are found again when a
             // repo of theirs is added back), unless listed themselves.
@@ -337,9 +340,7 @@ impl App {
             for row in s.rows.iter_mut().filter(|r| r.parent() == Some(repo)) {
                 row.worktree = None;
             }
-            s.ui.hidden_repos.retain(|r| *r != repo);
-            s.ui.selection.retain(|r| !gone.contains(r));
-            s.ui.expanded_worktrees.retain(|r| *r != repo);
+            s.ui.forget_repos(&gone);
             for id in &gone {
                 super::worktrees::forget_repo(s, *id);
             }
@@ -347,6 +348,7 @@ impl App {
         })?;
         self.start_watching();
         self.emit(AppEvent::RowsChanged(vec![repo]));
+        self.emit(AppEvent::UiStateChanged);
         Ok(())
     }
 
