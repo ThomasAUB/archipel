@@ -26,9 +26,7 @@ impl Workspace {
         let hover = color(cx, T::BgHover);
         let open = self
             .core
-            .rows()
-            .into_iter()
-            .find(|r| r.id == id)
+            .row(id)
             .and_then(|r| r.forge.pull_request().map(|pr| (pr.number, pr.url.clone())));
         let base = div()
             .id("menu-forge")
@@ -60,9 +58,7 @@ impl Workspace {
         let hover = color(cx, T::BgHover);
         let url = self
             .core
-            .rows()
-            .into_iter()
-            .find(|r| r.id == id)
+            .row(id)
             .and_then(|r| r.ci.run().and_then(|run| run.url.clone()))?;
         Some(
             div()
@@ -84,11 +80,9 @@ impl Workspace {
     /// Row menu entry: rerun the failed CI jobs of the targeted repos whose
     /// CI fails, when there are any.
     fn ci_rerun_menu_item(&self, targets: &[RepoId], cx: &mut Context<Self>) -> Option<AnyElement> {
-        let failing: Vec<RepoId> = self
-            .core
-            .rows()
-            .into_iter()
-            .filter(|r| targets.contains(&r.id))
+        let failing: Vec<RepoId> = targets
+            .iter()
+            .filter_map(|id| self.core.row(*id))
             .filter(|r| {
                 r.ci.run()
                     .is_some_and(|run| run.failed_jobs().next().is_some())
@@ -214,11 +208,7 @@ impl Workspace {
         };
         let all_hidden = targets.iter().all(|r| ui.is_hidden(*r));
         // A linked worktree is removed as a worktree, not from the project.
-        let is_worktree = self
-            .core
-            .all_rows()
-            .iter()
-            .any(|r| r.id == id && r.parent().is_some());
+        let is_worktree = self.core.row(id).is_some_and(|r| r.parent().is_some());
         let n = targets.len();
         let hover = color(cx, T::BgHover);
         let subtle = color(cx, T::FgSubtle);
@@ -313,10 +303,7 @@ impl Workspace {
                         .hover(move |s| s.bg(hover))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.row_menu = None;
-                            if let Err(e) = this.core.remove_repo(id) {
-                                this.notice = Some(e.to_string());
-                            }
-                            cx.notify();
+                            this.dispatch(Command::RemoveRepo(id), cx);
                         }))
                         .child("Remove from project"),
                 )

@@ -266,12 +266,12 @@ impl App {
                 }
             } else {
                 s.rows.retain(|r| r.id != *id);
-                s.ui.tabs.retain(|t| *t != TabState::Repo(*id));
-                s.ui.selection.retain(|r| r != id);
-                if s.ui.selected_repo == Some(*id) {
+                // Its main repo takes over the selection.
+                let was_selected = s.ui.selected_repo == Some(*id);
+                s.ui.forget_repos(&[*id]);
+                if was_selected {
                     s.ui.selected_repo = Some(main_id);
                 }
-                s.ui.active_tab = s.ui.active_tab.min(s.ui.tabs.len().saturating_sub(1));
                 forget_repo(s, *id);
             }
             out.watch_changed = true;

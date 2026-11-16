@@ -68,7 +68,7 @@ impl RepoView {
             cx.notify();
             return;
         }
-        let selected = self.selected.map(|(_, oid)| oid);
+        let selected = self.selected.map(|s| s.oid);
         self.open_name_form(None, window, cx);
         match form {
             NameForm::Branch(start) => {
@@ -111,7 +111,7 @@ impl RepoView {
         let (title, ok) = match self.name_form.as_ref()? {
             NameForm::Branch(start) => {
                 let start = start
-                    .or(self.selected.map(|(_, oid)| oid))
+                    .or(self.selected.map(|s| s.oid))
                     .map_or_else(|| "HEAD".to_owned(), |oid| oid.short(SHORT_OID));
                 (format!("New branch at {start}"), "Create")
             }

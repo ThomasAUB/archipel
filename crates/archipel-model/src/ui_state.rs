@@ -156,6 +156,31 @@ impl UiState {
         }
     }
 
+    /// Closes the repo tabs of `ids`. The active tab stays active when it
+    /// is still open, else the dashboard (the first tab) is.
+    pub fn close_repo_tabs(&mut self, ids: &[RepoId]) {
+        let active = self.tabs.get(self.active_tab).cloned();
+        self.tabs
+            .retain(|t| !matches!(t, TabState::Repo(r) if ids.contains(r)));
+        self.active_tab = active
+            .and_then(|a| self.tabs.iter().position(|t| *t == a))
+            .unwrap_or(0);
+    }
+
+    /// Forgets repos gone from the project: their tabs, selection, hidden
+    /// and expanded state. Every removal goes through it, so no tab or
+    /// selection is left pointing at a repo that is no longer there.
+    pub fn forget_repos(&mut self, ids: &[RepoId]) {
+        self.close_repo_tabs(ids);
+        self.selection.retain(|r| !ids.contains(r));
+        // As when it is Ctrl+clicked away: another selected repo takes over.
+        if self.selected_repo.is_some_and(|r| ids.contains(&r)) {
+            self.selected_repo = self.selection.pop();
+        }
+        self.hidden_repos.retain(|r| !ids.contains(r));
+        self.expanded_worktrees.retain(|r| !ids.contains(r));
+    }
+
     /// The repos batch actions apply to: the multi-selection, else the
     /// selected repo, else none (meaning "all").
     #[must_use]
@@ -227,6 +252,45 @@ mod tests {
         assert!(state.shows_graph_column(GraphColumn::Age));
         state.toggle_graph_column(GraphColumn::Author);
         assert!(state.shows_graph_column(GraphColumn::Author));
+    }
+
+    #[test]
+    fn closing_repo_tabs_keeps_the_active_tab_or_falls_back_to_the_dashboard() {
+        let mut state = UiState {
+            tabs: vec![
+                TabState::Dashboard,
+                TabState::Repo(RepoId(1)),
+                TabState::Repo(RepoId(2)),
+            ],
+            active_tab: 2,
+            ..UiState::default()
+        };
+        state.close_repo_tabs(&[RepoId(1)]);
+        assert_eq!(state.tabs[state.active_tab], TabState::Repo(RepoId(2)));
+        state.close_repo_tabs(&[RepoId(2)]);
+        assert_eq!(state.active_tab, 0);
+        assert_eq!(state.tabs, [TabState::Dashboard]);
+    }
+
+    #[test]
+    fn forgotten_repos_leave_no_trace() {
+        let gone = RepoId(1);
+        let mut state = UiState {
+            tabs: vec![TabState::Dashboard, TabState::Repo(gone)],
+            active_tab: 1,
+            selected_repo: Some(gone),
+            selection: vec![gone, RepoId(2)],
+            hidden_repos: vec![gone],
+            expanded_worktrees: vec![gone],
+            ..UiState::default()
+        };
+        state.forget_repos(&[gone]);
+        assert_eq!(state.tabs, [TabState::Dashboard]);
+        assert_eq!(state.active_tab, 0);
+        assert_eq!(state.selected_repo, Some(RepoId(2)));
+        assert!(state.selection.is_empty());
+        assert!(state.hidden_repos.is_empty());
+        assert!(state.expanded_worktrees.is_empty());
     }
 
     #[test]

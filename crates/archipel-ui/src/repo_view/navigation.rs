@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use archipel_graph::GraphError;
 use archipel_model::ports::DiffSide;
 use archipel_model::requests::StashApplyMode;
 use archipel_model::{CancelToken, NoProgress, Oid};
@@ -14,7 +15,7 @@ use crate::diff_view::{self, DiffDoc};
 use crate::widgets::{SHORT_OID, unmodified};
 
 use super::details::file_title;
-use super::{Item, OpenDiff, RepoView, lock};
+use super::{Item, OpenDiff, RepoView, Selected, SharedView, lock};
 
 /// Rows moved by Page Up / Page Down in the graph.
 const PAGE_ROWS: i64 = 20;
@@ -125,7 +126,10 @@ impl RepoView {
     /// selected commit alone.
     fn selection(&self) -> BTreeMap<u32, Oid> {
         if self.multi.is_empty() {
-            self.selected.into_iter().collect()
+            self.selected
+                .and_then(Selected::placed)
+                .into_iter()
+                .collect()
         } else {
             self.multi.clone()
         }
@@ -149,7 +153,7 @@ impl RepoView {
     /// Shift+click on commit `oid` at graph row `row`: selects every commit
     /// row from the selected one to it.
     pub(super) fn select_commit_span(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
-        let Some(anchor) = self.selected else {
+        let Some(anchor) = self.selected.and_then(Selected::placed) else {
             self.select_commit(row, oid, cx);
             return;
         };
@@ -181,7 +185,7 @@ impl RepoView {
         } else {
             (first, first_oid)
         };
-        if self.selected != Some(shown) {
+        if self.selected != Some(Selected::at(shown.0, shown.1)) {
             self.select_commit(shown.0, shown.1, cx);
         }
         self.multi = if set.len() > 1 { set } else { BTreeMap::new() };
@@ -279,7 +283,9 @@ impl RepoView {
         } else if let Some(oid) = self.stash_selected {
             self.stash_at(oid).map(|k| self.item_of_stash(k))
         } else {
-            self.selected.map(|(r, _)| self.item_of_row(r))
+            self.selected
+                .and_then(|s| s.row)
+                .map(|r| self.item_of_row(r))
         };
         let item = (from.map_or(-1, i64::from) + delta).clamp(0, last);
         let item = u32::try_from(item).unwrap_or(0);
@@ -348,8 +354,8 @@ impl RepoView {
                 self.multi.clear();
                 cx.notify();
             }
-            "enter" => match self.selected {
-                Some((row, _)) => self.checkout_row(row, cx),
+            "enter" => match self.selected.and_then(Selected::placed) {
+                Some((row, oid)) => self.checkout_row(row, oid, cx),
                 None => return,
             },
             _ => return,
@@ -359,21 +365,64 @@ impl RepoView {
 
     /// Selects the commit `oid` and scrolls to it (refs panel). The row is
     /// found once the topology is complete, without holding the view lock.
+    /// Finds the selected commit again in a just-loaded graph: commits
+    /// added or removed move it to another row. It is shown unplaced (no
+    /// row highlighted, no row action) until found, and unselected when
+    /// the new history no longer has it.
+    pub(super) fn place_selection(&mut self, cx: &mut Context<Self>) {
+        let run = self.loads.placing.begin();
+        let (Some(selected), Some(graph)) = (self.selected, self.graph.clone()) else {
+            return;
+        };
+        let oid = selected.oid;
+        let unmoved = selected.row.is_some_and(|row| {
+            lock(&graph)
+                .oids(row..row + 1)
+                .is_ok_and(|o| o.first() == Some(&oid))
+        });
+        if unmoved {
+            return;
+        }
+        self.selected = Some(Selected { oid, row: None });
+        let task = cx.background_spawn(async move { find_row(&graph, oid) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                if !v.loads.placing.is_current(run) || v.selected.is_none_or(|s| s.oid != oid) {
+                    return; // reloaded or selected elsewhere meanwhile
+                }
+                match result {
+                    Ok(Some(row)) => v.selected = Some(Selected::at(row, oid)),
+                    // Gone from the history (amended, rebased, reset away).
+                    Ok(None) => {
+                        v.selected = None;
+                        v.details = None;
+                        v.message = None;
+                        v.reword = None;
+                        if matches!(v.open_diff, Some(OpenDiff::Commit(..))) {
+                            v.open_diff = None;
+                        }
+                    }
+                    Err(e) if e.is_cancelled() => {}
+                    Err(e) => v.status = Some(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn jump_to(&mut self, oid: Oid, cx: &mut Context<Self>) {
         let Some(graph) = self.graph.clone() else {
             return;
         };
-        let task = cx.background_spawn(async move {
-            let completion = lock(&graph).completion();
-            if let Some(c) = completion {
-                c.wait(&NoProgress)?;
-            }
-            let searcher = lock(&graph).searcher()?;
-            searcher.row_of(oid, &CancelToken::new())
-        });
+        let source = Arc::clone(&graph);
+        let task = cx.background_spawn(async move { find_row(&graph, oid) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| match result {
+                // The row is of a graph reloaded meanwhile.
+                _ if !v.graph.as_ref().is_some_and(|g| Arc::ptr_eq(g, &source)) => {}
                 Ok(Some(row)) => v.show_row(row, oid, ScrollStrategy::Center, cx),
                 Ok(None) => {
                     v.status = Some(format!(
@@ -420,4 +469,15 @@ impl RepoView {
         };
         diff_view::render_open(self, title, &note, side, doc, cx)
     }
+}
+
+/// The row of commit `oid` in `graph`, once its topology is complete; read
+/// off the UI thread, without holding the lock while the build finishes.
+fn find_row(graph: &SharedView, oid: Oid) -> Result<Option<u32>, GraphError> {
+    let completion = lock(graph).completion();
+    if let Some(c) = completion {
+        c.wait(&NoProgress)?;
+    }
+    let searcher = lock(graph).searcher()?;
+    searcher.row_of(oid, &CancelToken::new())
 }

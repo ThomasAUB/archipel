@@ -40,7 +40,11 @@ impl RepoView {
     pub(super) fn start_reword(&mut self, oid: Oid, window: &mut Window, cx: &mut Context<Self>) {
         let original = match &self.message {
             Some((o, m)) if *o == oid => m.to_string(),
-            _ => match self.selected.and_then(|(r, _)| self.meta.get(&r)) {
+            _ => match self
+                .selected
+                .and_then(|s| s.row)
+                .and_then(|r| self.meta.get(&r))
+            {
                 Some(meta) => meta.summary.clone(),
                 None => return,
             },

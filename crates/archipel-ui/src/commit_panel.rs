@@ -114,6 +114,10 @@ impl CommitPanel {
     }
 
     fn run(&mut self, cx: &mut Context<Self>) {
+        // A second click while committing would commit everything twice.
+        if self.busy {
+            return;
+        }
         let Some(plan) = self.plan.clone() else {
             return;
         };
@@ -348,6 +352,7 @@ impl Render for CommitPanel {
                             },
                             cx,
                         )
+                        .when(self.busy, |b| b.opacity(0.5))
                         .on_click(cx.listener(|p, _, _, cx| p.run(cx))),
                     ),
             )

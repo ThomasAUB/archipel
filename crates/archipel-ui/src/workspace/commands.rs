@@ -26,15 +26,22 @@ impl Workspace {
         selected
     }
 
+    /// Runs the action `id` of the registry: the one way the palette, the
+    /// keymap and menus run an action, so they cannot disagree. An action
+    /// not available now says so rather than doing something else.
     pub(super) fn run_action(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let ctx = self.core.action_context();
-        let command = self
-            .core
-            .extensions()
-            .actions
-            .get(id)
-            .and_then(|a| a.command(&ctx));
-        match command {
+        let Some(action) = self.core.extensions().actions.get(id).cloned() else {
+            self.notice = Some(format!("“{id}” is not an action"));
+            cx.notify();
+            return;
+        };
+        if !action.is_available(&ctx) {
+            self.notice = Some(format!("“{}” is not available here", action.label()));
+            cx.notify();
+            return;
+        }
+        match action.command(&ctx) {
             Some(Command::Ui(ui)) => self.run_ui_command(&ui, window, cx),
             Some(command) => self.dispatch(command, cx),
             None => {}
@@ -96,11 +103,8 @@ impl Workspace {
         let target = ctx
             .active_repo
             .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]));
-        let url = self
-            .core
-            .rows()
-            .into_iter()
-            .find(|r| Some(r.id) == target)
+        let url = target
+            .and_then(|id| self.core.row(id))
             .and_then(|r| r.forge.pull_request().map(|pr| pr.url.clone()));
         match url {
             Some(url) => cx.open_url(&url),
@@ -113,11 +117,8 @@ impl Workspace {
         let target = ctx
             .active_repo
             .or_else(|| (ctx.selected.len() == 1).then(|| ctx.selected[0]));
-        let url = self
-            .core
-            .rows()
-            .into_iter()
-            .find(|r| Some(r.id) == target)
+        let url = target
+            .and_then(|id| self.core.row(id))
             .and_then(|r| r.ci.run().and_then(|run| run.url.clone()));
         match url {
             Some(url) => cx.open_url(&url),

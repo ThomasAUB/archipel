@@ -158,7 +158,7 @@ impl Workspace {
         if let Some(view) = self.repo_views.get(id) {
             return Some(view.clone());
         }
-        let row = self.core.rows().into_iter().find(|r| r.id == *id)?;
+        let row = self.core.row(*id)?;
         let core = self.core.clone();
         let view = cx.new(|cx| RepoView::new(core, row.path.clone(), row.label(), window, cx));
         // Lives as long as the view.

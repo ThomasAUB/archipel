@@ -158,6 +158,7 @@ impl App {
             Command::RenameCategory(old, new) => self.rename_category(&old, new.as_deref())?,
             Command::CancelScan => self.cancel_scan(),
             Command::AddRepos(paths) => self.add_repos(&paths)?,
+            Command::RemoveRepo(repo) => self.remove_repo(repo)?,
             Command::ToggleDependencyTree => {
                 self.update_ui_state(|ui| ui.show_dependency_tree = !ui.show_dependency_tree);
                 self.load_tree_if_shown();

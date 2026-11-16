@@ -78,7 +78,10 @@ impl RepoView {
         {
             return self.render_stash_details(k, doc, cx);
         }
-        let meta = self.selected.and_then(|(r, _)| self.meta.get(&r).cloned());
+        let meta = self
+            .selected
+            .and_then(|s| s.row)
+            .and_then(|r| self.meta.get(&r).cloned());
         let message = self
             .message
             .as_ref()

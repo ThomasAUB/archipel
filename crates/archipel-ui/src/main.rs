@@ -33,6 +33,7 @@ mod forge_panel;
 mod ignore;
 mod instance;
 mod keys;
+mod latest;
 mod menu;
 mod palette;
 mod quick_edit;
@@ -251,9 +252,9 @@ fn main() {
             for w in &warnings {
                 tracing::warn!("{w}");
             }
+            warnings.extend(bind_keys(cx, &app));
             warnings.splice(0..0, notices);
             cx.set_global(CoreRuntime(Some(runtime)));
-            bind_keys(cx, &app);
             cx.set_global(windows::Windows::new(app.clone()));
             windows::save_on_quit(cx);
             menu::install(cx);
@@ -281,22 +282,26 @@ fn serve_other_launches(cx: &mut App, listener: instance::Listener) {
     .detach();
 }
 
-/// Installs the keymap (from `archipel-app`, rebindable) as GPUI bindings.
-fn bind_keys(cx: &mut App, app: &archipel_app::App) {
-    let bindings: Vec<KeyBinding> = app
-        .extensions()
-        .keymap
-        .iter()
-        .filter_map(|(stroke, action)| {
-            let action = workspace::action_for(action)?;
-            match KeyBinding::load(&keys::gpui_keystroke(stroke), action, None, false, None, cx) {
-                Ok(b) => Some(b),
-                Err(e) => {
-                    tracing::warn!(key = %stroke, error = ?e, "unusable key binding");
-                    None
-                }
-            }
-        })
-        .collect();
+/// Installs the keymap (from `archipel-app`, rebindable) as GPUI bindings,
+/// each running its action of the registry as the palette does. Returns a
+/// warning per binding that cannot work, for the status bar.
+fn bind_keys(cx: &mut App, app: &archipel_app::App) -> Vec<String> {
+    let extensions = app.extensions();
+    let mut warnings = Vec::new();
+    let mut bindings = Vec::new();
+    for (stroke, id) in extensions.keymap.iter() {
+        if extensions.actions.get(id).is_none() {
+            warnings.push(format!(
+                "keymap: {stroke} is bound to “{id}”, which is not an action"
+            ));
+            continue;
+        }
+        let action = Box::new(workspace::RunAction(id.to_owned()));
+        match KeyBinding::load(&keys::gpui_keystroke(stroke), action, None, false, None, cx) {
+            Ok(b) => bindings.push(b),
+            Err(e) => warnings.push(format!("keymap: {stroke} cannot be bound: {e:?}")),
+        }
+    }
     cx.bind_keys(bindings);
+    warnings
 }
