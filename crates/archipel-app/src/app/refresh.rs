@@ -82,8 +82,7 @@ impl App {
                 };
             }
             share_fetch_time(s, repo);
-            let finished_all =
-                (s.pending.is_empty() && !again).then(|| (s.id.clone(), s.rows.clone()));
+            let finished_all = (s.pending.is_empty() && !again).then(|| s.id.clone());
             (finished_all, again)
         };
         self.emit(AppEvent::RowsChanged(vec![repo]));
@@ -93,8 +92,8 @@ impl App {
         self.load_tree(repo);
         self.load_forge(repo, false);
         self.load_forecast(repo);
-        if let Some((id, rows)) = finished_all {
-            self.persist_rows(&id, &rows);
+        if let Some(id) = finished_all {
+            self.persist_session(&id);
         }
     }
 

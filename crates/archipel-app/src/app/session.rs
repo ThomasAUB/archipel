@@ -205,6 +205,7 @@ impl App {
             scan.cancel();
         }
         self.save_ui_state(&session.id, &session.ui);
+        let _order = lock(&self.persisting);
         self.persist_rows(&session.id, &session.rows);
         drop(session.watches);
     }
@@ -216,8 +217,23 @@ impl App {
         }
     }
 
-    /// Caches the summaries of `rows` for the next opening of project `id`.
-    pub(super) fn persist_rows(&self, id: &ProjectId, rows: &[DashboardRow]) {
+    /// Caches the current summaries of project `id` while it is still the
+    /// open one. The rows are taken under `persisting`: writes racing from
+    /// several refreshes land in order, never an older set over a newer one.
+    pub(super) fn persist_session(&self, id: &ProjectId) {
+        let _order = lock(&self.persisting);
+        let rows = lock(&self.session)
+            .as_ref()
+            .filter(|s| &s.id == id)
+            .map(|s| s.rows.clone());
+        if let Some(rows) = rows {
+            self.persist_rows(id, &rows);
+        }
+    }
+
+    /// Caches the summaries of `rows` for the next opening of project `id`
+    /// (callers hold `persisting`).
+    fn persist_rows(&self, id: &ProjectId, rows: &[DashboardRow]) {
         let summaries: Vec<_> = rows
             .iter()
             .filter_map(|r| r.summary().map(|s| (r.id, s.clone())))
