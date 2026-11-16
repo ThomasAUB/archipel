@@ -321,12 +321,6 @@ impl RepoView {
         if !unmodified(event.keystroke.modifiers) {
             return;
         }
-        if self.menu.is_some() && event.keystroke.key == "escape" {
-            self.menu = None;
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
         if self.open_diff.is_some() {
             match event.keystroke.key.as_str() {
                 "down" => self.step_file(1, cx),

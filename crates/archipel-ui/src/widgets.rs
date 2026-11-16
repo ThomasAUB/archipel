@@ -124,6 +124,15 @@ pub fn context_menu(cx: &App) -> Div {
         .shadow_md()
 }
 
+/// A [`context_menu`] frame for a long list (a dropdown): it scrolls past
+/// a few dozen entries.
+pub fn scroll_menu(id: &'static str, cx: &App) -> impl IntoElement + ParentElement + use<> {
+    context_menu(cx)
+        .id(id)
+        .max_h(px(360.0))
+        .overflow_y_scrollbar()
+}
+
 /// An entry of a [`context_menu`]; `danger` colors destructive actions.
 pub fn menu_item(
     id: impl Into<ElementId>,

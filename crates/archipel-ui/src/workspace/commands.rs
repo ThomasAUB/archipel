@@ -8,10 +8,12 @@ use archipel_model::RepoId;
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, PathPromptOptions, Point, Window};
 
+use crate::commit_panel::CommitPanel;
 use crate::forge_panel::ForgeTab;
 
 use super::Workspace;
-use super::overlays::PaletteKind;
+use super::menus::Menu;
+use super::overlays::{Overlay, PaletteKind};
 
 impl Workspace {
     /// The batch selection (empty: every repo); in a Worktree Set view,
@@ -30,6 +32,7 @@ impl Workspace {
     /// keymap and menus run an action, so they cannot disagree. An action
     /// not available now says so rather than doing something else.
     pub(super) fn run_action(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menu(cx);
         let ctx = self.core.action_context();
         let Some(action) = self.core.extensions().actions.get(id).cloned() else {
             self.notice = Some(format!("“{id}” is not an action"));
@@ -48,6 +51,21 @@ impl Workspace {
         }
     }
 
+    /// A keyboard shortcut. While an overlay is open, another one would
+    /// replace it and lose what was typed in it: only the window shortcuts
+    /// run then, and Ctrl+Enter ("commit.submit") commits in the commit
+    /// panel.
+    pub(super) fn run_shortcut(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.overlay {
+            None => self.run_action(id, window, cx),
+            Some((Overlay::Commit(panel), _)) if id == "commit.submit" => {
+                panel.update(cx, CommitPanel::submit);
+            }
+            Some(_) if id.starts_with("window.") => self.run_action(id, window, cx),
+            Some(_) => {}
+        }
+    }
+
     fn run_ui_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         match id {
             "palette.projects" => self.open_palette(PaletteKind::Projects, window, cx),
@@ -62,7 +80,7 @@ impl Workspace {
             "repos.branches" => self.open_branches(window, cx),
             "settings.appearance" => {
                 let size = window.viewport_size();
-                self.theme_menu = Some(Point::new(size.width, size.height));
+                self.open_menu(Menu::Theme, Point::new(size.width, size.height), cx);
             }
             "app.copy_diagnostics" => self.copy_diagnostics(cx),
             "window.new" => crate::windows::open(cx, None),

@@ -17,6 +17,7 @@ use crate::widgets::{button, dot, section};
 
 use super::Workspace;
 use super::dashboard::row_click;
+use super::menus::Menu;
 use super::overlays::PaletteKind;
 
 impl Workspace {
@@ -72,8 +73,7 @@ impl Workspace {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.row_menu = Some((id, e.position));
-                        cx.notify();
+                        this.open_menu(Menu::Row(id), e.position, cx);
                     }),
                 )
                 .child(dot(if token == T::StatusSuccess {
@@ -178,8 +178,11 @@ impl Workspace {
                             d.on_mouse_down(
                                 MouseButton::Right,
                                 cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                                    this.category_menu = Some((category.clone(), e.position));
-                                    cx.notify();
+                                    this.open_menu(
+                                        Menu::Category(category.clone()),
+                                        e.position,
+                                        cx,
+                                    );
                                 }),
                             )
                         })

@@ -113,6 +113,11 @@ impl CommitPanel {
         .detach();
     }
 
+    /// Commits, as the Commit button does (Ctrl+Enter).
+    pub fn submit(&mut self, cx: &mut Context<Self>) {
+        self.run(cx);
+    }
+
     fn run(&mut self, cx: &mut Context<Self>) {
         // A second click while committing would commit everything twice.
         if self.busy {

@@ -20,13 +20,14 @@ use gpui_kit::{
 use crate::ci_tooltip::CiTooltip;
 use crate::forecast_badge::pill;
 use crate::quick_edit::{QuickEdit, QuickEditEvent};
-use crate::theme::{color, radius, row_height, staging_surface, text_size, tone, ui_font};
+use crate::theme::{color, radius, row_height, staging_surface, text_size, tone};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, chip, popup_at, primary_button, resize_pane, splitter,
-    unmodified,
+    Pane, PaneDrag, TextTooltip, button, check_menu_item, chip, primary_button, resize_pane,
+    scroll_menu, splitter, unmodified,
 };
 
 use super::Workspace;
+use super::menus::Menu;
 
 /// Relative widths of the dashboard columns.
 pub(super) const WIDTHS: [f32; 8] = [2.0, 1.4, 1.0, 1.2, 1.0, 0.8, 1.0, 0.9];
@@ -85,7 +86,7 @@ impl Workspace {
         if !unmodified(e.keystroke.modifiers) {
             return;
         }
-        if self.overlay.is_some() || self.row_menu.is_some() {
+        if self.overlay.is_some() || self.menu.is_some() {
             return;
         }
         let on_dashboard = self
@@ -422,8 +423,7 @@ impl Workspace {
     }
 
     fn open_row_menu(&mut self, id: RepoId, e: &MouseDownEvent, cx: &mut Context<Self>) {
-        self.row_menu = Some((id, e.position));
-        cx.notify();
+        self.open_menu(Menu::Row(id), e.position, cx);
     }
 
     /// The category filter: one dropdown button whatever the number of
@@ -463,40 +463,21 @@ impl Workspace {
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                let closed_now = this.category_filter_closed_at.take() == Some(e.position);
-                this.category_filter_menu = match this.category_filter_menu {
-                    Some(_) => None,
-                    None if closed_now => None,
-                    None => Some(e.position),
-                };
-                cx.stop_propagation();
-                cx.notify();
+                this.toggle_menu(Menu::CategoryFilter, e, cx);
             }),
         );
-        let menu = self.category_filter_menu.map(|position| {
+        let menu = self.menu_position(&Menu::CategoryFilter).map(|position| {
             let hover = color(cx, T::BgHover);
-            let accent = color(cx, T::AccentText);
             let items = keys.iter().map(|key| {
                 let checked = ui.category_filters.contains(key);
                 let k = key.clone();
-                div()
-                    .id(SharedString::from(format!("category-filter-{key}")))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                let id = SharedString::from(format!("category-filter-{key}"));
+                // Stays open: several categories can be picked.
+                check_menu_item(id, label_of(key), checked, cx).on_click(cx.listener(
+                    move |this, _, _, cx| {
                         this.dispatch(Command::ToggleCategoryFilter(k.clone()), cx);
-                    }))
-                    .child(div().w(px(14.0)).text_color(accent).child(if checked {
-                        "✓"
-                    } else {
-                        ""
-                    }))
-                    .child(label_of(key))
+                    },
+                ))
             });
             let clear = (!ui.category_filters.is_empty()).then(|| {
                 let selected = ui.category_filters.clone();
@@ -518,33 +499,10 @@ impl Workspace {
                     }))
                     .child("Show all categories")
             });
-            let menu = div()
-                .id("category-filter-menu")
-                .occlude()
-                .min_w(px(180.0))
-                .max_h(px(360.0))
-                .overflow_y_scrollbar()
-                .py_1()
-                .flex()
-                .flex_col()
-                .font_family(ui_font(cx))
-                .font_weight(crate::theme::ui_weight(cx))
-                .text_size(text_size(cx))
-                .text_color(color(cx, T::FgDefault))
-                .whitespace_nowrap()
-                .bg(color(cx, T::BgElevated))
-                .border_1()
-                .border_color(color(cx, T::Border))
-                .rounded(radius(cx))
-                .shadow_md()
-                .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, _, cx| {
-                    this.category_filter_menu = None;
-                    this.category_filter_closed_at = Some(e.position);
-                    cx.notify();
-                }))
+            let menu = scroll_menu("category-filter-menu", cx)
                 .children(items)
                 .children(clear);
-            popup_at(position, menu)
+            Self::menu_popup(position, menu, cx)
         });
         Some(div().child(button).children(menu).into_any_element())
     }

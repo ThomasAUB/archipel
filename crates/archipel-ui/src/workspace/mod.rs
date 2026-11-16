@@ -37,6 +37,7 @@ use crate::repo_view::RepoView;
 use crate::theme::{color, text_size, ui_font};
 
 use dashboard::DashRow;
+use menus::Menu;
 use overlays::Overlay;
 
 // The macOS application menu's "New Window" (keyboard shortcuts go
@@ -48,6 +49,11 @@ gpui_kit::actions!(archipel, [NewWindow]);
 #[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
 #[action(namespace = archipel, no_json)]
 pub struct RunAction(pub String);
+
+/// Whether `e` is a plain Escape.
+fn is_escape(e: &KeyDownEvent) -> bool {
+    e.keystroke.key == "escape" && crate::widgets::unmodified(e.keystroke.modifiers)
+}
 
 /// Height of the project color band at the top of the window.
 const BAND_HEIGHT: f32 = 3.0;
@@ -97,26 +103,11 @@ pub struct Workspace {
     log: VecDeque<(Timestamp, String, bool)>,
     notice: Option<String>,
     warnings: Vec<String>,
-    /// Open repo context menu: repo and mouse position.
-    row_menu: Option<(RepoId, Point<Pixels>)>,
-    /// Repos the open category palette applies to.
-    category_targets: Vec<RepoId>,
-    /// Open category header menu: category and mouse position.
-    category_menu: Option<(String, Point<Pixels>)>,
-    /// Open tab context menu: tab index and mouse position.
-    tab_menu: Option<(usize, Point<Pixels>)>,
-    /// Category the open rename palette applies to.
-    renaming_category: Option<String>,
-    /// Open category filter dropdown: mouse position.
-    category_filter_menu: Option<Point<Pixels>>,
-    /// Where a click outside last closed that dropdown, so the same click
-    /// landing on its button does not reopen it.
-    category_filter_closed_at: Option<Point<Pixels>>,
-    /// Open theme picker (status bar): where it opens.
-    theme_menu: Option<Point<Pixels>>,
-    /// Where a click outside last closed the theme picker (see
-    /// `category_filter_closed_at`).
-    theme_menu_closed_at: Option<Point<Pixels>>,
+    /// The open menu and where it opens (see [`menus`]).
+    menu: Option<(Menu, Point<Pixels>)>,
+    /// The menu a click outside last closed, and where: that same click
+    /// landing on the menu's own button must not reopen it.
+    menu_closed_at: Option<(Menu, Point<Pixels>)>,
     /// The status bar's project color picker, left of the theme picker.
     accent_picker: Entity<ColorPickerState>,
     _accent_picked: Subscription,
@@ -136,10 +127,6 @@ pub struct Workspace {
     title: String,
     /// Release whose status bar badge the user dismissed.
     dismissed_update: Option<String>,
-    /// Open Set Selector menu (dashboard toolbar): where it opens.
-    set_menu: Option<Point<Pixels>>,
-    /// Worktree the open lock-reason palette applies to.
-    lock_target: Option<RepoId>,
 }
 
 impl Workspace {
@@ -189,15 +176,8 @@ impl Workspace {
             log: VecDeque::new(),
             notice: None,
             warnings,
-            row_menu: None,
-            category_targets: Vec::new(),
-            category_menu: None,
-            tab_menu: None,
-            renaming_category: None,
-            category_filter_menu: None,
-            category_filter_closed_at: None,
-            theme_menu: None,
-            theme_menu_closed_at: None,
+            menu: None,
+            menu_closed_at: None,
             accent_picker,
             _accent_picked: on_accent,
             _activation: activation,
@@ -207,8 +187,6 @@ impl Workspace {
             opening: None,
             title: String::new(),
             dismissed_update: None,
-            set_menu: None,
-            lock_target: None,
         }
     }
 
@@ -283,17 +261,11 @@ impl Workspace {
             }
             AppEvent::ProjectOpened(_) => {
                 self.repo_views.clear();
+                // What was open acted on the previous project.
                 self.overlay = None;
-                self.category_targets.clear();
-                self.renaming_category = None;
+                self.menu = None;
                 self.quick_edit = None;
-                self.row_menu = None;
-                self.category_menu = None;
-                self.category_filter_menu = None;
-                self.tab_menu = None;
                 self.scan = None;
-                self.set_menu = None;
-                self.lock_target = None;
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
             AppEvent::RowsChanged(ids) => {
@@ -376,9 +348,7 @@ impl Render for Workspace {
             window.set_window_title(&title);
             self.title = title;
         }
-        let row_menu = self.render_row_menu(cx);
-        let category_menu = self.render_category_menu(cx);
-        let tab_menu = self.render_tab_menu(cx);
+        let context_menu = self.render_context_menu(cx);
         let content: AnyElement = match self.active_repo_view(window, cx) {
             Some(view) => div()
                 .flex_1()
@@ -403,10 +373,23 @@ impl Render for Workspace {
             .font_family(ui_font(cx))
             .font_weight(crate::theme::ui_weight(cx))
             .text_size(text_size(cx))
+            // Escape closes the open menu before anything under it hears
+            // the key; else, once the focused view let it pass, the overlay.
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if is_escape(e) && this.menu.is_some() {
+                    this.close_menu(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if is_escape(e) && this.overlay.is_some() {
+                    this.close_overlay(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 this.quick_edit_key(e, window, cx);
             }))
-            .on_action(cx.listener(|this, a: &RunAction, w, cx| this.run_action(&a.0, w, cx)))
+            .on_action(cx.listener(|this, a: &RunAction, w, cx| this.run_shortcut(&a.0, w, cx)))
             .on_action(cx.listener(|_, _: &NewWindow, _, cx| crate::windows::open(cx, None)))
             .when_some(identity.as_ref(), |d, identity| {
                 d.child(project_band(identity.set.is_some(), cx))
@@ -430,8 +413,6 @@ impl Render for Workspace {
             .when(drawer_open, |d| d.child(self.render_drawer(cx)))
             .child(self.render_status(window, cx))
             .children(overlay)
-            .children(row_menu)
-            .children(category_menu)
-            .children(tab_menu)
+            .children(context_menu)
     }
 }
