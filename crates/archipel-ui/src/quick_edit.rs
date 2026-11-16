@@ -67,7 +67,7 @@ impl QuickEdit {
             core,
             id: row.id,
             path: row.path.clone(),
-            name: row.name.clone(),
+            name: row.label(),
             changes: Vec::new(),
             changes_read: 0,
             staging,

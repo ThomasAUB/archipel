@@ -37,9 +37,16 @@ impl Workspace {
         let selected_bg = color(cx, T::BgSelected);
         // Headers only once at least one repo has a category (spec §1).
         let grouped = groups.len() > 1 || groups.first().is_some_and(|g| g.category.is_some());
+        let expanded_worktrees = self
+            .core
+            .ui_state()
+            .map(|u| u.expanded_worktrees)
+            .unwrap_or_default();
         let repo_row = |row: DashboardRow, cx: &mut Context<Self>| {
             let id = row.id;
             let (token, extra) = side_status(&row.status);
+            let worktrees = row.linked_worktrees;
+            let expanded = expanded_worktrees.contains(&id);
             div()
                 .id(SharedString::from(format!("side-{}", row.id)))
                 .flex()
@@ -83,6 +90,28 @@ impl Workspace {
                         .text_color(color(cx, T::FgMuted))
                         .child(extra),
                 )
+                .when(worktrees > 0, |d| {
+                    // The Worktree Count: lists or unlists its worktrees.
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("side-wt-count-{id}")))
+                            .flex_none()
+                            .px_1()
+                            .rounded(radius(cx))
+                            .text_xs()
+                            .text_color(color(cx, T::FgSubtle))
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.dispatch(Command::ToggleWorktrees(id), cx);
+                            }))
+                            .child(format!(
+                                "{}{worktrees}{}",
+                                archipel_app::dashboard::WORKTREE_GLYPH,
+                                if expanded { "▾" } else { "▸" }
+                            )),
+                    )
+                })
                 .into_any_element()
         };
         // Fits the longest visible name (repo or category), never narrower
@@ -177,7 +206,12 @@ impl Workspace {
                         self.sidebar_scroll.scroll_to_item(repos.len());
                         self.reveal = None;
                     }
+                    let (id, expanded) = (row.id, expanded_worktrees.contains(&row.id));
+                    let has_worktrees = row.linked_worktrees > 0;
                     repos.push(repo_row(row, cx));
+                    if has_worktrees && expanded {
+                        repos.extend(self.sidebar_worktree_rows(id, &selected, cx));
+                    }
                 }
             }
         }
@@ -251,7 +285,7 @@ impl Workspace {
 }
 
 /// A sidebar row's status dot color and its ahead/behind badge.
-fn side_status(status: &RepoStatus) -> (T, String) {
+pub(super) fn side_status(status: &RepoStatus) -> (T, String) {
     match status {
         RepoStatus::Ready(s) if s.changes.conflicted > 0 || s.in_progress.is_some() => {
             (T::StatusConflict, String::new())

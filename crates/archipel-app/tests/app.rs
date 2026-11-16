@@ -103,6 +103,7 @@ fn env_with(adjust: impl FnOnce(&mut GitPorts, &Arc<FakeGit>)) -> Env {
                 path: p.clone(),
                 alias: None,
                 category: None,
+                copy_to_worktrees: Vec::new(),
             })
             .collect(),
         settings: archipel_model::project::ProjectSettings::default(),

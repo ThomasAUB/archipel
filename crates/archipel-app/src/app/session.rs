@@ -68,6 +68,12 @@ pub(super) struct Session {
     /// Error excerpts of CI job logs, by repo and job id (a job's log does
     /// not change once it failed; a rerun is a new job).
     pub(super) ci_logs: HashMap<(RepoId, u64), CiJobLog>,
+    /// Worktrees of each repo (main first), by repo row (spec §10).
+    pub(super) worktrees: HashMap<RepoId, Vec<archipel_model::worktree::WorktreeInfo>>,
+    /// Repos whose worktree list is being read.
+    pub(super) worktrees_pending: HashSet<RepoId>,
+    /// Repos whose worktree list changed while being read: read again.
+    pub(super) worktrees_reread: HashSet<RepoId>,
 }
 
 impl Session {
@@ -92,6 +98,9 @@ fn new_row(repo: &RepoEntry, status: RepoStatus, stale: bool, ui: &UiState) -> D
         ci: BranchCi::Unknown,
         forge_limit: None,
         forecast: ConflictForecast::default(),
+        worktree: None,
+        linked_worktrees: 0,
+        context_only: false,
     }
 }
 
@@ -170,6 +179,9 @@ impl App {
             forecast_queue: VecDeque::new(),
             forecast_running: None,
             ci_logs: HashMap::new(),
+            worktrees: HashMap::new(),
+            worktrees_pending: HashSet::new(),
+            worktrees_reread: HashSet::new(),
         });
         if let Err(e) = self.services.registry.mark_opened(id, Timestamp::now()) {
             tracing::warn!(error = %e, "could not update the recent list");
@@ -178,6 +190,7 @@ impl App {
         self.emit(AppEvent::ProjectOpened(id.clone()));
         self.start_watching();
         self.refresh_all();
+        self.load_all_worktrees();
         self.load_tree_if_shown();
         Ok(())
     }
@@ -252,10 +265,25 @@ impl App {
         self.edit_definition(|s| {
             for p in paths {
                 if s.def.repos.iter().all(|r| r.path != *p) {
+                    // Already shown as a worktree of a listed repo: now
+                    // listed too, still folded under it (spec §10).
+                    if let Some(row) = s.rows.iter_mut().find(|r| r.id == p.id()) {
+                        if let Some(w) = row.worktree.as_mut() {
+                            w.listed = true;
+                        }
+                        s.def.repos.push(RepoEntry {
+                            path: p.clone(),
+                            alias: None,
+                            category: None,
+                            copy_to_worktrees: Vec::new(),
+                        });
+                        continue;
+                    }
                     let entry = RepoEntry {
                         path: p.clone(),
                         alias: None,
                         category: None,
+                        copy_to_worktrees: Vec::new(),
                     };
                     s.rows
                         .push(new_row(&entry, RepoStatus::Loading, true, &s.ui));
@@ -268,6 +296,7 @@ impl App {
         for p in paths {
             self.refresh_repo(p.id());
             self.load_tree(p.id());
+            self.load_worktrees(p.id());
         }
         self.emit(AppEvent::RowsChanged(
             paths.iter().map(RepoPath::id).collect(),
@@ -278,16 +307,26 @@ impl App {
     /// Removes a repository from the open project (files are untouched).
     pub fn remove_repo(&self, repo: RepoId) -> Result<(), AppError> {
         self.edit_definition(|s| {
+            // Its linked worktrees go with it (they are found again when a
+            // repo of theirs is added back), unless listed themselves.
+            let listed: HashSet<RepoId> = s.def.repos.iter().map(|r| r.path.id()).collect();
+            let mut gone: Vec<RepoId> = s
+                .worktree_rows(repo)
+                .filter(|r| !listed.contains(&r.id))
+                .map(|r| r.id)
+                .collect();
+            gone.push(repo);
             s.def.repos.retain(|r| r.path.id() != repo);
-            s.rows.retain(|r| r.id != repo);
+            s.rows.retain(|r| !gone.contains(&r.id));
+            for row in s.rows.iter_mut().filter(|r| r.parent() == Some(repo)) {
+                row.worktree = None;
+            }
             s.ui.hidden_repos.retain(|r| *r != repo);
-            s.ui.selection.retain(|r| *r != repo);
-            s.dependencies.remove(&repo);
-            s.forge_checked.remove(&repo);
-            s.forge_failed.remove(&repo);
-            s.ci_watch.remove(&repo);
-            s.forecast_inputs.remove(&repo);
-            s.forecast_queue.retain(|r| *r != repo);
+            s.ui.selection.retain(|r| !gone.contains(r));
+            s.ui.expanded_worktrees.retain(|r| *r != repo);
+            for id in &gone {
+                super::worktrees::forget_repo(s, *id);
+            }
             Some(())
         })?;
         self.start_watching();
@@ -327,6 +366,13 @@ impl App {
                     new_row(repo, status, true, &s.ui)
                 })
                 .collect();
+            // Linked worktree rows are not in the file: kept while their
+            // repo stays (the lists are read again below).
+            let parents: HashSet<RepoId> = s.rows.iter().map(|r| r.id).collect();
+            s.rows.extend(
+                old.into_iter()
+                    .filter(|r| r.parent().is_some_and(|p| parents.contains(&p))),
+            );
             let kept: HashSet<RepoId> = s.rows.iter().map(|r| r.id).collect();
             s.ui.selection.retain(|r| kept.contains(r));
             s.dependencies.retain(|r, _| kept.contains(r));
@@ -346,6 +392,7 @@ impl App {
             self.emit(AppEvent::ProjectsChanged);
         }
         self.start_watching();
+        self.load_all_worktrees();
         self.emit(AppEvent::UiStateChanged);
         Ok(())
     }

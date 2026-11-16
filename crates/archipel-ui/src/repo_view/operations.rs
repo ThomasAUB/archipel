@@ -60,6 +60,9 @@ impl RepoView {
 
     /// Checks out local `branch`, fast-forwarded to `target` when behind.
     fn checkout_updated(&mut self, branch: String, target: Oid, cx: &mut Context<Self>) {
+        if self.guard_checkout(&CheckoutTarget::Branch(branch.clone()), cx) {
+            return;
+        }
         self.run_noted(
             OpClass::Write,
             format!("Checkout {branch}"),
@@ -102,6 +105,9 @@ impl RepoView {
     }
 
     pub(super) fn checkout(&mut self, target: CheckoutTarget, cx: &mut Context<Self>) {
+        if self.guard_checkout(&target, cx) {
+            return;
+        }
         let label = match &target {
             CheckoutTarget::Branch(b) => format!("Checkout {b}"),
             CheckoutTarget::TrackRemote(r) => format!("Checkout {r}"),

@@ -186,6 +186,19 @@ pub fn on_summary<V: Staging>(v: &mut V, summary: Option<&RepoSummary>, cx: &mut
 pub enum StagingEvent {
     /// Open the forge panel on this tab.
     OpenForge(ForgeTab),
+    /// Open the tab of this repo or worktree.
+    OpenRepo(archipel_model::RepoId),
+    /// Open the New Worktree dialog for this repo, prefilled.
+    NewWorktree(
+        archipel_model::RepoId,
+        crate::worktree_dialog::WorktreeStart,
+    ),
+    /// Open the Remove Worktree confirmation of this worktree.
+    RemoveWorktree(archipel_model::RepoId),
+    /// Open the Worktree Switcher.
+    SwitchWorktree,
+    /// Open the Worktree Menu of this worktree at this position.
+    WorktreeMenu(archipel_model::RepoId, gpui_kit::Point<gpui_kit::Pixels>),
 }
 
 pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {

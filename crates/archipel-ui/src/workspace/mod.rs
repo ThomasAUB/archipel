@@ -14,6 +14,7 @@ mod sidebar;
 mod status_bar;
 mod tabs;
 mod tree;
+mod worktrees;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -57,7 +58,8 @@ gpui_kit::actions!(
         ToggleTree,
         NewWindow,
         NextWindow,
-        PreviousWindow
+        PreviousWindow,
+        OpenWorktrees
     ]
 );
 
@@ -84,8 +86,38 @@ pub fn action_for(id: &str) -> Option<Box<dyn Action>> {
         "window.new" => Box::new(NewWindow),
         "window.next" => Box::new(NextWindow),
         "window.previous" => Box::new(PreviousWindow),
+        "palette.worktrees" => Box::new(OpenWorktrees),
         _ => return None,
     })
+}
+
+/// The project color band at the top of the window; striped while a
+/// Worktree Set is shown, so it is obvious which checkouts batch actions
+/// act on (spec §10).
+fn project_band(striped: bool, cx: &gpui_kit::App) -> AnyElement {
+    /// Stripe width; enough stripes for any window.
+    const STRIPE: f32 = 10.0;
+    let accent = color(cx, T::Accent);
+    if !striped {
+        return div()
+            .h(px(BAND_HEIGHT))
+            .flex_none()
+            .bg(accent)
+            .into_any_element();
+    }
+    div()
+        .h(px(BAND_HEIGHT + 1.0))
+        .flex_none()
+        .flex()
+        .overflow_hidden()
+        .children((0..600).map(|i| {
+            div().flex_none().w(px(STRIPE)).h_full().bg(if i % 2 == 0 {
+                accent
+            } else {
+                accent.opacity(0.35)
+            })
+        }))
+        .into_any_element()
 }
 
 /// Lines kept in the operations drawer.
@@ -143,6 +175,10 @@ pub struct Workspace {
     title: String,
     /// Release whose status bar badge the user dismissed.
     dismissed_update: Option<String>,
+    /// Open Set Selector menu (dashboard toolbar): where it opens.
+    set_menu: Option<Point<Pixels>>,
+    /// Worktree the open lock-reason palette applies to.
+    lock_target: Option<RepoId>,
 }
 
 impl Workspace {
@@ -210,6 +246,8 @@ impl Workspace {
             opening: None,
             title: String::new(),
             dismissed_update: None,
+            set_menu: None,
+            lock_target: None,
         }
     }
 
@@ -293,6 +331,8 @@ impl Workspace {
                 self.category_filter_menu = None;
                 self.tab_menu = None;
                 self.scan = None;
+                self.set_menu = None;
+                self.lock_target = None;
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
             AppEvent::RowsChanged(ids) => {
@@ -322,6 +362,8 @@ impl Workspace {
             }
             AppEvent::UiStateChanged => self.drop_closed_repo_views(),
             AppEvent::ReposRevealed(ids) => self.reveal = ids.first().copied(),
+            AppEvent::WorktreeSetCreated(report) => self.on_set_report(&report, false, cx),
+            AppEvent::WorktreeSetFinished(report) => self.on_set_report(&report, true, cx),
             AppEvent::ProjectsChanged
             | AppEvent::TreeChanged
             | AppEvent::ForgeAccountsChanged
@@ -403,6 +445,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenActions, w, cx| {
                 this.open_palette(PaletteKind::Actions, w, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenWorktrees, w, cx| {
+                this.open_palette(PaletteKind::Worktrees, w, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &NextTab, _, cx| this.dispatch(Command::CycleTab(true), cx)),
             )
@@ -450,13 +495,8 @@ impl Render for Workspace {
                     this.dispatch(Command::Redo(repo), cx);
                 }
             }))
-            .when(identity.is_some(), |d| {
-                d.child(
-                    div()
-                        .h(px(BAND_HEIGHT))
-                        .flex_none()
-                        .bg(color(cx, T::Accent)),
-                )
+            .when_some(identity.as_ref(), |d, identity| {
+                d.child(project_band(identity.set.is_some(), cx))
             })
             .child(
                 div()

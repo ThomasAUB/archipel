@@ -94,6 +94,10 @@ pub enum OperationKind {
     Squash,
     /// New message for a commit of the current branch.
     Reword,
+    /// A linked worktree created (spec §10).
+    WorktreeAdd,
+    /// A linked worktree removed (spec §10).
+    WorktreeRemove,
 }
 
 /// Whether an entry is currently applied or has been undone.
@@ -126,10 +130,26 @@ pub struct JournalEntry {
     pub worktree_snapshot: Option<Oid>,
     /// Stash commit affected by stash operations.
     pub stash: Option<StashRecord>,
+    /// The linked worktree a worktree operation created or removed
+    /// (`worktree_snapshot` then holds its files, taken in it).
+    #[serde(default)]
+    pub worktree: Option<WorktreeRecord>,
     /// When the operation ran.
     pub time: Timestamp,
     /// Whether the entry is applied or undone.
     pub state: EntryState,
+}
+
+/// A linked worktree recorded so its creation or removal can be undone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeRecord {
+    /// Its folder.
+    pub path: std::path::PathBuf,
+    /// Where its `HEAD` pointed.
+    pub head: HeadRef,
+    /// Whether the operation also created (add) or deleted (remove) its
+    /// branch.
+    pub branch_changed: bool,
 }
 
 /// A stash commit recorded so a dropped stash can be restored.

@@ -334,6 +334,9 @@ mod tests {
             ci: crate::forge::BranchCi::Unknown,
             forge_limit: None,
             forecast: crate::forecast::ConflictForecast::default(),
+            worktree: None,
+            linked_worktrees: 0,
+            context_only: false,
         }
     }
 

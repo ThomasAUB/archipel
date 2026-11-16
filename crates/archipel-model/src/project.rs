@@ -16,6 +16,10 @@ pub struct RepoEntry {
     /// Optional category grouping repos in the sidebar (spec §1).
     #[serde(default)]
     pub category: Option<String>,
+    /// Untracked or ignored files copied from the main worktree into a new
+    /// worktree (`/`-relative glob patterns, e.g. `.env`), spec §10.
+    #[serde(default)]
+    pub copy_to_worktrees: Vec<String>,
 }
 
 impl RepoEntry {

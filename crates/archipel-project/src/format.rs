@@ -11,6 +11,7 @@
 //! path = "../shared/libfoo"
 //! alias = "libfoo"
 //! category = "libs"     # sidebar group (spec §1)
+//! copy_to_worktrees = [".env"]  # copied into new worktrees (spec §10)
 //!
 //! [settings]
 //! require_same_branch = true
@@ -66,6 +67,8 @@ struct RepoV1 {
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     category: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    copy_to_worktrees: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +146,7 @@ pub(crate) fn render(file: &Path, project: &ProjectDef) -> Result<String, Projec
                 path,
                 alias: entry.alias.clone(),
                 category: entry.category.clone(),
+                copy_to_worktrees: entry.copy_to_worktrees.clone(),
             })
         })
         .collect::<Result<Vec<_>, ProjectError>>()?;
@@ -199,6 +203,12 @@ fn resolve_repos(file: &Path, base: &Path, raw: Vec<RepoV1>) -> Vec<RepoEntry> {
                 .category
                 .map(|c| c.trim().to_owned())
                 .filter(|c| !c.is_empty()),
+            copy_to_worktrees: repo
+                .copy_to_worktrees
+                .into_iter()
+                .map(|p| p.trim().replace('\\', "/"))
+                .filter(|p| !p.is_empty())
+                .collect(),
         });
     }
     repos

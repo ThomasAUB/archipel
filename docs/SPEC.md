@@ -165,7 +165,7 @@ Show how the repos of a project depend on each other, as a small tree:
 - Later: other dependency sources through the same extension point (e.g. `repo` manifests, package-manager path / git dependencies).
 
 ### 10. Worktrees — P1
-> Not implemented yet: linked worktrees found by the folder scan show up as unrelated repos. Full UI/UX spec: [WORKTREES.md](WORKTREES.md).
+> Implemented (ADR 0004): discovery and nesting (Sidebar, Dashboard, Repo Tabs, Refs Panel WORKTREES section, Worktree Chip), live updates from the watcher, the Worktree Switcher (`Ctrl+Shift+O`), the Worktree Menu (open, reveal, copy path, terminal, editor, lock / unlock, remove, prune), the guard rails of WORKTREES.md §7, the New Worktree dialog (location template, local files copied, submodules), Remove with what would be lost and undo, Worktree Sets (New, Set Selector, set-scoped batch actions and Commit Panel, Finish). Not yet: the P2 items of WORKTREES.md §11 (set in its own window, Worktree HEAD Marker, Move / Locate, launching on a Set Folder), the `→` / `←` / `Delete` keys on rows, dragging a branch onto the WORKTREES header, undoing a whole set as one unit. Full UI/UX spec: [WORKTREES.md](WORKTREES.md).
 
 - Linked worktrees are shown **under the repo they belong to** (Sidebar, Dashboard, Refs Panel), discovered from Git and never written to `archipel.toml`; each one works like a repo (columns, Quick Edit Pane, its own Repo Tab, staging, commit, forge status).
 - Create (from a branch, commit or tag, with a location template and optional copy of local files such as `.env`), open (tab, folder, terminal, external editor), lock, prune and remove a worktree; removing says what would be lost and is undoable.

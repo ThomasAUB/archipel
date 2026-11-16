@@ -197,7 +197,8 @@ impl App {
         let repos: Vec<_> = s
             .rows
             .iter()
-            .filter(|r| !r.hidden)
+            // Once per repo, not per worktree: refs are shared (spec §10).
+            .filter(|r| !r.hidden && r.parent().is_none())
             .filter_map(|r| r.summary().map(|sum| (r.id, sum.last_fetch)))
             .collect();
         let priority: Vec<RepoId> =
@@ -245,7 +246,11 @@ impl App {
             }
         };
         match fetched {
-            Fetched::Updated => self.refresh_repo(repo),
+            Fetched::Updated => {
+                for id in self.with_worktree_rows(&[repo]) {
+                    self.refresh_repo(id);
+                }
+            }
             Fetched::Unchanged => self.note_fetched(repo),
             Fetched::Busy | Fetched::Failed => {}
         }
@@ -262,20 +267,24 @@ impl App {
     /// A fetch that moved no ref: only the "last fetch" time changes, no
     /// need to recompute the summary.
     pub(super) fn note_fetched(&self, repo: RepoId) {
-        {
+        let ids = {
             let mut guard = lock(&self.session);
-            let Some(row) = guard
-                .as_mut()
-                .and_then(|s| s.rows.iter_mut().find(|r| r.id == repo))
-            else {
+            let Some(s) = guard.as_mut() else { return };
+            let main = s.main_of(repo);
+            let Some(row) = s.rows.iter_mut().find(|r| r.id == main) else {
                 return;
             };
             let RepoStatus::Ready(summary) = &mut row.status else {
                 return;
             };
             summary.last_fetch = Some(Timestamp::now());
-        }
-        self.emit(AppEvent::RowsChanged(vec![repo]));
+            // Its worktrees share its refs, so its fetches.
+            super::refresh::share_fetch_time(s, main);
+            let mut ids: Vec<RepoId> = s.worktree_rows(main).map(|r| r.id).collect();
+            ids.push(main);
+            ids
+        };
+        self.emit(AppEvent::RowsChanged(ids));
     }
 }
 

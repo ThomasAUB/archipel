@@ -1,5 +1,6 @@
 //! The `git` CLI adapter: implements every reader and writer trait.
 
+mod copy;
 mod files;
 mod forecast;
 mod read;
@@ -7,6 +8,7 @@ mod runner;
 mod squash;
 mod submodule;
 mod tree;
+mod worktree;
 mod write;
 
 use std::path::PathBuf;

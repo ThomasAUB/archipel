@@ -22,6 +22,7 @@ mod operations;
 mod refs_panel;
 mod reword;
 mod squash;
+mod worktrees;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
@@ -181,6 +182,10 @@ pub struct RepoView {
     /// Open pull requests of the repo: the CI marks of their branches in
     /// the refs panel.
     pull_requests: Arc<Vec<PullRequestStatus>>,
+    /// Branches checked out in another worktree of the repo (spec §10).
+    worktree_branches: worktrees::Elsewhere,
+    /// Shown instead of checking out a branch checked out elsewhere.
+    worktree_prompt: Option<worktrees::WorktreePrompt>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
 }
@@ -251,6 +256,8 @@ impl RepoView {
             forge_limit,
             forecast,
             pull_requests: Arc::default(),
+            worktree_branches: worktrees::Elsewhere::new(),
+            worktree_prompt: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
         };
@@ -370,6 +377,7 @@ impl RepoView {
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .child(self.name.clone()),
             )
+            .children(self.render_worktree_chip(cx))
             .children(self.render_ci(cx))
             .children(crate::forecast_badge::forecast_badge(
                 "repo-forecast",
@@ -559,6 +567,7 @@ impl Render for RepoView {
                     .child(details),
             );
         let confirm = self.render_confirm(cx);
+        let worktree_prompt = self.render_worktree_prompt(cx);
         let squash = self.render_squash(cx);
         let menu = self.render_menu(cx);
         let name_form = self.render_name_form(cx);
@@ -590,6 +599,7 @@ impl Render for RepoView {
                     .child(condense_status(s))
             }))
             .children(confirm)
+            .children(worktree_prompt)
             .children(squash)
             .children(ignore)
             .children(menu)

@@ -43,12 +43,17 @@ mod tree;
 mod undo;
 mod update_check;
 mod view;
+mod worktree_ops;
+mod worktree_sets;
+mod worktrees;
 
 pub use clone::{CloneOutcome, CloneProtocol, clone_dir_name, split_clone_urls};
 pub use forge_flow::{PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoPullRequests};
 pub use identity::{ProjectIcon, ProjectIdentity, initials};
 pub use projects::{DirectoryTarget, file_project_id};
 use session::Session;
+pub use worktree_sets::{NewSetRequest, SetMemberPlan, SetMemberState, SetRepoInfo, SetReport};
+pub use worktrees::ProjectWorktree;
 
 /// Errors surfaced to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -112,6 +117,10 @@ pub enum AppEvent {
     ForgeAccountsChanged,
     /// The update check found a release newer than the running version.
     UpdateAvailable(archipel_model::forge::Release),
+    /// A Worktree Set was created (or completed), per repo (spec §10).
+    WorktreeSetCreated(SetReport),
+    /// Members of a Worktree Set were removed, per repo.
+    WorktreeSetFinished(SetReport),
 }
 
 /// Ports injected by the composition root.
@@ -425,7 +434,12 @@ impl App {
         let sources = self.stat_sources();
         let mut views = Vec::new();
         let mut errors = Vec::new();
-        let rows = self.rows().into_iter().filter(|r| r.summary().is_some());
+        // Branches belong to repos: a worktree picked means its repo.
+        let ids: Vec<RepoId> = ids.iter().map(|id| self.main_repo_of(*id)).collect();
+        let rows = self
+            .rows()
+            .into_iter()
+            .filter(|r| r.summary().is_some() && r.parent().is_none());
         for row in rows.filter(|r| ids.is_empty() || ids.contains(&r.id)) {
             let target = RepoTarget {
                 id: row.id,

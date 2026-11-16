@@ -12,6 +12,7 @@ use archipel_ops::{BatchOps, BatchReport, Direction};
 use super::tabs::tab_command;
 use super::{App, AppError, AppEvent, lock, toggle};
 use crate::actions::Command;
+use crate::dashboard::DashboardRow;
 
 impl App {
     /// Executes a command. Long work runs in the background.
@@ -47,6 +48,7 @@ impl App {
                     )));
                 }
                 self.refresh_all();
+                self.load_all_worktrees();
                 self.load_tree_if_shown();
             }
             Command::RefreshForge => self.refresh_forge_all(),
@@ -103,7 +105,13 @@ impl App {
             | Command::CloseTabsToRight(_)
             | Command::CloseAllTabs
             | Command::CycleTab(_)
-            | Command::MoveTab { .. }) => self.update_ui_state(|ui| tab_command(ui, &command)),
+            | Command::MoveTab { .. }) => {
+                self.update_ui_state(|ui| tab_command(ui, &command));
+                // A worktree is watched while its tab is open.
+                if self.has_worktree_rows() {
+                    self.start_watching();
+                }
+            }
             Command::ToggleDrawer => self.toggle_drawer(),
             Command::Ui(_) => {}
             Command::Custom(custom) => (custom.run)(self)?,
@@ -181,6 +189,31 @@ impl App {
             Command::SetAccent(accent) => self.set_accent(accent)?,
             Command::SetBackgroundTint(tint) => self.set_background_tint(tint)?,
             Command::SetIcon(icon) => self.set_icon(icon)?,
+            Command::ToggleWorktrees(repo) => self.toggle_worktrees(repo),
+            Command::AddWorktree {
+                repo,
+                request,
+                init_submodules,
+                copy_files,
+                open,
+            } => self.add_worktree(repo, request, init_submodules, copy_files, open)?,
+            Command::RemoveWorktree {
+                worktree,
+                force,
+                delete_branch,
+            } => self.remove_worktree(worktree, force, delete_branch)?,
+            Command::LockWorktree(worktree, reason) => self.lock_worktree(worktree, reason)?,
+            Command::PruneWorktrees(ids) => self.prune_worktrees(&ids),
+            Command::SetWorktreeView(view) => self.set_worktree_view(view),
+            Command::ToggleSetOthers => {
+                self.update_ui_state(|ui| ui.set_show_others = !ui.set_show_others);
+            }
+            Command::CreateWorktreeSet(request) => self.create_worktree_set(request)?,
+            Command::FinishWorktreeSet { name, removals } => {
+                self.finish_worktree_set(&name, removals)?;
+            }
+            Command::ForgetWorktreeSet(name) => self.forget_worktree_set(&name),
+            Command::RenameWorktreeSet(old, new) => self.rename_worktree_set(&old, &new)?,
             // Every other command is handled by `dispatch`.
             _ => {}
         }
@@ -193,10 +226,24 @@ impl App {
         lock(&self.session)
             .as_ref()
             .map(|s| {
+                // In a set view, "all" means the set's worktrees (spec §10).
+                if ids.is_empty()
+                    && let Some(set) = s.ui.active_set()
+                {
+                    return s
+                        .set_rows(set)
+                        .filter(|r| !r.hidden && r.summary().is_some())
+                        .map(|r| BatchTarget {
+                            id: r.id,
+                            path: r.path.clone(),
+                        })
+                        .collect();
+                }
                 s.rows
                     .iter()
                     .filter(|r| !r.hidden)
-                    .filter(|r| ids.is_empty() || ids.contains(&r.id))
+                    // All: every repo, not every worktree of them.
+                    .filter(|r| ids.contains(&r.id) || ids.is_empty() && r.parent().is_none())
                     .filter(|r| r.summary().is_some())
                     .map(|r| BatchTarget {
                         id: r.id,
@@ -205,6 +252,13 @@ impl App {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Whether the open project shows linked worktrees.
+    fn has_worktree_rows(&self) -> bool {
+        lock(&self.session)
+            .as_ref()
+            .is_some_and(|s| s.rows.iter().any(DashboardRow::is_worktree))
     }
 
     /// Path of a repo of the open project.
@@ -218,14 +272,25 @@ impl App {
     fn report<T>(&self, label: &str, report: &BatchReport<T>) {
         let (d, f, s) = report.counts();
         self.emit(AppEvent::BatchFinished(label.to_owned(), d, f, s));
-        for (repo, _) in &report.per_repo {
-            self.refresh_repo(*repo);
+        let repos: Vec<RepoId> = report.per_repo.iter().map(|(r, _)| *r).collect();
+        // Their worktrees share their refs: their sync changed too.
+        for repo in self.with_worktree_rows(&repos) {
+            self.refresh_repo(repo);
         }
     }
 
     /// Fetches every remote of `ids`; `prune` also drops the remote-tracking
     /// branches deleted on their remote.
     pub(super) fn fetch(&self, ids: &[RepoId], prune: bool) {
+        // Once per repo, whichever of its worktrees was picked (spec §10).
+        let mut mains: Vec<RepoId> = Vec::with_capacity(ids.len());
+        for id in ids {
+            let main = self.main_repo_of(*id);
+            if !mains.contains(&main) {
+                mains.push(main);
+            }
+        }
+        let ids = &mains[..];
         self.auto_fetch_reset(ids);
         let request = FetchRequest {
             remote: None,

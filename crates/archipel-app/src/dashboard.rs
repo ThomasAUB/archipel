@@ -56,6 +56,34 @@ pub struct DashboardRow {
     /// Whether the current branch would conflict with its upstream or its
     /// pull request target (spec §3); empty until computed.
     pub forecast: ConflictForecast,
+    /// Set when the row is a linked worktree (spec §10).
+    pub worktree: Option<WorktreeRowInfo>,
+    /// Number of linked worktrees of the repo (main rows).
+    pub linked_worktrees: u32,
+    /// Listed only because one of its worktrees matches the filters: drawn
+    /// dimmed, for context.
+    pub context_only: bool,
+}
+
+/// Glyph marking worktrees (Worktree Glyph).
+pub const WORKTREE_GLYPH: &str = "⧉";
+
+/// What a linked worktree row knows of its worktree (spec §10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorktreeRowInfo {
+    /// The repo row it belongs to; `None` when its main worktree is not in
+    /// the project (then a top-level row, "worktree of …").
+    pub parent: Option<RepoId>,
+    /// Folder name of its main worktree.
+    pub main_name: String,
+    /// Its branch, or `detached @ abc1234`.
+    pub label: String,
+    /// Lock reason, when locked.
+    pub locked: Option<String>,
+    /// Its folder is gone (prunable).
+    pub missing: bool,
+    /// Listed in the project file (folded under its repo).
+    pub listed: bool,
 }
 
 impl DashboardRow {
@@ -67,7 +95,31 @@ impl DashboardRow {
             _ => None,
         }
     }
+
+    /// The repo row a linked worktree row belongs to.
+    #[must_use]
+    pub fn parent(&self) -> Option<RepoId> {
+        self.worktree.as_ref().and_then(|w| w.parent)
+    }
+
+    /// Whether the row is a linked worktree.
+    #[must_use]
+    pub fn is_worktree(&self) -> bool {
+        self.worktree.is_some()
+    }
+
+    /// Name in tabs and switchers: `libfoo · feat/parser` for a worktree.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match &self.worktree {
+            Some(w) => format!("{} · {}", self.name, w.label),
+            None => self.name.clone(),
+        }
+    }
 }
+
+/// Id of the filter keeping only repos with linked worktrees (expanded).
+pub const WORKTREES_FILTER: &str = "worktrees";
 
 /// Semantic tone of a cell; the UI maps it to theme status colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,14 +320,45 @@ impl DashboardColumn for RepoColumn {
         } else {
             Tone::Normal
         };
+        let path = row.path.as_path().display().to_string();
+        let Some(w) = &row.worktree else {
+            return Cell {
+                text: row.name.clone(),
+                detail: Some(path),
+                tone,
+            };
+        };
+        let lock = if w.locked.is_some() { " 🔒" } else { "" };
+        let detail = match w.parent {
+            Some(_) => path,
+            None => format!("worktree of {} · {path}", w.main_name),
+        };
         Cell {
-            text: row.name.clone(),
-            detail: Some(row.path.as_path().display().to_string()),
-            tone,
+            text: format!("{WORKTREE_GLYPH} {}{lock}", row.name),
+            detail: Some(detail),
+            tone: if w.missing { Tone::Muted } else { tone },
         }
     }
     fn sort_key(&self, row: &DashboardRow) -> SortKey {
         SortKey::Text(row.name.to_lowercase())
+    }
+    fn tooltip(&self, row: &DashboardRow) -> Option<Vec<String>> {
+        let w = row.worktree.as_ref()?;
+        let mut lines = vec![
+            format!("Worktree of {} on {}", w.main_name, w.label),
+            row.path.as_path().display().to_string(),
+        ];
+        if let Some(reason) = &w.locked {
+            lines.push(if reason.is_empty() {
+                "Locked".to_owned()
+            } else {
+                format!("Locked: {reason}")
+            });
+        }
+        if w.missing {
+            lines.push("Missing: its folder is gone (prune it)".to_owned());
+        }
+        Some(lines)
     }
 }
 
@@ -701,6 +784,9 @@ impl FilterRegistry {
         r.register(f("problems", "Missing or failing", |row| {
             matches!(row.status, RepoStatus::Missing | RepoStatus::Error(_))
         }));
+        r.register(f(WORKTREES_FILTER, "Worktrees", |row| {
+            row.is_worktree() || row.linked_worktrees > 0
+        }));
         r.register(Arc::new(PullRequestOpenFilter));
         r.register(Arc::new(CiFailingFilter));
         r.register(Arc::new(WillConflictFilter));
@@ -743,19 +829,97 @@ pub fn visible_rows<'a>(
 ) -> Vec<&'a DashboardRow> {
     let mut out: Vec<&DashboardRow> = rows.iter().filter(|r| filters.matches(active, r)).collect();
     if let Some((column, direction)) = sort {
-        out.sort_by(|a, b| {
-            let (ka, kb) = (column.sort_key(a), column.sort_key(b));
-            // Rows without a value always go last.
-            match (&ka, &kb) {
-                (SortKey::None, SortKey::None) => Ordering::Equal,
-                (SortKey::None, _) => Ordering::Greater,
-                (_, SortKey::None) => Ordering::Less,
-                _ if direction == SortDirection::Descending => kb.cmp(&ka),
-                _ => ka.cmp(&kb),
-            }
-        });
+        // Rows without a value always go last.
+        out = visible_rows_sorted(out, column, direction);
     }
     out
+}
+
+/// How [`nested_rows`] lists linked worktrees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeNesting<'a> {
+    /// Under their repo when it is in `expanded`.
+    Expandable(&'a [RepoId]),
+    /// Never (the Set Selector's "Main only").
+    Hidden,
+}
+
+/// The dashboard rows in display order (spec §10): repo rows filtered and
+/// sorted as by [`visible_rows`], each followed by its linked worktree rows
+/// (in Git's order, whatever the sort) when expanded. Filters apply to
+/// worktree rows too: a repo row whose worktree matches while it does not is
+/// kept, marked [`DashboardRow::context_only`], with its matching worktrees
+/// under it. The Worktrees filter lists every worktree.
+#[must_use]
+pub fn nested_rows(
+    rows: &[DashboardRow],
+    filters: &FilterRegistry,
+    active: &[String],
+    sort: Option<(&dyn DashboardColumn, SortDirection)>,
+    nesting: WorktreeNesting<'_>,
+) -> Vec<DashboardRow> {
+    // A worktree whose repo row is not in `rows` (hidden…) stays out.
+    let children = |id: RepoId| rows.iter().filter(move |r| r.parent() == Some(id));
+    let mains: Vec<DashboardRow> = rows
+        .iter()
+        .filter(|r| r.parent().is_none())
+        .cloned()
+        .collect();
+    let all_worktrees = active.iter().any(|f| f == WORKTREES_FILTER);
+    let expanded = |id: RepoId| match nesting {
+        WorktreeNesting::Expandable(ids) => all_worktrees || ids.contains(&id),
+        WorktreeNesting::Hidden => false,
+    };
+    let nested = nesting != WorktreeNesting::Hidden;
+    let mut shown: Vec<DashboardRow> = mains
+        .into_iter()
+        .filter_map(|mut main| {
+            if filters.matches(active, &main) {
+                return Some(main);
+            }
+            let child_matches = nested
+                && !active.is_empty()
+                && children(main.id).any(|c| filters.matches(active, c));
+            child_matches.then(|| {
+                main.context_only = true;
+                main
+            })
+        })
+        .collect();
+    if let Some((column, direction)) = sort {
+        shown.sort_by(|a, b| compare_keys(&column.sort_key(a), &column.sort_key(b), direction));
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    for main in shown {
+        let id = main.id;
+        let context = main.context_only;
+        out.push(main);
+        if !nested || !(context || expanded(id)) {
+            continue;
+        }
+        out.extend(children(id).filter(|c| filters.matches(active, c)).cloned());
+    }
+    out
+}
+
+/// `rows` sorted by `column` (rows without a value last).
+fn visible_rows_sorted<'a>(
+    mut rows: Vec<&'a DashboardRow>,
+    column: &dyn DashboardColumn,
+    direction: SortDirection,
+) -> Vec<&'a DashboardRow> {
+    rows.sort_by(|a, b| compare_keys(&column.sort_key(a), &column.sort_key(b), direction));
+    rows
+}
+
+fn compare_keys(ka: &SortKey, kb: &SortKey, direction: SortDirection) -> Ordering {
+    match (ka, kb) {
+        (SortKey::None, SortKey::None) => Ordering::Equal,
+        (SortKey::None, _) => Ordering::Greater,
+        (_, SortKey::None) => Ordering::Less,
+        _ if direction == SortDirection::Descending => kb.cmp(ka),
+        _ => ka.cmp(kb),
+    }
 }
 
 #[cfg(test)]
@@ -825,7 +989,97 @@ mod tests {
             ci: BranchCi::Unknown,
             forge_limit: None,
             forecast: ConflictForecast::default(),
+            worktree: None,
+            linked_worktrees: 0,
+            context_only: false,
         }
+    }
+
+    fn worktree_of(
+        parent: &DashboardRow,
+        branch: &str,
+        f: impl FnOnce(&mut RepoSummary),
+    ) -> DashboardRow {
+        let mut r = row(&format!("{}-{branch}", parent.name), f);
+        r.name = parent.name.clone();
+        r.worktree = Some(WorktreeRowInfo {
+            parent: Some(parent.id),
+            main_name: parent.name.clone(),
+            label: branch.into(),
+            locked: None,
+            missing: false,
+            listed: false,
+        });
+        r
+    }
+
+    #[test]
+    fn worktrees_nest_under_their_repo_whatever_the_sort() {
+        let mut a = row("a", |_| {});
+        a.linked_worktrees = 2;
+        let b = row("b", |s| s.changes.modified = 1);
+        let a1 = worktree_of(&a, "x", |s| s.changes.modified = 9);
+        let a2 = worktree_of(&a, "y", |_| {});
+        let rows = vec![a1.clone(), b.clone(), a.clone(), a2.clone()];
+        let filters = FilterRegistry::with_builtins();
+        let cols = ColumnRegistry::with_builtins();
+        let names =
+            |out: &[DashboardRow]| -> Vec<String> { out.iter().map(DashboardRow::label).collect() };
+        let changes = cols.get("changes").unwrap().as_ref();
+        // Collapsed: repos only.
+        let out = nested_rows(
+            &rows,
+            &filters,
+            &[],
+            Some((changes, SortDirection::Descending)),
+            WorktreeNesting::Expandable(&[]),
+        );
+        assert_eq!(names(&out), ["b", "a"]);
+        // Expanded: under their repo, in their own order.
+        let ids = [a.id];
+        let out = nested_rows(
+            &rows,
+            &filters,
+            &[],
+            Some((changes, SortDirection::Descending)),
+            WorktreeNesting::Expandable(&ids),
+        );
+        assert_eq!(names(&out), ["b", "a", "a · x", "a · y"]);
+        // A worktree matching a filter its repo fails keeps the repo, dimmed.
+        let out = nested_rows(
+            &rows,
+            &filters,
+            &["dirty".into()],
+            None,
+            WorktreeNesting::Expandable(&[]),
+        );
+        assert_eq!(names(&out), ["b", "a", "a · x"]);
+        assert!(!out[0].context_only && out[1].context_only);
+        // The Worktrees filter lists every worktree.
+        let out = nested_rows(
+            &rows,
+            &filters,
+            &[WORKTREES_FILTER.into()],
+            None,
+            WorktreeNesting::Expandable(&[]),
+        );
+        assert_eq!(names(&out), ["a", "a · x", "a · y"]);
+        // Main only.
+        let out = nested_rows(&rows, &filters, &[], None, WorktreeNesting::Hidden);
+        assert_eq!(names(&out), ["b", "a"]);
+    }
+
+    #[test]
+    fn worktree_repo_cell() {
+        let cols = ColumnRegistry::with_builtins();
+        let a = row("a", |_| {});
+        let mut w = worktree_of(&a, "feat/x", |_| {});
+        w.worktree.as_mut().unwrap().locked = Some("usb".into());
+        let cell = cols.get("repo").unwrap().cell(&w, Timestamp(0));
+        assert_eq!(cell.text, "⧉ a 🔒");
+        w.worktree.as_mut().unwrap().parent = None;
+        let cell = cols.get("repo").unwrap().cell(&w, Timestamp(0));
+        assert!(cell.detail.unwrap().starts_with("worktree of a · "));
     }
 
     #[test]

@@ -75,6 +75,21 @@ pub struct Settings {
     /// every refresh, for conflicts with its upstream and with the target of
     /// its pull request (the default branch without one). Default on.
     pub conflict_forecast: bool,
+    /// Where a new worktree goes (spec §10): `{project}`, `{repo}`,
+    /// `{branch}` and `{set}` are substituted; relative to the repo's main
+    /// worktree. Default `../{repo}.worktrees/{branch}`.
+    pub worktree_location: String,
+    /// Where the members of a new Worktree Set go, relative to the project
+    /// file's folder. Default `../{project}.worktrees/{set}/{repo}`.
+    pub worktree_set_location: String,
+    /// List a repo's worktrees under it when a new one appears. Default on.
+    pub worktree_auto_expand: bool,
+    /// Command opening a terminal in a folder (the folder is appended; the
+    /// platform's terminal when `None`).
+    pub terminal_command: Option<String>,
+    /// Command opening a folder in an external editor (the folder is
+    /// appended; `code` when `None`).
+    pub editor_command: Option<String>,
 }
 
 impl Default for Settings {
@@ -102,6 +117,11 @@ impl Default for Settings {
             auto_fetch_secs: 600,
             update_check_hours: 24,
             conflict_forecast: true,
+            worktree_location: crate::worktree::DEFAULT_WORKTREE_LOCATION.to_owned(),
+            worktree_set_location: crate::worktree::DEFAULT_SET_LOCATION.to_owned(),
+            worktree_auto_expand: true,
+            terminal_command: None,
+            editor_command: None,
         }
     }
 }

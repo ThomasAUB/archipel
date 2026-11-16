@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use archipel_model::worktree::{SetView, WorktreeAddRequest};
 use archipel_model::{RepoId, RepoPath};
 
 /// A request to the application, executed by `App::dispatch`.
@@ -112,6 +113,53 @@ pub enum Command {
     /// Project icon (`None`: none), saved in the project definition: an
     /// emoji, or an image file (kept relative to the project's folder).
     SetIcon(Option<String>),
+    /// List or unlist the linked worktrees of a repo under it (spec §10).
+    ToggleWorktrees(RepoId),
+    /// Create a worktree of a repo (any row of it), then copy its local
+    /// files, and open it in a tab with `open`.
+    AddWorktree {
+        /// A row of the repo.
+        repo: RepoId,
+        /// Where and what.
+        request: WorktreeAddRequest,
+        /// `git submodule update --init --recursive` in it.
+        init_submodules: bool,
+        /// Copy the repo's local files (`copy_to_worktrees`) into it.
+        copy_files: bool,
+        /// Open it in a tab once created.
+        open: bool,
+    },
+    /// Remove a linked worktree (undoable on its repo).
+    RemoveWorktree {
+        /// Its row.
+        worktree: RepoId,
+        /// Remove it although it has changes (snapshotted for undo).
+        force: bool,
+        /// Also delete its branch.
+        delete_branch: bool,
+    },
+    /// Lock (`Some(reason)`) or unlock (`None`) a linked worktree.
+    LockWorktree(RepoId, Option<String>),
+    /// Forget the missing worktrees of the given repos (all when empty);
+    /// locked ones are kept.
+    PruneWorktrees(Vec<RepoId>),
+    /// What the dashboard shows of worktrees (the Set Selector).
+    SetWorktreeView(SetView),
+    /// In a set view, list the repos outside the set, dimmed.
+    ToggleSetOthers,
+    /// Create a Worktree Set, or add repos to one (Retry failed).
+    CreateWorktreeSet(crate::NewSetRequest),
+    /// Remove members of a Worktree Set (its row, how), as one batch.
+    FinishWorktreeSet {
+        /// Set name.
+        name: String,
+        /// The members removed (their rows) and how.
+        removals: Vec<(RepoId, archipel_ops::RemoveOptions)>,
+    },
+    /// Forget a Worktree Set (its worktrees stay).
+    ForgetWorktreeSet(String),
+    /// Rename a Worktree Set.
+    RenameWorktreeSet(String, String),
     /// UI-only commands (palettes, dialogs) the frontend handles itself.
     Ui(String),
     /// A fork's own use case, run against the app's public API: the way an
@@ -342,6 +390,7 @@ impl ActionRegistry {
             |_| Some(Command::ToggleDrawer),
         )));
         r.register_window_and_view_actions();
+        r.register_worktree_actions();
         r.register(Arc::new(SimpleAction::new(
             "repo.open",
             "Open repository tab",
@@ -418,6 +467,56 @@ impl ActionRegistry {
             |_| Some(Command::CancelScan),
         )));
         r.register_forge_actions();
+    }
+
+    /// Worktrees (spec §10). The dialogs are frontend ones.
+    fn register_worktree_actions(&mut self) {
+        let r = self;
+        let ui = |id: &'static str, label: &'static str, available: fn(&ActionContext) -> bool| {
+            Arc::new(SimpleAction::new(id, label, available, move |_| {
+                Some(Command::Ui(id.to_owned()))
+            }))
+        };
+        r.register(ui("palette.worktrees", "Switch worktree…", with_project));
+        r.register(ui("worktree.new", "New worktree…", with_repo));
+        r.register(ui("worktree.new_set", "New worktree set…", with_project));
+        r.register(ui("worktree.remove", "Remove worktree…", with_repo));
+        r.register(ui("worktree.lock", "Lock / unlock worktree…", with_repo));
+        r.register(ui("worktree.reveal", "Reveal worktree folder", with_repo));
+        r.register(ui("worktree.copy_path", "Copy worktree path", with_repo));
+        r.register(ui(
+            "worktree.terminal",
+            "Open worktree in terminal",
+            with_repo,
+        ));
+        r.register(ui(
+            "worktree.editor",
+            "Open worktree in external editor",
+            with_repo,
+        ));
+        r.register(ui(
+            "worktree.finish_set",
+            "Finish worktree set…",
+            with_project,
+        ));
+        r.register(Arc::new(SimpleAction::new(
+            "worktree.prune",
+            "Prune missing worktrees",
+            with_project,
+            |c| Some(Command::PruneWorktrees(c.selected.clone())),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "worktree.view_all",
+            "Worktrees: show all, nested under their repo",
+            with_project,
+            |_| Some(Command::SetWorktreeView(SetView::All)),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "worktree.view_main",
+            "Worktrees: main worktrees only",
+            with_project,
+            |_| Some(Command::SetWorktreeView(SetView::MainOnly)),
+        )));
     }
 
     /// Forge integration (spec §8). The panels are frontend dialogs.

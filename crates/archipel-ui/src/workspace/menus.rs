@@ -213,6 +213,12 @@ impl Workspace {
             vec![id]
         };
         let all_hidden = targets.iter().all(|r| ui.is_hidden(*r));
+        // A linked worktree is removed as a worktree, not from the project.
+        let is_worktree = self
+            .core
+            .all_rows()
+            .iter()
+            .any(|r| r.id == id && r.parent().is_some());
         let n = targets.len();
         let hover = color(cx, T::BgHover);
         let subtle = color(cx, T::FgSubtle);
@@ -294,23 +300,27 @@ impl Workspace {
             .children(self.ci_menu_item(id, cx))
             .children(self.ci_rerun_menu_item(&targets, cx))
             .child(self.forge_menu_item(id, targets, cx))
-            .child(
-                div()
-                    .id("menu-remove")
-                    .px_3()
-                    .py_1()
-                    .cursor_pointer()
-                    .text_color(color(cx, T::StatusError))
-                    .hover(move |s| s.bg(hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.row_menu = None;
-                        if let Err(e) = this.core.remove_repo(id) {
-                            this.notice = Some(e.to_string());
-                        }
-                        cx.notify();
-                    }))
-                    .child("Remove from project"),
-            );
+            .children(self.worktree_menu_items(id, cx))
+            .when(!is_worktree, |d| d.child(menu_separator(cx)))
+            .when(!is_worktree, |d| {
+                d.child(
+                    div()
+                        .id("menu-remove")
+                        .px_3()
+                        .py_1()
+                        .cursor_pointer()
+                        .text_color(color(cx, T::StatusError))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.row_menu = None;
+                            if let Err(e) = this.core.remove_repo(id) {
+                                this.notice = Some(e.to_string());
+                            }
+                            cx.notify();
+                        }))
+                        .child("Remove from project"),
+                )
+            });
         Some(popup_at(position, menu).into_any_element())
     }
 }

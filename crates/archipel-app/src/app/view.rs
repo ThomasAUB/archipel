@@ -4,11 +4,13 @@
 use std::collections::HashMap;
 
 use archipel_model::RepoId;
+use archipel_model::ui_state::SortDirection;
 use archipel_model::ui_state::{TabState, UiState};
+use archipel_model::worktree::{SetView, WorktreeSet};
 
 use super::{App, AppEvent, Extensions, Session, lock};
 use crate::actions::ActionContext;
-use crate::dashboard::{DashboardRow, visible_rows};
+use crate::dashboard::{DashboardRow, WorktreeNesting, nested_rows, visible_rows};
 use crate::groups::{category_filter_keys, normalize_category, passes_category_filter};
 
 impl App {
@@ -69,15 +71,56 @@ impl App {
             .iter()
             .filter(|r| s.ui.show_hidden || !r.hidden)
             .filter(|r| {
-                let category = categories.get(&r.id).copied().flatten();
+                // A worktree is in the category of its repo.
+                let id = r.parent().unwrap_or(r.id);
+                let category = categories.get(&id).copied().flatten();
                 passes_category_filter(&s.ui.category_filters, &keys, category)
             })
             .cloned()
             .collect();
-        visible_rows(&shown, &ext.filters, &s.ui.filters, sort)
+        if let Some(set) = s.ui.active_set() {
+            return Self::set_rows_of(ext, s, set, &shown, sort);
+        }
+        let nesting = match s.ui.set_view {
+            SetView::MainOnly => WorktreeNesting::Hidden,
+            _ => WorktreeNesting::Expandable(&s.ui.expanded_worktrees),
+        };
+        nested_rows(&shown, &ext.filters, &s.ui.filters, sort, nesting)
+    }
+
+    /// The rows of a set view (spec §10): each member of `set` in place of
+    /// its repo, flat, filtered and sorted; the other repos after them,
+    /// dimmed, when asked.
+    fn set_rows_of(
+        ext: &Extensions,
+        s: &Session,
+        set: &WorktreeSet,
+        shown: &[DashboardRow],
+        sort: Option<(&dyn crate::dashboard::DashboardColumn, SortDirection)>,
+    ) -> Vec<DashboardRow> {
+        let members: Vec<RepoId> = set.members.iter().map(|m| m.path.id()).collect();
+        let in_set: Vec<RepoId> = set.members.iter().map(|m| m.repo).collect();
+        let rows: Vec<DashboardRow> = shown
+            .iter()
+            .filter(|r| members.contains(&r.id))
+            .cloned()
+            .collect();
+        let mut out: Vec<DashboardRow> = visible_rows(&rows, &ext.filters, &s.ui.filters, sort)
             .into_iter()
             .cloned()
-            .collect()
+            .collect();
+        if s.ui.set_show_others {
+            out.extend(
+                shown
+                    .iter()
+                    .filter(|r| r.parent().is_none() && !in_set.contains(&r.id))
+                    .map(|r| DashboardRow {
+                        context_only: true,
+                        ..r.clone()
+                    }),
+            );
+        }
+        out
     }
 
     /// The UI state of the open project.
@@ -185,7 +228,12 @@ impl App {
         let (id, ui) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
-            for row in s.rows.iter_mut().filter(|r| ids.contains(&r.id)) {
+            // A hidden repo hides its worktrees (spec §10).
+            for row in s
+                .rows
+                .iter_mut()
+                .filter(|r| ids.contains(&r.id) || r.parent().is_some_and(|p| ids.contains(&p)))
+            {
                 row.hidden = hidden;
             }
             let ui = &mut s.ui;
@@ -214,9 +262,12 @@ impl App {
         self.save_ui_state(&id, &ui);
         self.start_watching();
         if !hidden {
+            for id in self.with_worktree_rows(ids) {
+                self.refresh_repo(id);
+                self.load_tree(id);
+            }
             for id in ids {
-                self.refresh_repo(*id);
-                self.load_tree(*id);
+                self.load_worktrees(*id);
             }
         }
         self.emit(AppEvent::RowsChanged(ids.to_vec()));

@@ -32,6 +32,7 @@ pub mod summary;
 pub mod time;
 pub mod tree;
 pub mod ui_state;
+pub mod worktree;
 
 #[cfg(feature = "testing")]
 pub mod testing;

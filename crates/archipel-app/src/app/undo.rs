@@ -54,6 +54,8 @@ impl App {
                 };
                 app.emit(AppEvent::Notice(message));
                 app.refresh_repo(repo);
+                // Undoing a worktree removal or creation changes the list.
+                app.load_worktrees(repo);
             }
             // A refused undo fails the op, so the drawer does not show it
             // as done.

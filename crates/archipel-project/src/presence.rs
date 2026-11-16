@@ -65,6 +65,36 @@ pub fn classify_repos(project: &ProjectDef) -> Vec<(&RepoEntry, RepoPresence)> {
 /// repository has no working tree to open).
 #[must_use]
 pub fn outermost_repo_root(dir: &Path) -> Option<std::path::PathBuf> {
+    outermost(dir)
+}
+
+/// The main worktree of the linked worktree at `dir` (spec §10): its `.git`
+/// file points into `<main>/.git/worktrees/<name>` (a bare repository's
+/// linked worktrees: `<bare>/worktrees/<name>`, the bare repository is
+/// returned). `None` for anything else (a repository, a submodule).
+#[must_use]
+pub fn linked_worktree_main(dir: &Path) -> Option<std::path::PathBuf> {
+    let text = std::fs::read_to_string(dir.join(DOT_GIT)).ok()?;
+    let target = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+    let git_dir = if Path::new(target).is_absolute() {
+        std::path::PathBuf::from(target)
+    } else {
+        dir.join(target)
+    };
+    let worktrees = git_dir.parent()?;
+    if worktrees.file_name()? != "worktrees" {
+        return None;
+    }
+    let common = worktrees.parent()?;
+    let main = if common.file_name()? == DOT_GIT {
+        common.parent()?
+    } else {
+        common
+    };
+    Some(crate::paths::normalize(main))
+}
+
+fn outermost(dir: &Path) -> Option<std::path::PathBuf> {
     dir.ancestors()
         .filter(|a| {
             let dot_git = a.join(DOT_GIT);

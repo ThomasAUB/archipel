@@ -21,6 +21,7 @@ fn entry(path: PathBuf, alias: Option<&str>) -> RepoEntry {
         path: RepoPath::new(path),
         alias: alias.map(str::to_owned),
         category: None,
+        copy_to_worktrees: Vec::new(),
     }
 }
 
@@ -31,6 +32,7 @@ fn sample(root: &Path) -> ProjectDef {
             entry(root.join("proj").join("app"), None),
             RepoEntry {
                 category: Some("libs".to_owned()),
+                copy_to_worktrees: vec![".env".to_owned(), "config/local.toml".to_owned()],
                 ..entry(root.join("shared").join("libfoo"), Some("libfoo"))
             },
             entry(root.join("proj"), Some("root")),

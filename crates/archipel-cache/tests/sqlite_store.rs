@@ -83,6 +83,10 @@ fn ui_state() -> UiState {
         category_filters: vec!["tools".into()],
         accent: Some("#112233".into()),
         icon: Some("🧪".into()),
+        expanded_worktrees: vec![RepoId(10)],
+        worktree_sets: Vec::new(),
+        set_view: archipel_model::worktree::SetView::MainOnly,
+        set_show_others: true,
     }
 }
 
@@ -118,6 +122,7 @@ fn journal_entry(repo: u64, batch: Option<u64>, label: &str) -> JournalEntry {
             oid: oid(4),
             message: "wip".into(),
         }),
+        worktree: None,
         time: Timestamp(42),
         state: EntryState::Done,
     }

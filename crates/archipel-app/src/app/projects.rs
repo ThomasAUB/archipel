@@ -4,10 +4,10 @@
 use std::path::{Path, PathBuf};
 
 use archipel_model::project::{
-    DiscoveredRepo, ProjectDef, ProjectLocation, ProjectSettings, RegistryEntry, RepoEntry,
-    ScanOptions,
+    DiscoveredKind, DiscoveredRepo, ProjectDef, ProjectLocation, ProjectSettings, RegistryEntry,
+    RepoEntry, ScanOptions,
 };
-use archipel_model::{CancelToken, ProjectError, ProjectId, RepoPath};
+use archipel_model::{CancelToken, ProjectError, ProjectId, RepoId, RepoPath};
 
 use super::{App, AppError, AppEvent, lock};
 
@@ -22,6 +22,25 @@ pub struct DirectoryTarget {
     /// written when there is none: the directory, or the outermost
     /// repository containing it.
     pub scan_root: PathBuf,
+}
+
+/// `found` without the linked worktrees whose main worktree was found too or
+/// is `listed` (spec §10: worktrees are discovered from Git, not listed).
+pub(super) fn drop_linked_worktrees(
+    found: Vec<DiscoveredRepo>,
+    listed: &[RepoId],
+) -> Vec<DiscoveredRepo> {
+    let ids: Vec<RepoId> = found.iter().map(|r| r.path.id()).collect();
+    found
+        .into_iter()
+        .filter(|r| {
+            r.kind != DiscoveredKind::GitFile
+                || archipel_project::linked_worktree_main(r.path.as_path()).is_none_or(|main| {
+                    let id = RepoId::from_path(&main);
+                    !ids.contains(&id) && !listed.contains(&id)
+                })
+        })
+        .collect()
 }
 
 /// Id of the project registered for a shared project file.
@@ -124,6 +143,7 @@ impl App {
                         path: r.path,
                         alias: None,
                         category: None,
+                        copy_to_worktrees: Vec::new(),
                     })
                     .collect(),
             );
@@ -145,11 +165,19 @@ impl App {
 
     /// Scans a folder for repositories (blocking; run off the UI thread or
     /// through the scheduler for big trees — the scan is fast, see PLAN Phase 1).
+    /// Linked worktrees of a repo found too, or of the open project, are
+    /// left out: they show under their repo, never in the project file
+    /// (spec §10).
     pub fn scan(&self, root: &Path) -> Result<Vec<DiscoveredRepo>, AppError> {
-        Ok(self
-            .services
-            .discovery
-            .scan(root, &ScanOptions::default(), &CancelToken::new())?)
+        let found =
+            self.services
+                .discovery
+                .scan(root, &ScanOptions::default(), &CancelToken::new())?;
+        let listed: Vec<RepoId> = self
+            .project()
+            .map(|(_, def)| def.repos.iter().map(|r| r.path.id()).collect())
+            .unwrap_or_default();
+        Ok(drop_linked_worktrees(found, &listed))
     }
 
     /// Adds a folder to the open project: the folder itself when it is a

@@ -114,6 +114,10 @@ fn classify_git(parts: &[&str], per_worktree: bool, shared: bool) -> Scope {
         // moves are seen on their own (`refs/`, `packed-refs`, `reftable/`).
         "FETCH_HEAD" if parts.len() == 1 => Scope::FETCH,
         "reftable" => only_if(shared, Scope::REFS),
+        // A worktree added or removed (its entry), or locked / unlocked.
+        "worktrees" if parts.len() <= 2 || (parts.len() == 3 && parts[2] == "locked") => {
+            only_if(shared, Scope::WORKTREES)
+        }
         f if parts.len() == 1 && OP_STATE_FILES.contains(&f) => only_if(per_worktree, op_state),
         f if OP_STATE_DIRS.contains(&f) => only_if(per_worktree, op_state),
         // objects/**, hooks/**, worktrees/**, modules/**, logs/HEAD, ORIG_HEAD,
@@ -320,6 +324,7 @@ mod tests {
     const S: Scope = Scope::STATUS;
     const R: Scope = Scope::REFS;
     const N: Scope = Scope::NONE;
+    const W: Scope = Scope::WORKTREES;
 
     fn op() -> Scope {
         Scope::OP_STATE | Scope::STATUS
@@ -376,6 +381,9 @@ mod tests {
             (Area::GitDir, "gc.pid", N),
             (Area::GitDir, "hooks/pre-commit", N),
             (Area::GitDir, "worktrees/wt/HEAD", N),
+            (Area::GitDir, "worktrees", W),
+            (Area::GitDir, "worktrees/wt", W),
+            (Area::GitDir, "worktrees/wt/locked", W),
             (Area::GitDir, "modules/sub/HEAD", N),
             (Area::GitDir, "description", N),
             (Area::GitDir, "", N),

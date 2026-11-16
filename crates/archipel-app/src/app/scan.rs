@@ -41,12 +41,21 @@ impl App {
         let spec = OpSpec::new(None, OpClass::Read, format!("Scan {}", root.display()));
         let _handle = self.scheduler.submit(spec, move |_| {
             let pending = Mutex::new((Vec::new(), Instant::now(), 0_usize));
+            // Linked worktrees wait for the end: added only when their repo
+            // was neither found nor listed (spec §10).
+            let deferred = Mutex::new(Vec::new());
             let flush = |paths: Vec<RepoPath>, found: usize| {
                 if let Some(app) = me.upgrade() {
                     app.add_found(&project, &paths, found);
                 }
             };
             let result = discovery.scan_each(&root, &ScanOptions::default(), &cancel, &|repo| {
+                if repo.kind == archipel_model::project::DiscoveredKind::GitFile
+                    && archipel_project::linked_worktree_main(repo.path.as_path()).is_some()
+                {
+                    lock(&deferred).push(repo);
+                    return;
+                }
                 let batch = {
                     let mut p = lock(&pending);
                     p.0.push(repo.path);
@@ -65,6 +74,22 @@ impl App {
                 (std::mem::take(&mut p.0), p.2)
             };
             flush(rest, found);
+            let deferred = std::mem::take(&mut *lock(&deferred));
+            if !deferred.is_empty()
+                && let Some(app) = me.upgrade()
+            {
+                let listed: Vec<archipel_model::RepoId> = app
+                    .project()
+                    .map(|(_, def)| def.repos.iter().map(|r| r.path.id()).collect())
+                    .unwrap_or_default();
+                let kept: Vec<RepoPath> = super::projects::drop_linked_worktrees(deferred, &listed)
+                    .into_iter()
+                    .map(|r| r.path)
+                    .collect();
+                if !kept.is_empty() {
+                    flush(kept, found);
+                }
+            }
             if let Some(app) = me.upgrade() {
                 app.finish_scan(&project, &cancel, found);
             }

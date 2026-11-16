@@ -20,7 +20,11 @@ impl App {
         let Some(s) = guard.as_ref().filter(|s| s.ui.show_dependency_tree) else {
             return Vec::new();
         };
-        let rows = Self::visible_rows_of(&self.ext, s);
+        // Worktrees are not dependencies: the tree shows repos.
+        let rows: Vec<_> = Self::visible_rows_of(&self.ext, s)
+            .into_iter()
+            .filter(|r| r.parent().is_none())
+            .collect();
         let skip: HashSet<RepoId> = if s.ui.show_hidden {
             HashSet::new()
         } else {
@@ -39,7 +43,13 @@ impl App {
         let ids: Vec<RepoId> = lock(&self.session)
             .as_ref()
             .filter(|s| s.ui.show_dependency_tree)
-            .map(|s| s.rows.iter().filter(|r| !r.hidden).map(|r| r.id).collect())
+            .map(|s| {
+                s.rows
+                    .iter()
+                    .filter(|r| !r.hidden && r.parent().is_none())
+                    .map(|r| r.id)
+                    .collect()
+            })
             .unwrap_or_default();
         for id in ids {
             self.load_tree(id);
