@@ -203,6 +203,9 @@ pub struct App {
     session: Mutex<Option<Session>>,
     /// Serializes the background (re)registrations of the file watches.
     watching: Mutex<()>,
+    /// Serializes the writes of the summary cache: each takes its rows
+    /// while holding it, so the last write has the latest rows.
+    persisting: Mutex<()>,
     events: broadcast::Sender<AppEvent>,
     /// Background fetch plan (per window, like the session).
     auto_fetch: Mutex<auto_fetch::AutoFetch>,
@@ -264,6 +267,7 @@ impl App {
             undo,
             session: Mutex::new(None),
             watching: Mutex::new(()),
+            persisting: Mutex::new(()),
             events,
             auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
                 settings_auto_fetch,
@@ -316,6 +320,7 @@ impl App {
             undo: self.undo.clone(),
             session: Mutex::new(None),
             watching: Mutex::new(()),
+            persisting: Mutex::new(()),
             events,
             auto_fetch: Mutex::new(auto_fetch::AutoFetch::new(Duration::from_secs(
                 settings_auto_fetch,
