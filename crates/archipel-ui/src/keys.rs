@@ -1,8 +1,8 @@
 //! Keymap keystrokes as GPUI keystrokes, and as the labels shown for them.
 //!
 //! The keymap (`archipel-app`) has one primary modifier, written `ctrl`. On
-//! macOS it is Command, as in every Mac app, except before Tab: Cmd+Tab
-//! switches applications, so tab switching stays on Control there.
+//! macOS it is Command, as in every Mac app, except where macOS keeps
+//! Command for itself ([`keeps_control`]): those stay on Control there.
 //!
 //! Every shortcut shown in the UI comes from [`label_for`] (a keymap
 //! action, rebindable) or [`fixed_label`] (a key a view handles itself), so
@@ -34,10 +34,18 @@ pub fn fixed_label(text: &str) -> String {
 
 const MAC: bool = cfg!(target_os = "macos");
 
+/// Whether `stroke` keeps Control on macOS rather than becoming Command,
+/// as macOS keeps the Command form for itself: Cmd+Tab switches
+/// applications, Cmd+H and Cmd+Option+H hide this app and the others
+/// (the application menu, see `menu`).
+fn keeps_control(stroke: &Keystroke) -> bool {
+    stroke.key == "tab" || stroke.key == "h" && !stroke.shift
+}
+
 fn for_os(stroke: &Keystroke, mac: bool) -> String {
     let text = stroke.to_string();
     match text.strip_prefix("ctrl-") {
-        Some(rest) if mac && stroke.key != "tab" => format!("cmd-{rest}"),
+        Some(rest) if mac && !keeps_control(stroke) => format!("cmd-{rest}"),
         _ => text,
     }
 }
@@ -46,7 +54,7 @@ fn label_on(stroke: &Keystroke, mac: bool) -> String {
     let key = key_name(&stroke.key);
     if mac {
         // In the macOS order: Control, Option, Shift, Command.
-        let command = stroke.ctrl && stroke.key != "tab";
+        let command = stroke.ctrl && !keeps_control(stroke);
         let mut out = String::new();
         for (on, glyph) in [
             (stroke.ctrl && !command, '⌃'),
@@ -120,6 +128,15 @@ mod tests {
     }
 
     #[test]
+    fn hiding_keeps_control_on_macos() {
+        // Cmd+H hides the app, Cmd+Shift+H is free.
+        assert_eq!(on("ctrl-h", true), "ctrl-h");
+        assert_eq!(on("ctrl-alt-h", true), "ctrl-alt-h");
+        assert_eq!(on("ctrl-shift-h", true), "cmd-shift-h");
+        assert_eq!(on("ctrl-h", false), "ctrl-h");
+    }
+
+    #[test]
     fn keys_without_control_are_unchanged() {
         assert_eq!(on("f5", true), "f5");
         assert_eq!(on("alt-shift-d", true), "alt-shift-d");
@@ -136,7 +153,8 @@ mod tests {
     #[test]
     fn labels_follow_the_macos_key_mapping() {
         assert_eq!(shown("ctrl-shift-p", true), "⇧⌘P");
-        assert_eq!(shown("ctrl-h", true), "⌘H");
+        assert_eq!(shown("ctrl-j", true), "⌘J");
+        assert_eq!(shown("ctrl-h", true), "⌃H");
         // Tab switching stays on Control.
         assert_eq!(shown("ctrl-shift-tab", true), "⌃⇧Tab");
         assert_eq!(shown("alt-shift-d", true), "⌥⇧D");
