@@ -25,6 +25,7 @@ use crate::actions::{GitPorts, split_remote_ref};
 use crate::batch::{BatchReport, Outcome};
 use crate::error::OpError;
 use crate::journal::Journal;
+use crate::worktree::same_folder;
 
 use OperationKind as K;
 
@@ -311,8 +312,10 @@ impl UndoService {
             .as_ref()
             .ok_or_else(|| OpError::Refused("no worktree was recorded".into()))?;
         let worktrees = self.git.worktrees.worktrees(repo)?;
-        let path_id = RepoPath::new(record.path.clone()).id();
-        if worktrees.iter().any(|w| w.path.id() == path_id) {
+        if worktrees
+            .iter()
+            .any(|w| same_folder(w.path.as_path(), &record.path))
+        {
             return Err(OpError::Refused(format!(
                 "{} is a worktree again",
                 record.path.display()
@@ -392,22 +395,23 @@ impl UndoService {
             .worktree
             .as_ref()
             .ok_or_else(|| OpError::Refused("no worktree was recorded".into()))?;
-        let path = RepoPath::new(record.path.clone());
-        let exists = self
+        // As Git spells it (the recorded path may be spelled otherwise).
+        let listed = self
             .git
             .worktrees
             .worktrees(repo)?
-            .iter()
-            .any(|w| w.path.id() == path.id());
+            .into_iter()
+            .find(|w| same_folder(w.path.as_path(), &record.path));
         let mut steps = Vec::new();
-        if exists {
+        if let Some(listed) = listed {
+            let path = listed.path;
             if !self.git.status.changes(&path)?.is_empty() {
                 return Err(OpError::Refused(format!(
                     "cannot undo “{}”: the worktree has changes (remove it instead)",
                     entry.label
                 )));
             }
-            steps.push(UndoStep::RemoveWorktree(record.path.clone()));
+            steps.push(UndoStep::RemoveWorktree(path.as_path().to_path_buf()));
         }
         if let (true, HeadRef::Symbolic(name)) = (record.branch_changed, &record.head) {
             let now = self.git.refs.resolve(repo, name)?;

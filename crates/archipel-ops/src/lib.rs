@@ -35,4 +35,4 @@ pub use error::OpError;
 pub use journal::{Journal, Recording};
 pub use scheduler::{OpClass, OpContext, OpEvent, OpEventKind, OpHandle, OpId, OpSpec, Scheduler};
 pub use undo::{Compensation, Direction, UndoPlan, UndoService};
-pub use worktree::{RemoveOptions, WorktreeLoss, WorktreeSetup};
+pub use worktree::{RemoveOptions, WorktreeLoss, WorktreeSetup, same_folder};

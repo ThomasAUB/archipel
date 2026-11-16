@@ -141,6 +141,33 @@ fn wait_watched(e: &Env) {
     wait_until(&e.app, "watching", |_| e.watcher.watch_count() == 3);
 }
 
+/// Waits until every operation queued since `events` subscribed has
+/// finished, and none was queued for a moment.
+fn wait_idle(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut running = std::collections::HashSet::new();
+    let mut quiet_since = Instant::now();
+    loop {
+        while let Ok(event) = events.try_recv() {
+            if let AppEvent::Op(op) = event {
+                quiet_since = Instant::now();
+                match op.kind {
+                    archipel_ops::OpEventKind::Finished(_) => running.remove(&op.id),
+                    _ => running.insert(op.id),
+                };
+            }
+        }
+        if running.is_empty() && quiet_since.elapsed() > Duration::from_millis(100) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for idle: {running:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn all_fresh(app: &App) -> bool {
     let rows = app.rows();
     !rows.is_empty() && rows.iter().all(|r| !r.stale)
@@ -426,8 +453,13 @@ fn batch_fetch_reports_and_refreshes() {
 #[test]
 fn background_fetch_starts_with_the_selected_repo() {
     let e = env();
+    let mut opening = e.app.subscribe();
     e.app.open_project(&p1_id()).unwrap();
     wait_until(&e.app, "refresh", all_fresh);
+    // A repo busy with another operation (its forge status read) is
+    // skipped by the background fetch and retried much later: start it on
+    // an idle app, as the test is about the order.
+    wait_idle(&mut opening);
     e.app
         .dispatch(Command::Select(Some(e.repos[2].id())))
         .unwrap();
