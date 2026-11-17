@@ -215,6 +215,9 @@ impl App {
             }
             Command::ForgetWorktreeSet(name) => self.forget_worktree_set(&name),
             Command::RenameWorktreeSet(old, new) => self.rename_worktree_set(&old, &new)?,
+            Command::SetRemoteUrl { repo, remote, url } => {
+                self.set_remote_url(repo, remote, &url)?;
+            }
             // Every other command is handled by `dispatch`.
             _ => {}
         }

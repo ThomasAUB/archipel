@@ -4,7 +4,7 @@ use std::path::Path;
 
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolLauncher, RefReader,
-    RefWriter, RemoteOps, StashWriter, TagWriter, WorktreeSnapshots,
+    RefWriter, RemoteOps, RemoteReader, RemoteWriter, StashWriter, TagWriter, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -579,6 +579,33 @@ fn fetch_updated_refs(stderr: &str) -> bool {
 /// Paths as a NUL-separated pathspec file (`--pathspec-from-file=-`).
 fn pathspec_stdin(paths: &[String]) -> Vec<u8> {
     paths.iter().flat_map(|p| p.bytes().chain([0])).collect()
+}
+
+impl RemoteWriter for GitCli {
+    fn set_remote_url(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        url: &str,
+    ) -> Result<Option<String>, GitError> {
+        let exists = self.remotes(repo)?.iter().any(|r| r.name == name);
+        let verb = if exists { "set-url" } else { "add" };
+        self.write(repo, &["remote", verb, "--end-of-options", name, url])?;
+        let out = self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &["config", "--get-all", &format!("remote.{name}.pushurl")],
+            )
+            .ok_codes(&[0, 1]),
+        )?;
+        Ok(out
+            .stdout_text()
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_owned))
+    }
 }
 
 impl RemoteOps for GitCli {
