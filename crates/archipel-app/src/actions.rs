@@ -163,6 +163,16 @@ pub enum Command {
     ForgetWorktreeSet(String),
     /// Rename a Worktree Set.
     RenameWorktreeSet(String, String),
+    /// Point a remote of a repo at a new URL, adding the remote when
+    /// missing (the repo's shared configuration, for every worktree).
+    SetRemoteUrl {
+        /// The repo (or one of its worktrees).
+        repo: RepoId,
+        /// Remote name (`origin`).
+        remote: String,
+        /// New fetch URL.
+        url: String,
+    },
     /// UI-only commands (palettes, dialogs) the frontend handles itself.
     Ui(String),
     /// A fork's own use case, run against the app's public API: the way an

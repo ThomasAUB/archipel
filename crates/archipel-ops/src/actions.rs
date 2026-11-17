@@ -7,9 +7,9 @@ use archipel_model::changes::FileState;
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, LocalFilesCopier,
-    MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps, RemoteReader, StashReader,
-    StashWriter, StatusReader, SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader,
-    WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
+    MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps, RemoteReader,
+    RemoteWriter, StashReader, StashWriter, StatusReader, SubmoduleReader, SubmoduleWriter,
+    TagWriter, TreeReader, WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -61,6 +61,8 @@ pub struct GitPorts {
     pub submodule_writer: Arc<dyn SubmoduleWriter>,
     /// Remote configuration (forge detection from the remote URL).
     pub remotes: Arc<dyn RemoteReader>,
+    /// Remote configuration writes (the remote URL).
+    pub remote_writer: Arc<dyn RemoteWriter>,
     /// Worktree file contents (the diff view's file editor).
     pub files: Arc<dyn WorktreeFiles>,
     /// Files of a commit or of the working copy (the file browser).
@@ -96,6 +98,7 @@ impl GitPorts {
             + SubmoduleReader
             + SubmoduleWriter
             + RemoteReader
+            + RemoteWriter
             + WorktreeFiles
             + TreeReader
             + MergeForecaster
@@ -122,6 +125,7 @@ impl GitPorts {
             submodules: backend.clone(),
             submodule_writer: backend.clone(),
             remotes: backend.clone(),
+            remote_writer: backend.clone(),
             files: backend.clone(),
             tree: backend.clone(),
             forecaster: backend.clone(),
@@ -130,6 +134,21 @@ impl GitPorts {
             local_files: backend,
         }
     }
+}
+
+/// Refuses a remote name or URL git would misread: empty, an option
+/// (`-…`), or with whitespace or control characters.
+fn check_remote_url(name: &str, url: &str) -> Result<(), OpError> {
+    let bad = |v: &str| {
+        v.is_empty() || v.starts_with('-') || v.chars().any(|c| c.is_whitespace() || c.is_control())
+    };
+    if bad(name) {
+        return Err(OpError::Refused(format!("“{name}” is not a remote name")));
+    }
+    if bad(url) {
+        return Err(OpError::Refused(format!("“{url}” is not a remote URL")));
+    }
+    Ok(())
 }
 
 fn branch_ref(name: &str) -> String {
@@ -622,6 +641,19 @@ impl RepoActions {
         Ok(self.git.branches.set_upstream(repo, branch, upstream)?)
     }
 
+    /// Points remote `name` at `url`, adding the remote when missing
+    /// (configuration only, not journaled). Returns the separate push URL
+    /// left in place, if any.
+    pub fn set_remote_url(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        url: &str,
+    ) -> Result<Option<String>, OpError> {
+        check_remote_url(name, url)?;
+        Ok(self.git.remote_writer.set_remote_url(repo, name, url)?)
+    }
+
     /// Creates a tag.
     pub fn create_tag(
         &self,
@@ -970,6 +1002,27 @@ impl RepoActions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_urls_git_would_misread_are_refused() {
+        assert!(check_remote_url("origin", "https://example.com/a.git").is_ok());
+        assert!(check_remote_url("origin", "git@example.com:a.git").is_ok());
+        assert!(check_remote_url("origin", "../shared/a.git").is_ok());
+        for (name, url) in [
+            ("origin", ""),
+            ("origin", "--upload-pack=evil"),
+            ("origin", "https://example.com/a b.git"),
+            ("origin", "https://example.com/a.git\u{7}"),
+            ("", "https://example.com/a.git"),
+            ("-f", "https://example.com/a.git"),
+            ("my origin", "https://example.com/a.git"),
+        ] {
+            assert!(
+                matches!(check_remote_url(name, url), Err(OpError::Refused(_))),
+                "{name} {url}"
+            );
+        }
+    }
 
     #[test]
     fn remote_names_with_slashes_are_matched_whole() {

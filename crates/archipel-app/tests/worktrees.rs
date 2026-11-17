@@ -247,6 +247,41 @@ fn fetch_runs_once_per_repo_and_all_means_repos() {
 }
 
 #[test]
+fn a_remote_url_set_from_a_worktree_row_changes_its_repo() {
+    let e = env();
+    loaded(&e);
+    let feat = e
+        .app
+        .all_rows()
+        .into_iter()
+        .find(DashboardRow::is_worktree)
+        .unwrap();
+    assert!(e.app.remotes(feat.id).unwrap().is_empty());
+    e.app
+        .dispatch(Command::SetRemoteUrl {
+            repo: feat.id,
+            remote: "origin".into(),
+            url: " https://example.com/r0.git ".into(),
+        })
+        .unwrap();
+    wait_until(&e.app, "set", |_| {
+        e.git.calls().iter().any(|c| c.op == "set_remote_url")
+    });
+    let call = e
+        .git
+        .calls()
+        .into_iter()
+        .find(|c| c.op == "set_remote_url")
+        .unwrap();
+    // The shared configuration: the main repo's, the URL trimmed.
+    assert_eq!(call.repo, e.repos[0].as_path().display().to_string());
+    assert_eq!(call.detail, "origin->https://example.com/r0.git");
+    let remotes = e.app.remotes(feat.id).unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].url, "https://example.com/r0.git");
+}
+
+#[test]
 fn all_means_every_shown_repo_and_hidden_repos_are_never_targets() {
     let e = env();
     loaded(&e);

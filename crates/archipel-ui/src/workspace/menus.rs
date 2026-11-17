@@ -342,6 +342,16 @@ impl Workspace {
                 Command::Fetch(targets.clone()),
                 cx,
             ))
+            .when(n == 1, |d| {
+                d.child(
+                    menu_item("menu-remote-url", "Change remote URL…", false, cx).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.menu = None;
+                            this.change_remote_url(id, window, cx);
+                        }),
+                    ),
+                )
+            })
             .children(self.ci_menu_item(id, cx))
             .children(self.ci_rerun_menu_item(&targets, cx))
             .child(self.forge_menu_item(id, targets, cx))

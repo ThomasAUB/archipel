@@ -13,7 +13,7 @@ use crate::actions::Command;
 
 impl App {
     /// The repo row `repo` belongs to and its path.
-    fn main_row(&self, repo: RepoId) -> Result<(RepoId, RepoPath), AppError> {
+    pub(super) fn main_row(&self, repo: RepoId) -> Result<(RepoId, RepoPath), AppError> {
         let main = self.main_repo_of(repo);
         let path = self
             .path_of(main)

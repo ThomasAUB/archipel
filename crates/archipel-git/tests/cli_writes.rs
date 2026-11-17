@@ -11,8 +11,8 @@ use archipel_git::GitCli;
 use archipel_model::changes::ChangeKind;
 use archipel_model::ports::{
     BranchWriter, ChurnReader, CommitWriter, DiffReader, DiffSide, HistoryRewriter, IndexWriter,
-    RefReader, RefWriter, RemoteOps, RemoteReader, StashReader, StashWriter, StatusReader,
-    TagWriter, TreeReader, WorktreeSnapshots,
+    RefReader, RefWriter, RemoteOps, RemoteReader, RemoteWriter, StashReader, StashWriter,
+    StatusReader, TagWriter, TreeReader, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -340,6 +340,49 @@ fn stash_lifecycle() {
     let snap = cli.snapshot_worktree(&path).unwrap();
     assert!(snap.is_some());
     assert!(cli.stashes(&path).unwrap().is_empty());
+}
+
+#[test]
+fn set_remote_url_changes_or_adds_the_remote() {
+    let (repo, path, cli) = setup();
+    let url = |name: &str| {
+        cli.remotes(&path)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == name)
+            .map(|r| r.url)
+    };
+    // No remote yet: it is added.
+    assert_eq!(
+        cli.set_remote_url(&path, "origin", "https://example.com/a.git")
+            .unwrap(),
+        None
+    );
+    assert_eq!(url("origin").as_deref(), Some("https://example.com/a.git"));
+    // An existing one is changed, the others left alone.
+    repo.git(&["remote", "add", "fork", "https://example.com/f.git"])
+        .unwrap();
+    cli.set_remote_url(&path, "origin", "git@example.com:b.git")
+        .unwrap();
+    assert_eq!(url("origin").as_deref(), Some("git@example.com:b.git"));
+    assert_eq!(url("fork").as_deref(), Some("https://example.com/f.git"));
+    assert_eq!(cli.remotes(&path).unwrap().len(), 2);
+    // A separate push URL stays, and is reported.
+    repo.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "https://example.com/p.git",
+    ])
+    .unwrap();
+    assert_eq!(
+        cli.set_remote_url(&path, "origin", "https://example.com/c.git")
+            .unwrap()
+            .as_deref(),
+        Some("https://example.com/p.git")
+    );
+    assert_eq!(url("origin").as_deref(), Some("https://example.com/c.git"));
 }
 
 #[test]

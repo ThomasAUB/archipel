@@ -36,6 +36,7 @@ mod forge_flow;
 mod identity;
 mod projects;
 mod refresh;
+mod remotes;
 mod scan;
 mod session;
 mod tabs;

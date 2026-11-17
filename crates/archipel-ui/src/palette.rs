@@ -90,6 +90,11 @@ impl Palette {
         }
     }
 
+    /// Puts `text` in the field (a prompt starting from the current value).
+    pub fn set_query(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.query.update(cx, |q, cx| q.set_value(text, window, cx));
+    }
+
     fn matches(&self, cx: &gpui_kit::App) -> Vec<PaletteItem> {
         let q = self.query.read(cx).value();
         fuzzy::rank(&q, &self.items, |i| i.label.as_str())

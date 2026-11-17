@@ -68,6 +68,19 @@ pub trait RemoteReader: Send + Sync {
     fn remotes(&self, repo: &RepoPath) -> Result<Vec<RemoteInfo>, GitError>;
 }
 
+/// Writes remote configuration (no network).
+pub trait RemoteWriter: Send + Sync {
+    /// Points remote `name` at `url`, adding the remote when it does not
+    /// exist. Returns the separate push URL (`remote.<name>.pushurl`) left
+    /// in place, if any: pushes still go there.
+    fn set_remote_url(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        url: &str,
+    ) -> Result<Option<String>, GitError>;
+}
+
 /// Reads the commit history in a streamed, bounded-memory way.
 pub trait HistoryReader: Send + Sync {
     /// Streams the topology reachable from every ref and `HEAD`, children

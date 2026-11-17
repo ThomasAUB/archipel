@@ -2,6 +2,8 @@
 //! prompts), the commit, forge and branches panels.
 
 use archipel_app::Command;
+use archipel_app::forge::pick_remote;
+use archipel_model::ports::RemoteInfo;
 use archipel_model::project::ProjectLocation;
 use archipel_model::{ProjectId, RepoId};
 use gpui_kit::prelude::*;
@@ -38,6 +40,15 @@ pub(super) enum PaletteKind {
     LockReason(RepoId),
     /// A new name for the active Worktree Set.
     RenameSet,
+    /// Which remote of this repo gets a new URL (its remotes).
+    PickRemote(RepoId, Vec<RemoteInfo>),
+    /// The new URL of a remote of this repo.
+    RemoteUrl {
+        repo: RepoId,
+        remote: String,
+        /// Its URL now (empty: the remote does not exist yet).
+        current: String,
+    },
 }
 
 /// The overlay shown over the window, its view kept while it is open.
@@ -237,6 +248,39 @@ impl Workspace {
                     cx,
                 );
             }
+            PaletteKind::PickRemote(_, remotes) => {
+                let items = remotes
+                    .iter()
+                    .map(|r| PaletteItem {
+                        id: r.name.clone(),
+                        label: r.name.clone(),
+                        detail: r.url.clone(),
+                    })
+                    .collect();
+                return self.show_palette(
+                    kind,
+                    "Change the URL of which remote?",
+                    items,
+                    false,
+                    window,
+                    cx,
+                );
+            }
+            PaletteKind::RemoteUrl {
+                remote, current, ..
+            } => {
+                let title = if current.is_empty() {
+                    format!("URL of the new remote “{remote}”")
+                } else {
+                    format!("New URL of “{remote}” (was {current})")
+                };
+                let current = current.clone();
+                self.show_palette(kind, title, Vec::new(), true, window, cx);
+                if let Some((Overlay::Palette(palette), _)) = &self.overlay {
+                    palette.update(cx, |p, cx| p.set_query(current, window, cx));
+                }
+                return;
+            }
             PaletteKind::RenameCategory(old) => {
                 // A plain prompt: an empty Enter must not pick (merge into)
                 // another category. Typing an existing name merges into it.
@@ -383,7 +427,78 @@ impl Workspace {
                     self.dispatch(Command::RenameWorktreeSet(set.name, value), cx);
                 }
             }
+            PaletteKind::PickRemote(repo, remotes) => {
+                if let Some(r) = remotes.into_iter().find(|r| r.name == value) {
+                    let kind = PaletteKind::RemoteUrl {
+                        repo,
+                        remote: r.name,
+                        current: r.url,
+                    };
+                    self.open_palette(kind, window, cx);
+                }
+            }
+            PaletteKind::RemoteUrl {
+                repo,
+                remote,
+                current,
+            } => {
+                let url = value.trim().to_owned();
+                if url != current {
+                    self.dispatch(Command::SetRemoteUrl { repo, remote, url }, cx);
+                }
+            }
         }
+    }
+
+    /// Asks for the new URL of a remote of the repo of row `repo`: of its
+    /// only remote, of the one picked when it has several, or of a new
+    /// `origin` when it has none. The remotes are read off the UI thread.
+    pub(super) fn change_remote_url(
+        &mut self,
+        repo: RepoId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let core = self.core.clone();
+        let task = cx.background_spawn(async move { core.remotes(repo) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |w, window, cx| match result {
+                Err(e) => {
+                    w.notice = Some(e.to_string());
+                    cx.notify();
+                }
+                Ok(mut remotes) => {
+                    let kind = match remotes.len() {
+                        0 => PaletteKind::RemoteUrl {
+                            repo,
+                            remote: "origin".into(),
+                            current: String::new(),
+                        },
+                        1 => {
+                            let r = remotes.remove(0);
+                            PaletteKind::RemoteUrl {
+                                repo,
+                                remote: r.name,
+                                current: r.url,
+                            }
+                        }
+                        _ => {
+                            // The usual one (origin) first.
+                            if let Some(first) = pick_remote(&remotes, None).map(|r| r.name.clone())
+                                && let Some(i) = remotes.iter().position(|r| r.name == first)
+                            {
+                                let r = remotes.remove(i);
+                                remotes.insert(0, r);
+                            }
+                            PaletteKind::PickRemote(repo, remotes)
+                        }
+                    };
+                    w.open_palette(kind, window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Opens the category palette for `targets`.

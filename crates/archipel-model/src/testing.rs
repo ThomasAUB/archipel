@@ -21,9 +21,9 @@ use crate::ports::{
     BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, Coverage, DiffReader,
     DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
     LocalFilesCopier, MergeForecaster, MergeToolLauncher, ProjectRegistry, ProjectSource,
-    RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RepoDiscovery, StashReader,
-    StashWriter, StatsStore, StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore,
-    TagWriter, TreeReader, UiStateStore, WatchHandle, WorktreeFiles, WorktreeReader,
+    RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RemoteWriter, RepoDiscovery,
+    StashReader, StashWriter, StatsStore, StatusReader, SubmoduleReader, SubmoduleWriter,
+    SummaryStore, TagWriter, TreeReader, UiStateStore, WatchHandle, WorktreeFiles, WorktreeReader,
     WorktreeSnapshots, WorktreeWriter,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
@@ -288,6 +288,27 @@ impl RefReader for FakeGit {
 impl RemoteReader for FakeGit {
     fn remotes(&self, repo: &RepoPath) -> Result<Vec<RemoteInfo>, GitError> {
         self.read(repo, "remotes", |r| r.remotes.clone())
+    }
+}
+
+impl RemoteWriter for FakeGit {
+    fn set_remote_url(
+        &self,
+        repo: &RepoPath,
+        name: &str,
+        url: &str,
+    ) -> Result<Option<String>, GitError> {
+        self.record("set_remote_url", repo, format!("{name}->{url}"))?;
+        self.with_repo(repo, |r| {
+            match r.remotes.iter_mut().find(|x| x.name == name) {
+                Some(remote) => url.clone_into(&mut remote.url),
+                None => r.remotes.push(RemoteInfo {
+                    name: name.to_owned(),
+                    url: url.to_owned(),
+                }),
+            }
+        });
+        Ok(None)
     }
 }
 
