@@ -43,6 +43,7 @@ impl Render for TabGhost {
 }
 
 impl Workspace {
+    #[allow(clippy::too_many_lines)] // declarative element tree
     pub(super) fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.core.ui_state().unwrap_or_default();
         let names: HashMap<RepoId, (String, Option<String>)> = self
