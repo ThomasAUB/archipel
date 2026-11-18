@@ -53,7 +53,7 @@ use crate::ci_tooltip::CiTooltip;
 use crate::diff_view::DiffDoc;
 use crate::latest::Latest;
 use crate::staging::{self, Staging, StagingEvent};
-use crate::theme::{color, radius, repo_surface, staging_surface, tone};
+use crate::theme::{color, radius, staging_surface, tone};
 use crate::widgets::{
     Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter, unmodified,
 };
@@ -606,19 +606,7 @@ impl WorkingCopy for RepoView {
 impl Render for RepoView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.core.ui_state().unwrap_or_default();
-        let refs = if ui.refs_collapsed {
-            refs_panel::render_refs_strip(cx)
-        } else {
-            div()
-                .w(px(ui.refs_width))
-                .flex_none()
-                .bg(repo_surface(cx))
-                .flex()
-                .flex_col()
-                .child(refs_panel::render_refs_hide(cx))
-                .child(self.render_refs(cx))
-                .into_any_element()
-        };
+        let refs = self.render_refs_pane(&ui, cx);
         let centre = if matches!(self.open_diff, Some(OpenDiff::File(_))) {
             self.render_open_file(window, cx)
         } else if self.open_diff.is_some() {
