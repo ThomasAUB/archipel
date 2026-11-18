@@ -246,6 +246,14 @@ fn render_ref_row(
                 .text_xs()
                 .text_color(color(cx, T::FgSubtle))
                 .on_click(cx.listener(move |v, _, _, cx| v.toggle_ref_section(title, cx)))
+                .when(title == "REMOTE", |d| {
+                    d.on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |v, e: &MouseDownEvent, _, cx| {
+                            v.open_menu(MenuTarget::Remotes, e.position, cx);
+                        }),
+                    )
+                })
                 .child(
                     div()
                         .w(px(12.0))

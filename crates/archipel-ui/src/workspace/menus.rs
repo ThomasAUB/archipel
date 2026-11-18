@@ -347,7 +347,7 @@ impl Workspace {
                     menu_item("menu-remote-url", "Change remote URL…", false, cx).on_click(
                         cx.listener(move |this, _, window, cx| {
                             this.menu = None;
-                            this.change_remote_url(id, window, cx);
+                            this.change_remote_url(id, None, window, cx);
                         }),
                     ),
                 )

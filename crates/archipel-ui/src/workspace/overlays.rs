@@ -450,12 +450,14 @@ impl Workspace {
         }
     }
 
-    /// Asks for the new URL of a remote of the repo of row `repo`: of its
-    /// only remote, of the one picked when it has several, or of a new
+    /// Asks for the new URL of a remote of the repo of row `repo`: of the
+    /// remote of remote branch `branch` (`origin/main`) when given, else of
+    /// its only remote, of the one picked when it has several, or of a new
     /// `origin` when it has none. The remotes are read off the UI thread.
     pub(super) fn change_remote_url(
         &mut self,
         repo: RepoId,
+        branch: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -469,30 +471,47 @@ impl Workspace {
                     cx.notify();
                 }
                 Ok(mut remotes) => {
-                    let kind = match remotes.len() {
-                        0 => PaletteKind::RemoteUrl {
+                    // The remote of the branch: the longest name prefix, as
+                    // remote names may hold a slash.
+                    let owner = branch.as_deref().and_then(|b| {
+                        remotes
+                            .iter()
+                            .filter(|r| b.starts_with(&format!("{}/", r.name)))
+                            .max_by_key(|r| r.name.len())
+                            .cloned()
+                    });
+                    let kind = match owner {
+                        Some(r) => PaletteKind::RemoteUrl {
                             repo,
-                            remote: "origin".into(),
-                            current: String::new(),
+                            remote: r.name,
+                            current: r.url,
                         },
-                        1 => {
-                            let r = remotes.remove(0);
-                            PaletteKind::RemoteUrl {
+                        None => match remotes.len() {
+                            0 => PaletteKind::RemoteUrl {
                                 repo,
-                                remote: r.name,
-                                current: r.url,
+                                remote: "origin".into(),
+                                current: String::new(),
+                            },
+                            1 => {
+                                let r = remotes.remove(0);
+                                PaletteKind::RemoteUrl {
+                                    repo,
+                                    remote: r.name,
+                                    current: r.url,
+                                }
                             }
-                        }
-                        _ => {
-                            // The usual one (origin) first.
-                            if let Some(first) = pick_remote(&remotes, None).map(|r| r.name.clone())
-                                && let Some(i) = remotes.iter().position(|r| r.name == first)
-                            {
-                                let r = remotes.remove(i);
-                                remotes.insert(0, r);
+                            _ => {
+                                // The usual one (origin) first.
+                                if let Some(first) =
+                                    pick_remote(&remotes, None).map(|r| r.name.clone())
+                                    && let Some(i) = remotes.iter().position(|r| r.name == first)
+                                {
+                                    let r = remotes.remove(i);
+                                    remotes.insert(0, r);
+                                }
+                                PaletteKind::PickRemote(repo, remotes)
                             }
-                            PaletteKind::PickRemote(repo, remotes)
-                        }
+                        },
                     };
                     w.open_palette(kind, window, cx);
                 }
