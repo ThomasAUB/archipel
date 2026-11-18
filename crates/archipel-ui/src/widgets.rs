@@ -511,7 +511,10 @@ pub fn splitter(pane: Pane, cx: &App) -> Stateful<Div> {
 pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixels>) {
     let (width, other) = match pane {
         Pane::Refs => (x - bounds.left(), ui.details_width),
-        Pane::Details => (bounds.right() - x, ui.refs_width),
+        Pane::Details => {
+            let refs = if ui.refs_collapsed { 0.0 } else { ui.refs_width };
+            (bounds.right() - x, refs)
+        }
         Pane::QuickEdit => (bounds.right() - x, 0.0),
     };
     let max = (f32::from(bounds.size.width) - other - MIN_PANE).max(MIN_PANE);
