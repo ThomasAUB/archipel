@@ -557,6 +557,20 @@ fn reachable_rows_follow_parents_without_passing_the_bottom_row() {
     // Clamped past the last row; nothing from a row past it.
     assert_eq!(view.reachable_rows(4, 99).unwrap(), Some(vec![4, 5]));
     assert_eq!(view.reachable_rows(9, 12).unwrap(), Some(vec![]));
+
+    let merges: Vec<_> = (0..7).map(|row| view.is_merge(row).unwrap()).collect();
+    assert_eq!(
+        merges,
+        [
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(false),
+            None
+        ]
+    );
 }
 
 #[test]

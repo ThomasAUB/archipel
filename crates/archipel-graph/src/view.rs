@@ -547,6 +547,26 @@ impl HistoryView {
         Ok(Some(out))
     }
 
+    /// Whether the commit at `row` is a merge (several parents, those out
+    /// of the walk included). `None` while the topology is still being
+    /// built, or for a row past the last one.
+    pub fn is_merge(&self, row: u32) -> Result<Option<bool>, GraphError> {
+        let loaded = self.loaded.as_ref().ok_or(GraphError::NotOpen)?;
+        let Some(ready) = loaded.ready() else {
+            return Ok(None);
+        };
+        let file = &ready.file;
+        if row >= file.rows() {
+            return Ok(None);
+        }
+        let Some(record) = file.read_parent_records(row..row + 1)?.pop() else {
+            return Ok(None);
+        };
+        let mut links = Vec::new();
+        file.decode_parents(row, record, &mut links)?;
+        Ok(Some(links.len() > 1))
+    }
+
     /// Object ids of rows `range` (clamped to the available rows).
     pub fn oids(&self, range: Range<u32>) -> Result<Vec<Oid>, GraphError> {
         self.loaded.as_ref().ok_or(GraphError::NotOpen)?.oids(range)

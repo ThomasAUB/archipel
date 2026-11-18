@@ -125,6 +125,53 @@ impl RepoView {
         );
     }
 
+    /// Cherry-picks `oids` one by one, oldest first. With several commits,
+    /// merges among them are skipped: Git cannot pick a merge without
+    /// choosing a mainline, and the changes it brings come from the
+    /// commits of the merged branch, picked on their own when selected.
+    pub(super) fn cherry_pick(&mut self, oids: Vec<Oid>, cx: &mut Context<Self>) {
+        let (picked, merges) = if oids.len() > 1 {
+            self.without_merges(oids)
+        } else {
+            (oids, 0)
+        };
+        let label = match picked.as_slice() {
+            [] => {
+                self.status = Some("Nothing to cherry-pick: only merge commits selected".into());
+                cx.notify();
+                return;
+            }
+            [oid] => format!("Cherry-pick {}", oid.short(SHORT_OID)),
+            many => format!("Cherry-pick {} commits", many.len()),
+        };
+        let label = match merges {
+            0 => label,
+            1 => format!("{label} (1 merge skipped)"),
+            n => format!("{label} ({n} merges skipped)"),
+        };
+        self.run(label, cx, move |a, p, _| a.cherry_pick(p, &picked));
+    }
+
+    /// `oids` without the merge commits, and how many were taken out.
+    /// Commits whose row is not known, or while the graph is still being
+    /// built, are kept.
+    fn without_merges(&self, oids: Vec<Oid>) -> (Vec<Oid>, usize) {
+        let Some(graph) = &self.graph else {
+            return (oids, 0);
+        };
+        let graph = lock(graph);
+        let total = oids.len();
+        let kept: Vec<Oid> = oids
+            .into_iter()
+            .filter(|oid| {
+                let row = self.multi.iter().find(|(_, o)| *o == oid).map(|(r, _)| *r);
+                row.and_then(|r| graph.is_merge(r).ok().flatten()) != Some(true)
+            })
+            .collect();
+        let merges = total - kept.len();
+        (kept, merges)
+    }
+
     /// Runs a write on a background thread, then reloads.
     pub(super) fn run(
         &mut self,
