@@ -147,7 +147,7 @@ impl RepoView {
         Self::render_diff_details(el, &oid.to_hex(), doc, cx)
     }
 
-    /// The diff between two selected commits, from the older to the newer.
+    /// The diff of a multi-selection, from its oldest commit to its newest.
     fn render_compare(&mut self, (older, newer): (Oid, Oid), cx: &mut Context<Self>) -> AnyElement {
         let summary = |oid: Oid| {
             self.multi
@@ -187,7 +187,7 @@ impl RepoView {
             .child(
                 div()
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .child("Comparing 2 commits"),
+                    .child(format!("Comparing {} commits", self.multi.len())),
             )
             .child(line("From", older, old_summary, cx))
             .child(line("To", newer, new_summary, cx));

@@ -100,22 +100,35 @@ impl RepoView {
         self.set_selection(set, (row, oid), cx);
     }
 
-    /// Shift+click on commit `oid` at graph row `row`: selects every commit
-    /// row from the selected one to it.
+    /// Shift+click on commit `oid` at graph row `row`: selects the commit
+    /// rows from the selected one to it that are in the range, i.e. the
+    /// newer end and its ancestors down to the older end; the commits of
+    /// other branches in between, whose changes the range does not hold,
+    /// are left out. Every row of the span while the graph is still loading.
     pub(super) fn select_commit_span(&mut self, row: u32, oid: Oid, cx: &mut Context<Self>) {
         let Some(anchor) = self.selected.and_then(Selected::placed) else {
             self.select_commit(row, oid, cx);
             return;
         };
-        let span = anchor.0.min(row)..anchor.0.max(row) + 1;
+        let (newest, oldest) = (anchor.0.min(row), anchor.0.max(row));
         let set: BTreeMap<u32, Oid> = self
             .graph
             .as_ref()
-            .and_then(|g| lock(g).rows(span).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| (r.row, r.oid))
-            .collect();
+            .map(|g| {
+                let g = lock(g);
+                let rows = g.rows(newest..oldest + 1).unwrap_or_default();
+                let reachable = g.reachable_rows(newest, oldest).ok().flatten();
+                rows.into_iter()
+                    .filter(|r| {
+                        r.row == oldest
+                            || reachable
+                                .as_ref()
+                                .is_none_or(|kept| kept.binary_search(&r.row).is_ok())
+                    })
+                    .map(|r| (r.row, r.oid))
+                    .collect()
+            })
+            .unwrap_or_default();
         self.set_selection(set, anchor, cx);
     }
 
@@ -148,20 +161,20 @@ impl RepoView {
         cx.notify();
     }
 
-    /// The two commits of a two-commit selection: the older (lower in
-    /// the graph), then the newer.
+    /// The ends of a multi-selection: the oldest commit (lowest in the
+    /// graph), then the newest. Commits selected in between do not change
+    /// the diff, which goes from the oldest to the newest.
     pub(super) fn compared(&self) -> Option<(Oid, Oid)> {
-        if self.multi.len() != 2 {
+        if self.multi.len() < 2 {
             return None;
         }
-        let mut oids = self.multi.values();
-        let newer = *oids.next()?;
-        let older = *oids.next()?;
+        let newer = *self.multi.values().next()?;
+        let older = *self.multi.values().next_back()?;
         Some((older, newer))
     }
 
-    /// The diff whose files the details pane lists: between the two
-    /// selected commits, else of the selected commit or stash.
+    /// The diff whose files the details pane lists: between the ends of
+    /// the multi-selection, else of the selected commit or stash.
     pub(super) fn listed_doc(&self) -> Option<&Arc<DiffDoc>> {
         match self.compared() {
             Some(pair) => self
@@ -173,8 +186,8 @@ impl RepoView {
         }
     }
 
-    /// Reads the diff between the two selected commits, when two are
-    /// selected and it is not read yet.
+    /// Reads the diff between the ends of the multi-selection, when
+    /// several commits are selected and it is not read yet.
     fn load_compare(&mut self, cx: &mut Context<Self>) {
         let Some((older, newer)) = self.compared() else {
             return;
