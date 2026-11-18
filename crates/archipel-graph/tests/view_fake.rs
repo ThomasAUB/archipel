@@ -578,3 +578,31 @@ fn backend_errors_are_typed() {
         .unwrap_err();
     assert!(matches!(err, GraphError::Git(GitError::Backend(_))));
 }
+
+#[test]
+fn search_reads_message_bodies() {
+    let env = Env::new(&random_dag(500, 7));
+    env.git.with_repo(&env.repo, |r| {
+        r.messages.insert(
+            oid(321),
+            "commit number 321\n\nCloses #4242.\nCo-authored-by: Ada <ada@example.com>".into(),
+        );
+    });
+    let view = env.opened(GraphOptions {
+        search_chunk_rows: 64,
+        ..options(100)
+    });
+    let cancel = CancelToken::new();
+    // Body only, case-insensitive.
+    let hit = view.search(&SearchQuery::new("#4242"), &cancel).unwrap();
+    assert_eq!(hit.rows, vec![321]);
+    let hit = view
+        .search(&SearchQuery::new("co-authored-by: ADA"), &cancel)
+        .unwrap();
+    assert_eq!(hit.rows, vec![321]);
+    // The summary still matches.
+    let hit = view
+        .search(&SearchQuery::new("commit number 321"), &cancel)
+        .unwrap();
+    assert_eq!(hit.rows, vec![321]);
+}

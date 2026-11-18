@@ -1,4 +1,4 @@
-//! Background search over the history: hash prefix, message summary, author.
+//! Background search over the history: hash prefix, full message, author.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -12,8 +12,9 @@ use crate::topology::TopologyFile;
 /// What to search for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchQuery {
-    /// Text matched case-insensitively against the commit summary, author
-    /// name and email, and as a prefix of the full hexadecimal id.
+    /// Text matched case-insensitively against the full commit message
+    /// (summary and body), author name and email, and as a prefix of the
+    /// full hexadecimal id.
     pub text: String,
     /// Stop after this many hits.
     pub max_hits: usize,
@@ -46,8 +47,9 @@ pub struct SearchResult {
 /// (from [`HistoryView::searcher`](crate::HistoryView::searcher)).
 ///
 /// Searches run in chunks of rows: ids are read from the cache file, metadata
-/// is loaded per chunk from the backend (not kept: it would evict the visible
-/// window from the LRU), and the cancel token is checked between chunks.
+/// and full messages are loaded per chunk from the backend (not kept: they
+/// would evict the visible window from the LRU), and the cancel token is
+/// checked between chunks.
 #[derive(Clone)]
 pub struct Searcher {
     history: Arc<dyn HistoryReader>,
@@ -95,16 +97,16 @@ impl Searcher {
             cancel.check()?;
             let end = start.saturating_add(self.chunk_rows).min(rows);
             let oids = self.file.read_oids(start..end)?;
-            let metas = self.history.commit_meta(&self.repo, &oids)?;
-            let mut metas = metas.iter().peekable();
+            let texts = self.history.commit_texts(&self.repo, &oids)?;
+            let mut texts = texts.iter().peekable();
             for (row, oid) in (start..).zip(&oids) {
-                // Backends return metadata in request order; a fake may skip ids.
-                let meta = metas.next_if(|m| m.oid == *oid);
+                // Backends return texts in request order; a fake may skip ids.
+                let text = texts.next_if(|t| t.meta.oid == *oid);
                 let by_hash = hex_prefix.is_some_and(|p| oid.to_hex().starts_with(p));
-                let by_meta = meta.is_some_and(|m| {
-                    contains_ci(&m.summary, &needle)
-                        || contains_ci(&m.author_name, &needle)
-                        || contains_ci(&m.author_email, &needle)
+                let by_meta = text.is_some_and(|t| {
+                    contains_ci(&t.message, &needle)
+                        || contains_ci(&t.meta.author_name, &needle)
+                        || contains_ci(&t.meta.author_email, &needle)
                 });
                 if by_hash || by_meta {
                     result.rows.push(row);

@@ -211,7 +211,13 @@ impl RepoView {
     }
 
     /// Selects graph row `row` and scrolls it into view.
-    fn show_row(&mut self, row: u32, oid: Oid, strategy: ScrollStrategy, cx: &mut Context<Self>) {
+    pub(super) fn show_row(
+        &mut self,
+        row: u32,
+        oid: Oid,
+        strategy: ScrollStrategy,
+        cx: &mut Context<Self>,
+    ) {
         let item = self.item_of_row(row);
         self.scroll
             .scroll_to_item(usize::try_from(item).unwrap_or(0), strategy);
@@ -260,13 +266,24 @@ impl RepoView {
         }
     }
 
-    /// Plain keys of the graph pane: arrows, pages, Enter and Esc.
+    /// Keys of the graph pane: arrows, pages, Enter and Esc; F3 / Shift+F3
+    /// go through the find bar's matches.
     pub(super) fn on_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let k = &event.keystroke;
+        let m = k.modifiers;
+        if self.open_diff.is_none() && !m.alt {
+            let primary = m.control || m.platform;
+            if k.key == "f3" && !primary && self.search.is_some() {
+                self.step_hit(!m.shift, cx);
+                cx.stop_propagation();
+                return;
+            }
+        }
         if !unmodified(event.keystroke.modifiers) {
             return;
         }
@@ -296,6 +313,7 @@ impl RepoView {
                 self.multi.clear();
                 cx.notify();
             }
+            "escape" if self.search.is_some() => self.close_search(window, cx),
             "enter" => match self.selected.and_then(Selected::placed) {
                 Some((row, oid)) => self.checkout_row(row, oid, cx),
                 None => return,
