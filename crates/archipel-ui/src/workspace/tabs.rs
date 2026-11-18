@@ -192,6 +192,9 @@ impl Workspace {
             StagingEvent::WorktreeMenu(id, position) => {
                 self.open_menu(Menu::Row(*id), *position, cx);
             }
+            StagingEvent::ChangeRemoteUrl(id, branch) => {
+                self.change_remote_url(*id, branch.clone(), window, cx);
+            }
         }
     }
 }

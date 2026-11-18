@@ -196,6 +196,9 @@ pub enum StagingEvent {
     SwitchWorktree,
     /// Open the Worktree Menu of this worktree at this position.
     WorktreeMenu(archipel_model::RepoId, gpui_kit::Point<gpui_kit::Pixels>),
+    /// Ask for a new URL of a remote of this repo: of the remote of this
+    /// remote branch (`origin/main`) when given, else as the dashboard does.
+    ChangeRemoteUrl(archipel_model::RepoId, Option<String>),
 }
 
 pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {

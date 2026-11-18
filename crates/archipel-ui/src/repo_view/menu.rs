@@ -46,6 +46,8 @@ pub(super) enum MenuTarget {
     /// The commit graph header: its optional columns, the hidden ones
     /// listed.
     Columns(Vec<GraphColumn>),
+    /// The REMOTE header of the refs panel.
+    Remotes,
 }
 
 /// An action picked in a right-click menu.
@@ -93,6 +95,9 @@ pub(super) enum MenuAction {
     NewWorktree(WorktreeStart),
     /// Opens the Remove Worktree confirmation.
     RemoveWorktree(RepoId),
+    /// Asks for a new URL of the remote of this remote branch, or of a
+    /// remote of the repo (`None`).
+    ChangeRemoteUrl(Option<String>),
 }
 
 impl MenuAction {
@@ -172,6 +177,10 @@ fn menu_entries(
         MenuTarget::Drop { source, target } => drop_entries(source, target, current),
         MenuTarget::Submodule(sub) => submodule_entries(sub),
         MenuTarget::Columns(hidden) => column_entries(hidden),
+        MenuTarget::Remotes => vec![item(
+            "Change remote URL…",
+            MenuAction::ChangeRemoteUrl(None),
+        )],
     }
 }
 
@@ -380,6 +389,10 @@ fn ref_entries(
             }
         }
         RefKind::RemoteBranch => {
+            out.push(item(
+                "Change remote URL…",
+                A::ChangeRemoteUrl(Some(name.clone())),
+            ));
             out.push(MenuEntry::Separator);
             out.push(danger(
                 format!("Delete {name} on the remote…"),
@@ -764,6 +777,9 @@ impl RepoView {
                 cx.emit(StagingEvent::NewWorktree(self.path.id(), start));
             }
             MenuAction::RemoveWorktree(id) => cx.emit(StagingEvent::RemoveWorktree(id)),
+            MenuAction::ChangeRemoteUrl(branch) => {
+                cx.emit(StagingEvent::ChangeRemoteUrl(self.path.id(), branch));
+            }
         }
     }
 
@@ -1145,6 +1161,9 @@ mod tests {
             )))
         );
         assert!(remote.contains(&&MenuAction::DeleteRemoteBranch("origin/feat".into())));
+        assert!(remote.contains(&&MenuAction::ChangeRemoteUrl(Some("origin/feat".into()))));
+        let header = menu_entries(&MenuTarget::Remotes, Some("main"), |_| false);
+        assert_eq!(actions(&header), [&MenuAction::ChangeRemoteUrl(None)]);
     }
 
     #[test]
