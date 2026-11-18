@@ -546,11 +546,32 @@ impl DiffReader for GitCli {
         ))
     }
 
-    fn range_diff(&self, repo: &RepoPath, from: Oid, to: Oid) -> Result<Vec<FileDiff>, GitError> {
+    fn range_diff(
+        &self,
+        repo: &RepoPath,
+        oldest: Oid,
+        newest: Oid,
+    ) -> Result<Vec<FileDiff>, GitError> {
+        let base = match self.resolve(repo, &format!("{}^", oldest.to_hex()))? {
+            Some(parent) => parent.to_hex(),
+            // A root commit: from the empty tree, whose id depends on the
+            // repository's hash function.
+            None => self
+                .runner
+                .run(
+                    Cmd::new(
+                        repo.as_path(),
+                        CmdKind::Read,
+                        &["hash-object", "-t", "tree", "--stdin"],
+                    )
+                    .stdin(Vec::new()),
+                )?
+                .stdout_text(),
+        };
         let out = self.runner.run(
             Cmd::new(repo.as_path(), CmdKind::Read, &["diff"])
                 .args(DIFF_ARGS)
-                .args([from.to_hex(), to.to_hex()]),
+                .args([base, newest.to_hex()]),
         )?;
         Ok(parse_unified_diff(
             &String::from_utf8_lossy(&out.stdout),

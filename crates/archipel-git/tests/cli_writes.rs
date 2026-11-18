@@ -655,6 +655,30 @@ fn reword_rewrites_one_message_and_keeps_the_rest() {
 }
 
 #[test]
+fn range_diff_holds_its_oldest_commit() {
+    let (repo, path, cli) = setup();
+    let root = Oid::from_hex(&repo.git(&["rev-parse", "HEAD"]).unwrap()).unwrap();
+    repo.write("b.txt", "b\n").unwrap();
+    let second = Oid::from_hex(&repo.commit_all("add b").unwrap()).unwrap();
+    repo.write("c.txt", "c\n").unwrap();
+    let third = Oid::from_hex(&repo.commit_all("add c").unwrap()).unwrap();
+    let paths = |oldest, newest| -> Vec<String> {
+        let mut p: Vec<String> = cli
+            .range_diff(&path, oldest, newest)
+            .unwrap()
+            .into_iter()
+            .filter_map(|f| f.new_path)
+            .collect();
+        p.sort();
+        p
+    };
+    assert_eq!(paths(second, third), ["b.txt", "c.txt"]);
+    assert_eq!(paths(third, third), ["c.txt"]);
+    // From a root commit: from the empty tree.
+    assert_eq!(paths(root, second), ["a.txt", "b.txt"]);
+}
+
+#[test]
 fn diffs_and_churn() {
     let (repo, path, cli) = setup();
     repo.write("a.txt", "one\n2\nthree\nfour\n").unwrap();

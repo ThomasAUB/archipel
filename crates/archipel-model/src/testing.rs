@@ -427,9 +427,14 @@ impl DiffReader for FakeGit {
             r.diffs.get(&commit).cloned().unwrap_or_default()
         })
     }
-    fn range_diff(&self, repo: &RepoPath, _from: Oid, to: Oid) -> Result<Vec<FileDiff>, GitError> {
+    fn range_diff(
+        &self,
+        repo: &RepoPath,
+        _oldest: Oid,
+        newest: Oid,
+    ) -> Result<Vec<FileDiff>, GitError> {
         self.read(repo, "range_diff", |r| {
-            r.diffs.get(&to).cloned().unwrap_or_default()
+            r.diffs.get(&newest).cloned().unwrap_or_default()
         })
     }
     fn worktree_diff(
