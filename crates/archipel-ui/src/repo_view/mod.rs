@@ -605,7 +605,20 @@ impl WorkingCopy for RepoView {
 
 impl Render for RepoView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let refs = self.render_refs(cx);
+        let ui = self.core.ui_state().unwrap_or_default();
+        let refs = if ui.refs_collapsed {
+            refs_panel::render_refs_strip(cx)
+        } else {
+            div()
+                .w(px(ui.refs_width))
+                .flex_none()
+                .bg(repo_surface(cx))
+                .flex()
+                .flex_col()
+                .child(refs_panel::render_refs_hide(cx))
+                .child(self.render_refs(cx))
+                .into_any_element()
+        };
         let centre = if matches!(self.open_diff, Some(OpenDiff::File(_))) {
             self.render_open_file(window, cx)
         } else if self.open_diff.is_some() {
@@ -614,22 +627,13 @@ impl Render for RepoView {
             self.render_graph(cx)
         };
         let details = self.render_details(cx);
-        let ui = self.core.ui_state().unwrap_or_default();
         let body = div()
             .flex_1()
             .flex()
             .overflow_hidden()
             .on_drag_move(cx.listener(Self::on_pane_drag))
-            .child(
-                div()
-                    .w(px(ui.refs_width))
-                    .flex_none()
-                    .bg(repo_surface(cx))
-                    .flex()
-                    .flex_col()
-                    .child(refs),
-            )
-            .child(splitter(Pane::Refs, cx))
+            .child(refs)
+            .when(!ui.refs_collapsed, |d| d.child(splitter(Pane::Refs, cx)))
             .child(
                 div()
                     .id("graph-pane")

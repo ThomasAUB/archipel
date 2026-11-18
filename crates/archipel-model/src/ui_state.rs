@@ -79,6 +79,9 @@ pub struct UiState {
     pub sidebar_width: f32,
     /// Width of a repo view's refs pane in logical pixels.
     pub refs_width: f32,
+    /// Whether a repo view's refs pane (branches, tags, submodules) is
+    /// collapsed to a thin strip, shared by all repo views.
+    pub refs_collapsed: bool,
     /// Width of a repo view's details pane in logical pixels.
     pub details_width: f32,
     /// Width of the dashboard's quick edit pane in logical pixels.
@@ -206,6 +209,7 @@ impl Default for UiState {
             sort_direction: SortDirection::Ascending,
             sidebar_width: 240.0,
             refs_width: 220.0,
+            refs_collapsed: false,
             details_width: 460.0,
             quick_edit_width: 360.0,
             sidebar_collapsed: false,

@@ -170,6 +170,13 @@ impl RepoView {
         scroll_list("refs-scroll", list).into_any_element()
     }
 
+    /// Collapses the whole refs pane to a thin strip, or expands it back.
+    fn toggle_refs_pane(&mut self, cx: &mut Context<Self>) {
+        self.core
+            .update_ui_state(|ui| ui.refs_collapsed = !ui.refs_collapsed);
+        cx.notify();
+    }
+
     /// Collapses or expands the refs pane section `title`.
     fn toggle_ref_section(&mut self, title: &'static str, cx: &mut Context<Self>) {
         self.core.update_ui_state(|ui| {
@@ -215,6 +222,57 @@ pub(super) fn branch_drag_and_drop<E: StatefulInteractiveElement>(
                 );
             }
         }))
+}
+
+/// The top row of the expanded refs pane: a button collapsing it.
+pub(super) fn render_refs_hide(cx: &mut Context<RepoView>) -> AnyElement {
+    let hover = color(cx, T::BgHover);
+    div()
+        .h(row_height(cx))
+        .flex_none()
+        .flex()
+        .justify_end()
+        .items_center()
+        .px_1()
+        .child(
+            div()
+                .id("refs-hide")
+                .px_1()
+                .rounded(radius(cx))
+                .cursor_pointer()
+                .text_xs()
+                .text_color(color(cx, T::FgSubtle))
+                .hover(move |s| s.bg(hover))
+                .child("◂")
+                .tooltip(|_, cx| TextTooltip::view(&["Collapse the refs pane".into()], cx))
+                .on_click(cx.listener(|v, _, _, cx| v.toggle_refs_pane(cx))),
+        )
+        .into_any_element()
+}
+
+/// The collapsed refs pane: a thin strip, a click expands it.
+pub(super) fn render_refs_strip(cx: &mut Context<RepoView>) -> AnyElement {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id("refs-strip")
+        .w(px(18.0))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .bg(crate::theme::repo_surface(cx))
+        .border_r_1()
+        .border_color(color(cx, T::BorderSubtle))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .text_xs()
+        .text_color(color(cx, T::FgSubtle))
+        .child(div().h(row_height(cx)).flex().items_center().child("▸"))
+        .tooltip(|_, cx| {
+            TextTooltip::view(&["Show branches, tags and submodules".into()], cx)
+        })
+        .on_click(cx.listener(|v, _, _, cx| v.toggle_refs_pane(cx)))
+        .into_any_element()
 }
 
 /// One row of the refs panel; `collapsed` for a header whose section is
