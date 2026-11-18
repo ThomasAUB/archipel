@@ -328,6 +328,23 @@ fn dashboard_filters_on_categories() {
 }
 
 #[test]
+fn dashboard_filters_on_typed_name() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let names =
+        |app: &App| -> Vec<String> { app.visible_rows().into_iter().map(|r| r.name).collect() };
+    e.app.set_name_filter("R1");
+    assert_eq!(e.app.name_filter(), "R1");
+    assert_eq!(names(&e.app), ["r1"], "case-insensitive substring");
+    e.app.set_name_filter("r");
+    assert_eq!(names(&e.app), ["r0", "r1", "r2"]);
+    e.app.set_name_filter("x");
+    assert!(names(&e.app).is_empty());
+    e.app.set_name_filter("");
+    assert_eq!(names(&e.app), ["r0", "r1", "r2"]);
+}
+
+#[test]
 fn categories_are_renamed_merged_and_removed() {
     let e = env(&[]);
     open_fresh(&e);

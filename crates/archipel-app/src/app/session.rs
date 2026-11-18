@@ -34,6 +34,9 @@ pub(super) struct Session {
     /// it lands, as that read may predate the change (a file saved meanwhile).
     pub(super) reread: HashSet<RepoId>,
     pub(super) drawer_open: bool,
+    /// Text typed on the dashboard: only repos whose name contains it
+    /// (case-insensitive) are listed. Not saved.
+    pub(super) name_filter: String,
     /// Running folder scan (launch from a directory).
     pub(super) scan: Option<CancelToken>,
     /// Submodules read per repo, while the dependency tree is shown.
@@ -165,6 +168,7 @@ impl App {
             pending: HashSet::new(),
             reread: HashSet::new(),
             drawer_open: false,
+            name_filter: String::new(),
             scan: None,
             dependencies: HashMap::new(),
             tree_pending: HashSet::new(),

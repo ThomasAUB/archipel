@@ -1,7 +1,7 @@
 //! Dashboard view state of the open project: rows (filtered and sorted),
 //! hidden repos, the UI state and the action context.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use archipel_model::RepoId;
 use archipel_model::ui_state::SortDirection;
@@ -75,10 +75,24 @@ impl App {
             .map(|r| (r.path.id(), r.category.as_deref()))
             .collect();
         let keys = category_filter_keys(categories.values().copied());
+        let name_filter = s.name_filter.to_lowercase();
+        // A worktree goes with its repo: listed when the repo's name matches.
+        let matching: Option<HashSet<RepoId>> = (!name_filter.is_empty()).then(|| {
+            s.rows
+                .iter()
+                .filter(|r| r.parent().is_none() && r.name.to_lowercase().contains(&name_filter))
+                .map(|r| r.id)
+                .collect()
+        });
         let shown: Vec<DashboardRow> = s
             .rows
             .iter()
             .filter(|r| s.ui.show_hidden || !r.hidden)
+            .filter(|r| {
+                matching
+                    .as_ref()
+                    .is_none_or(|m| m.contains(&r.parent().unwrap_or(r.id)))
+            })
             .filter(|r| {
                 // A worktree is in the category of its repo.
                 let id = r.parent().unwrap_or(r.id);
@@ -142,6 +156,26 @@ impl App {
     pub fn update_ui_state(&self, f: impl FnOnce(&mut UiState)) {
         if let Some(s) = lock(&self.session).as_mut() {
             f(&mut s.ui);
+        }
+        self.emit(AppEvent::UiStateChanged);
+    }
+
+    /// The dashboard's name filter (see [`App::set_name_filter`]).
+    #[must_use]
+    pub fn name_filter(&self) -> String {
+        lock(&self.session)
+            .as_ref()
+            .map_or_else(String::new, |s| s.name_filter.clone())
+    }
+
+    /// Lists only the repos whose name contains `text` (case-insensitive);
+    /// empty lists them all. Kept until the project closes, never saved.
+    pub fn set_name_filter(&self, text: &str) {
+        if let Some(s) = lock(&self.session).as_mut() {
+            if s.name_filter == text {
+                return;
+            }
+            text.clone_into(&mut s.name_filter);
         }
         self.emit(AppEvent::UiStateChanged);
     }

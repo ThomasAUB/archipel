@@ -387,7 +387,9 @@ impl Render for Workspace {
                     cx.stop_propagation();
                     return;
                 }
-                this.quick_edit_key(e, window, cx);
+                if !this.quick_edit_key(e, window, cx) {
+                    this.name_filter_key(e, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, a: &RunAction, w, cx| this.run_shortcut(&a.0, w, cx)))
             .on_action(cx.listener(|_, _: &NewWindow, _, cx| crate::windows::open(cx, None)))
