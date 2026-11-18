@@ -100,7 +100,8 @@ pub struct Panel {
     pub(crate) edit: Option<FileEdit>,
     /// The dialog adding a file to the `.gitignore`, while open.
     pub(crate) ignore: Option<IgnoreDialog>,
-    /// The force push armed by Push on a diverged branch: the button turns
+    /// The force push armed by Push on a branch behind its upstream
+    /// (diverged, or reset to an older commit): the button turns
     /// red, and a second click before [`ARM_TIME`](crate::armed::ARM_TIME)
     /// force pushes.
     force_push: Armed<ForcePush>,
@@ -375,8 +376,9 @@ pub fn push_current(a: &RepoActions, p: &RepoPath, op: &OpContext) -> Result<(),
     a.push(p, &request, op, op.cancel(), None)
 }
 
-/// A force push waiting for confirmation: the branch and its upstream
-/// diverged (rebased, amended), so a regular push would be rejected.
+/// A force push waiting for confirmation: the upstream has commits the
+/// branch lacks (rebased, amended, reset), so a regular push would be
+/// rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ForcePush {
     branch: String,
@@ -401,6 +403,24 @@ impl ForcePush {
             }
         };
         let upstream = format!("{}/{}", self.remote, self.remote_branch);
+        if self.ahead == 0 {
+            // Reset to an older commit, or simply not pulled yet: say both,
+            // since the force push drops the upstream's commits.
+            return vec![
+                format!(
+                    "{} is {} behind {upstream} with nothing to push: a regular push would be \
+                     rejected.",
+                    self.branch,
+                    commits(self.behind),
+                ),
+                format!(
+                    "Click again to force push: the {} only on {upstream} will be removed. Pull \
+                     instead to keep them.",
+                    commits(self.behind)
+                ),
+                format!("The push is refused if {upstream} moved since the last fetch."),
+            ];
+        }
         vec![
             format!(
                 "{} has diverged from {upstream} ({} ahead, {} behind): a regular push would be \
@@ -427,15 +447,16 @@ impl ForcePush {
     }
 }
 
-/// The current branch and its upstream when they diverged: a regular push
+/// The current branch and its upstream when the upstream has commits the
+/// branch lacks (diverged, or reset to an older commit): a regular push
 /// would be rejected as non fast-forward.
-fn diverged(summary: &RepoSummary) -> Option<(&str, &Upstream)> {
+fn needs_force(summary: &RepoSummary) -> Option<(&str, &Upstream)> {
     let upstream = summary.upstream.as_ref()?;
-    let diverged = upstream.ahead > 0 && upstream.behind > 0 && !upstream.gone;
-    diverged.then_some((summary.head.branch()?, upstream))
+    let rejected = upstream.behind > 0 && !upstream.gone;
+    rejected.then_some((summary.head.branch()?, upstream))
 }
 
-/// Push: a regular push, or on a diverged branch a Force push button
+/// Push: a regular push, or on a branch behind its upstream a Force push button
 /// waiting for its confirming second click.
 fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
     if let Some(force) = v.panel().force_push.take() {
@@ -446,7 +467,7 @@ fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
         .panel()
         .summary
         .as_ref()
-        .and_then(diverged)
+        .and_then(needs_force)
         .map(|(b, u)| (b.to_owned(), u.clone()))
     else {
         v.run_job_as(OpClass::Network, "Push".into(), cx, Box::new(push_current));
@@ -583,7 +604,7 @@ pub fn small(b: Stateful<Div>) -> Stateful<Div> {
     b.py_0().text_xs()
 }
 
-/// Push, or once armed on a diverged branch a red "Force push?" like the
+/// Push, or once armed on a branch behind its upstream a red "Force push?" like the
 /// armed Discard buttons, explained by its tooltip.
 fn push_button<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Stateful<Div> {
     let label = match v.panel().force_push.get() {
@@ -1140,16 +1161,38 @@ mod tests {
     }
 
     #[test]
-    fn only_a_diverged_branch_offers_a_force_push() {
+    fn a_branch_behind_its_upstream_offers_a_force_push() {
         let branch = || HeadState::Branch("feat".into());
         let rebased = summary(branch(), 4, 1, false);
-        assert_eq!(diverged(&rebased).map(|(b, _)| b), Some("feat"));
-        // Ahead only (fast-forward), behind only, upstream gone, detached.
-        assert!(diverged(&summary(branch(), 4, 0, false)).is_none());
-        assert!(diverged(&summary(branch(), 0, 1, false)).is_none());
-        assert!(diverged(&summary(branch(), 4, 1, true)).is_none());
+        assert_eq!(needs_force(&rebased).map(|(b, _)| b), Some("feat"));
+        // Reset to an older commit: behind only.
+        let reset = summary(branch(), 0, 2, false);
+        assert_eq!(needs_force(&reset).map(|(b, _)| b), Some("feat"));
+        // Ahead only (fast-forward), up to date, upstream gone, detached.
+        assert!(needs_force(&summary(branch(), 4, 0, false)).is_none());
+        assert!(needs_force(&summary(branch(), 0, 0, false)).is_none());
+        assert!(needs_force(&summary(branch(), 4, 1, true)).is_none());
         let detached = HeadState::Detached(Oid::from_hex(&"a".repeat(40)).unwrap());
-        assert!(diverged(&summary(detached, 4, 1, false)).is_none());
+        assert!(needs_force(&summary(detached, 4, 1, false)).is_none());
+    }
+
+    #[test]
+    fn a_reset_branch_explains_the_commits_it_removes() {
+        let force = ForcePush {
+            branch: "feat".into(),
+            remote: "origin".into(),
+            remote_branch: "feat".into(),
+            expected: Oid::from_hex(&"b".repeat(40)).unwrap(),
+            ahead: 0,
+            behind: 2,
+        };
+        let explanation = force.explanation().join("\n");
+        assert!(
+            explanation.contains("feat is 2 commits behind origin/feat"),
+            "{explanation}"
+        );
+        assert!(explanation.contains("will be removed"), "{explanation}");
+        assert!(explanation.contains("Pull instead"), "{explanation}");
     }
 
     #[test]
