@@ -163,7 +163,7 @@ impl RepoView {
 
     /// The ends of a multi-selection: the oldest commit (lowest in the
     /// graph), then the newest. Commits selected in between do not change
-    /// the diff, which goes from the oldest to the newest.
+    /// the diff, which holds the changes of the oldest to the newest.
     pub(super) fn compared(&self) -> Option<(Oid, Oid)> {
         if self.multi.len() < 2 {
             return None;
@@ -424,7 +424,7 @@ impl RepoView {
                 };
                 let at = match self.compared() {
                     Some((older, newer)) => Some(format!(
-                        "{}..{}",
+                        "{}^..{}",
                         older.short(SHORT_OID),
                         newer.short(SHORT_OID)
                     )),

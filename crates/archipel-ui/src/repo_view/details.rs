@@ -147,7 +147,8 @@ impl RepoView {
         Self::render_diff_details(el, &oid.to_hex(), doc, cx)
     }
 
-    /// The diff of a multi-selection, from its oldest commit to its newest.
+    /// The diff of a multi-selection: the changes of its commits from the
+    /// oldest to the newest, both included.
     fn render_compare(&mut self, (older, newer): (Oid, Oid), cx: &mut Context<Self>) -> AnyElement {
         let summary = |oid: Oid| {
             self.multi
