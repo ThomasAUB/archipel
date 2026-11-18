@@ -10,7 +10,7 @@ use std::sync::Arc;
 use archipel_app::forge::{ForgeStatus, pick_remote};
 use archipel_app::{App as Core, Command};
 use archipel_model::changes::{ChangeKind, FileChange, FileState};
-use archipel_model::ports::DiffSide;
+use archipel_model::ports::{DiffSide, RemoteInfo};
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, FetchRequest, ForceMode, PullMode, PushRequest,
     SequenceAction, StashApplyMode, StashRequest,
@@ -105,6 +105,9 @@ pub struct Panel {
     /// red, and a second click before [`ARM_TIME`](crate::armed::ARM_TIME)
     /// force pushes.
     force_push: Armed<ForcePush>,
+    /// Push on a branch without upstream in a repo with several remotes:
+    /// the remote to push it to, picked in the action row.
+    push_choice: Option<PushChoice>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -154,6 +157,7 @@ impl Panel {
             edit: None,
             ignore: None,
             force_push: Armed::default(),
+            push_choice: None,
             _subscriptions: subscriptions,
         }
     }
@@ -170,9 +174,19 @@ impl Panel {
 }
 
 /// The repo was refreshed: keeps its summary, reloads the open switcher.
+/// A pending push choice goes once its branch is no longer checked out or
+/// got an upstream.
 pub fn on_summary<V: Staging>(v: &mut V, summary: Option<&RepoSummary>, cx: &mut Context<V>) {
     if let Some(s) = summary {
         v.panel().summary = Some(s.clone());
+        let panel = v.panel();
+        if panel
+            .push_choice
+            .as_ref()
+            .is_some_and(|c| s.upstream.is_some() || s.head.branch() != Some(&c.branch))
+        {
+            panel.push_choice = None;
+        }
     }
     if v.panel().branches.is_some() {
         load_branches(v, cx);
@@ -376,6 +390,41 @@ pub fn push_current(a: &RepoActions, p: &RepoPath, op: &OpContext) -> Result<(),
     a.push(p, &request, op, op.cancel(), None)
 }
 
+/// A branch without upstream to push in a repo with several remotes: the
+/// remote is asked for, as pushing to `origin` may not be allowed (a fork
+/// added as another remote).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PushChoice {
+    branch: String,
+    /// The remotes offered, `origin` first.
+    remotes: Vec<RemoteInfo>,
+}
+
+impl PushChoice {
+    /// The choice for `branch` among `remotes`; `None` with fewer than two
+    /// remotes, where there is nothing to choose.
+    fn new(branch: String, mut remotes: Vec<RemoteInfo>) -> Option<Self> {
+        if remotes.len() < 2 {
+            return None;
+        }
+        if let Some(i) = remotes.iter().position(|r| r.name == "origin") {
+            let origin = remotes.remove(i);
+            remotes.insert(0, origin);
+        }
+        Some(Self { branch, remotes })
+    }
+
+    /// Pushes the branch to `remote` and tracks it from then on.
+    fn request(&self, remote: &str) -> PushRequest {
+        PushRequest {
+            remote: Some(remote.to_owned()),
+            refspec: Some(self.branch.clone()),
+            set_upstream: true,
+            ..PushRequest::default()
+        }
+    }
+}
+
 /// A force push waiting for confirmation: the upstream has commits the
 /// branch lacks (rebased, amended, reset), so a regular push would be
 /// rejected.
@@ -456,11 +505,28 @@ fn needs_force(summary: &RepoSummary) -> Option<(&str, &Upstream)> {
     rejected.then_some((summary.head.branch()?, upstream))
 }
 
-/// Push: a regular push, or on a branch behind its upstream a Force push button
-/// waiting for its confirming second click.
+/// Push: a regular push, on a branch without upstream the choice of the
+/// remote when there are several, or on a diverged branch a Force push
+/// button waiting for its confirming second click.
 fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
     if let Some(force) = v.panel().force_push.take() {
         force_push(v, &force, cx);
+        return;
+    }
+    if v.panel().push_choice.take().is_some() {
+        // Push clicked again while the remotes are offered: closes them.
+        cx.notify();
+        return;
+    }
+    let untracked = v
+        .panel()
+        .summary
+        .as_ref()
+        .filter(|s| s.upstream.is_none())
+        .and_then(|s| s.head.branch())
+        .map(str::to_owned);
+    if let Some(branch) = untracked {
+        ask_push_remote(v, branch, window, cx);
         return;
     }
     let Some((branch, upstream)) = v
@@ -501,6 +567,84 @@ fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
         });
     })
     .detach();
+}
+
+/// Pushes `branch`, which has no upstream: to the only remote, or once
+/// picked among several (read off the UI thread).
+fn ask_push_remote<V: Staging>(
+    v: &mut V,
+    branch: String,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let remotes = v.core().repo_actions().ports().remotes.clone();
+    let path = v.repo_path().clone();
+    let task = cx.background_spawn(async move { remotes.remotes(&path) });
+    cx.spawn_in(window, async move |this, cx| {
+        let result = task.await;
+        let _ = this.update(cx, |v: &mut V, cx| match result {
+            Ok(remotes) => match PushChoice::new(branch, remotes) {
+                Some(choice) => {
+                    v.panel().push_choice = Some(choice);
+                    cx.notify();
+                }
+                None => {
+                    v.run_job_as(OpClass::Network, "Push".into(), cx, Box::new(push_current));
+                }
+            },
+            Err(e) => v.report(format!("Push failed: {e}"), cx),
+        });
+    })
+    .detach();
+}
+
+/// Pushes the branch of the pending choice to `remote`.
+fn push_to<V: Staging>(v: &mut V, remote: &str, cx: &mut Context<V>) {
+    let Some(choice) = v.panel().push_choice.take() else {
+        return;
+    };
+    let request = choice.request(remote);
+    v.run_job_as(
+        OpClass::Network,
+        format!("Push {} to {remote}", choice.branch),
+        cx,
+        Box::new(move |a, p, op| a.push(p, &request, op, op.cancel(), None)),
+    );
+    cx.notify();
+}
+
+/// The remotes offered for the pending push choice, `origin` first, each
+/// with its URL as tooltip, then Cancel.
+fn render_push_choice<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
+    let choice = v.panel().push_choice.clone()?;
+    let mut remotes = div().flex().gap_1();
+    for (i, remote) in choice.remotes.iter().enumerate() {
+        let name = remote.name.clone();
+        let url = [remote.url.clone()];
+        remotes = remotes.child(
+            small(button(("st-push-to", i), name.clone(), cx))
+                .tooltip(move |_, cx| TextTooltip::view(&url, cx))
+                .on_click(cx.listener(move |v: &mut V, _, _, cx| push_to(v, &name, cx))),
+        );
+    }
+    let cancel = small(button("st-push-cancel", "Cancel", cx)).on_click(cx.listener(
+        |v: &mut V, _, _, cx| {
+            v.panel().push_choice = None;
+            cx.notify();
+        },
+    ));
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .border_1()
+            .border_color(color(cx, T::Accent))
+            .child(format!("Push {} to", choice.branch))
+            .child(remotes.child(cancel))
+            .into_any_element(),
+    )
 }
 
 /// Turns Push into a red Force push button until a second click or
@@ -670,6 +814,7 @@ pub fn render_actions<V: Staging>(
             a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
         }))
         .child(push_button(v, cx))
+        .children(render_push_choice(v, cx))
         .children(pull_request_button(v, cx))
         .child(job("st-stash", "Stash", write, cx, |a, p, _| {
             a.stash_push(p, &StashRequest::default()).map(drop)
@@ -1137,6 +1282,27 @@ mod tests {
     use archipel_model::{ChangeCounts, ChangedFiles, HeadState, Timestamp};
 
     use super::*;
+
+    #[test]
+    fn push_choice_offers_origin_first_and_only_among_several_remotes() {
+        let remote = |name: &str| RemoteInfo {
+            name: name.into(),
+            url: format!("https://example.com/{name}.git"),
+        };
+        assert_eq!(PushChoice::new("feat".into(), vec![remote("origin")]), None);
+        assert_eq!(PushChoice::new("feat".into(), Vec::new()), None);
+        let choice = PushChoice::new(
+            "feat".into(),
+            vec![remote("fork"), remote("origin"), remote("mirror")],
+        )
+        .unwrap();
+        let names: Vec<&str> = choice.remotes.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["origin", "fork", "mirror"]);
+        let request = choice.request("fork");
+        assert_eq!(request.remote.as_deref(), Some("fork"));
+        assert_eq!(request.refspec.as_deref(), Some("feat"));
+        assert!(request.set_upstream);
+    }
 
     fn summary(head: HeadState, ahead: u32, behind: u32, gone: bool) -> RepoSummary {
         RepoSummary {
