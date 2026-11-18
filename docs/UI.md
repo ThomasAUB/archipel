@@ -75,7 +75,7 @@ too; prefer the names of this document in prose and in new code.
 | Name | What it is |
 | ---- | ---------- |
 | **Dashboard Tab** | Always the first tab; shows the Dashboard. |
-| **Repo Tab** | One per opened repo; shows its Repo View. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs. Drag a repo tab onto another to reorder them (the Dashboard Tab stays first). |
+| **Repo Tab** | One per opened repo; shows its Repo View. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs. Drag a repo tab onto another to reorder them (the Dashboard Tab stays first). Middle-click a repo tab to close it. |
 | **Tab Menu** | Right-click on a tab: Close, Close others, Close tabs to the right, Close all. (`Menu::Tab`, `Workspace::tab_menu`) |
 
 ## 4. Dashboard
