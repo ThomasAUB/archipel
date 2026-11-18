@@ -147,7 +147,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 | **Details Pane** | Right pane, follows the selection: the **Commit Details** (summary, author, id, changed files) or **Stash Details** (message, base commit, Apply / Pop / Drop); for the WIP Row, the Staging Panel without its Repo Actions Bar (it is in the Repo Toolbar). (`render_details`) |
 | **Open Diff** | A file clicked in the Details Pane opens its Diff View in place of the Commit Graph; Esc goes back. Either one file or all files of a commit / stash. (`OpenDiff`) |
 | **Splitter** | Draggable separator resizing the Refs Panel and the Details Pane (widths saved per project). (`widgets::splitter`, `Pane`) |
-| **Graph Menu** | Right-click on a commit, a multi-selection of commits (Squash, Copy commit ids), ref, stash, submodule or the Graph Header: checkout, branch, tag, merge, rebase, cherry-pick, revert, squash, reset, delete… (`MenuTarget`, `render_menu`) |
+| **Graph Menu** | Right-click on a commit, a multi-selection of commits (Cherry-pick, Squash, Copy commit ids), ref, stash, submodule or the Graph Header: checkout, branch, tag, merge, rebase, cherry-pick, revert, squash, reset, delete… (`MenuTarget`, `render_menu`) |
 | **Drop Menu** | Shown when a branch is dropped on another: merge, rebase, fast-forward. Never a silent action. |
 | **Confirm Dialog** | Modal asking before an action that may lose work. (`render_confirm`) |
 | **Squash Dialog** | Modal opened from the Graph Menu once the commits to squash are checked: the combined messages to edit, Squash / Cancel. (`render_squash`) |

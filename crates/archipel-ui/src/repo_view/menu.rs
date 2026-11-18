@@ -55,7 +55,8 @@ pub(super) enum MenuTarget {
 pub(super) enum MenuAction {
     Name(NameForm),
     Checkout(CheckoutTarget),
-    CherryPick(Oid),
+    /// Cherry-picks these commits one by one, oldest first.
+    CherryPick(Vec<Oid>),
     Revert(Oid),
     /// Opens the squash dialog once the range is checked.
     Squash(SquashRange),
@@ -209,7 +210,7 @@ fn commit_entries(oid: Oid, refs: &[RefTip], current: Option<&str>) -> Vec<MenuE
             A::Checkout(CheckoutTarget::Detached(oid)),
         ),
         MenuEntry::Separator,
-        item("Cherry-pick", A::CherryPick(oid)),
+        item("Cherry-pick", A::CherryPick(vec![oid])),
         item("Revert", A::Revert(oid)),
     ];
     // Squashes rewrite the current branch: offered on any commit, refused
@@ -327,6 +328,10 @@ fn commits_entries(oids: &[Oid]) -> Vec<MenuEntry> {
     let ids: Vec<String> = oids.iter().map(Oid::to_hex).collect();
     vec![
         item(
+            format!("Cherry-pick {} commits", oids.len()),
+            A::CherryPick(oids.iter().rev().copied().collect()),
+        ),
+        item(
             format!("Squash {} commits…", oids.len()),
             A::Squash(SquashRange::Selected(oids.to_vec())),
         ),
@@ -366,7 +371,7 @@ fn ref_entries(
     {
         out.push(item(
             format!("Cherry-pick tip of {name}"),
-            A::CherryPick(tip.target),
+            A::CherryPick(vec![tip.target]),
         ));
     }
     out.push(item(
@@ -657,13 +662,7 @@ impl RepoView {
         match action {
             MenuAction::Name(form) => self.open_name_form(Some(form), window, cx),
             MenuAction::Checkout(target) => self.checkout(target, cx),
-            MenuAction::CherryPick(oid) => {
-                self.run(
-                    format!("Cherry-pick {}", oid.short(SHORT_OID)),
-                    cx,
-                    move |a, p, _| a.cherry_pick(p, &[oid]),
-                );
-            }
+            MenuAction::CherryPick(oids) => self.cherry_pick(oids, cx),
             MenuAction::Revert(oid) => {
                 self.run(
                     format!("Revert {}", oid.short(SHORT_OID)),
@@ -992,16 +991,16 @@ mod tests {
     }
 
     #[test]
-    fn several_commits_menu_squashes_them() {
+    fn several_commits_menu_cherry_picks_and_squashes_them() {
         let oids = vec![
             Oid::from_bytes(&[5; 20]).unwrap(),
             Oid::from_bytes(&[6; 20]).unwrap(),
         ];
         let entries = menu_entries(&MenuTarget::Commits(oids.clone()), Some("main"), |_| true);
-        assert_eq!(
-            actions(&entries)[0],
-            &MenuAction::Squash(SquashRange::Selected(oids))
-        );
+        let actions = actions(&entries);
+        // Cherry-picked oldest first.
+        assert_eq!(actions[0], &MenuAction::CherryPick(vec![oids[1], oids[0]]));
+        assert_eq!(actions[1], &MenuAction::Squash(SquashRange::Selected(oids)));
     }
 
     #[test]
@@ -1086,9 +1085,9 @@ mod tests {
             )))
         );
         assert!(actions.contains(&&MenuAction::Merge("feat".into())));
-        assert!(actions.contains(&&MenuAction::CherryPick(
+        assert!(actions.contains(&&MenuAction::CherryPick(vec![
             tip("feat", RefKind::LocalBranch).target
-        )));
+        ])));
         assert!(actions.contains(&&MenuAction::Name(NameForm::Rename("feat".into()))));
         assert!(actions.contains(&&MenuAction::DeleteBranch("feat".into(), DeleteMode::Force)));
     }
