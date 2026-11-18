@@ -14,7 +14,7 @@ use crate::changes::FileChange;
 use crate::diff::FileDiff;
 use crate::error::{GitError, ProjectError, StoreError, WatchError};
 use crate::forecast::{MergeForecast, MergeStrategy};
-use crate::history::{CommitMeta, TopologyNode, WalkOrder};
+use crate::history::{CommitMeta, CommitText, TopologyNode, WalkOrder};
 use crate::ids::{Oid, ProjectId, RepoId, RepoPath};
 use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefSnapshot};
 use crate::ports::{
@@ -75,6 +75,9 @@ pub struct FakeRepo {
     pub remotes: Vec<RemoteInfo>,
     /// History in display order.
     pub history: Vec<(TopologyNode, CommitMeta)>,
+    /// Full commit messages; a commit missing here has its summary as
+    /// message.
+    pub messages: HashMap<Oid, String>,
     /// Churn, newest first.
     pub churn: Vec<CommitChurn>,
     /// Commit diffs.
@@ -111,6 +114,7 @@ impl Default for FakeRepo {
             stashes: Vec::new(),
             remotes: Vec::new(),
             history: Vec::new(),
+            messages: HashMap::new(),
             churn: Vec::new(),
             diffs: HashMap::new(),
             refs: BTreeMap::new(),
@@ -345,11 +349,31 @@ impl HistoryReader for FakeGit {
     }
     fn commit_message(&self, repo: &RepoPath, commit: Oid) -> Result<String, GitError> {
         self.read(repo, "commit_message", |r| {
-            r.history
-                .iter()
-                .find(|(n, _)| n.oid == commit)
-                .map(|(_, m)| m.summary.clone())
-                .unwrap_or_default()
+            r.messages.get(&commit).cloned().unwrap_or_else(|| {
+                r.history
+                    .iter()
+                    .find(|(n, _)| n.oid == commit)
+                    .map(|(_, m)| m.summary.clone())
+                    .unwrap_or_default()
+            })
+        })
+    }
+    fn commit_texts(&self, repo: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitText>, GitError> {
+        self.read(repo, "commit_texts", |r| {
+            oids.iter()
+                .filter_map(|o| {
+                    let (_, meta) = r.history.iter().find(|(n, _)| n.oid == *o)?;
+                    let message = r
+                        .messages
+                        .get(o)
+                        .cloned()
+                        .unwrap_or_else(|| meta.summary.clone());
+                    Some(CommitText {
+                        meta: meta.clone(),
+                        message,
+                    })
+                })
+                .collect()
         })
     }
     fn is_ancestor(

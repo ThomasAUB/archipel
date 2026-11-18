@@ -9,7 +9,8 @@
 //! The view is split by concern: [`loading`] (background reads and the
 //! selection), [`graph_paint`] (the graph list), [`refs_panel`],
 //! [`details`], [`navigation`] (keys and the open diff), [`operations`]
-//! (Git writes), [`menu`] (right-click menus) and [`dialogs`].
+//! (Git writes), [`menu`] (right-click menus), [`search`] (find in the
+//! graph) and [`dialogs`].
 
 mod details;
 mod dialogs;
@@ -21,6 +22,7 @@ mod navigation;
 mod operations;
 mod refs_panel;
 mod reword;
+mod search;
 mod squash;
 mod worktrees;
 
@@ -208,6 +210,8 @@ pub struct RepoView {
     squash: Option<squash::SquashDialog>,
     /// The message of the selected commit, while edited in the details pane.
     reword: Option<reword::RewordEdit>,
+    /// The find bar above the graph (`Ctrl+F`).
+    search: Option<search::GraphSearch>,
     prompt_focus: FocusHandle,
     status: Option<String>,
     refs: Arc<RefList>,
@@ -292,6 +296,7 @@ impl RepoView {
             confirm: None,
             squash: None,
             reword: None,
+            search: None,
             prompt_focus: cx.focus_handle(),
             status: None,
             refs: Arc::default(),
@@ -670,6 +675,9 @@ impl Render for RepoView {
                     cx.stop_propagation();
                     cx.notify();
                 }
+            }))
+            .on_key_down(cx.listener(|v, e: &KeyDownEvent, window, cx| {
+                v.on_find_key(e, window, cx);
             }))
             .child(self.render_toolbar(cx))
             .children(name_form)

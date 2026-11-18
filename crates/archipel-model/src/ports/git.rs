@@ -16,7 +16,7 @@ use crate::changes::FileChange;
 use crate::diff::{FileDiff, NumStat};
 use crate::error::GitError;
 use crate::forecast::{MergeForecast, MergeStrategy};
-use crate::history::{CommitMeta, SquashPreview, TopologyNode, WalkOrder};
+use crate::history::{CommitMeta, CommitText, SquashPreview, TopologyNode, WalkOrder};
 use crate::ids::{Oid, RepoPath};
 use crate::journal::RefSnapshot;
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -96,6 +96,9 @@ pub trait HistoryReader: Send + Sync {
     fn commit_meta(&self, repo: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitMeta>, GitError>;
     /// Full message of a commit, trailing newlines trimmed.
     fn commit_message(&self, repo: &RepoPath, commit: Oid) -> Result<String, GitError>;
+    /// Metadata and full message of the given commits (in the same order),
+    /// for history search: one read per commit.
+    fn commit_texts(&self, repo: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitText>, GitError>;
     /// Whether `ancestor` is reachable from `descendant`.
     fn is_ancestor(
         &self,

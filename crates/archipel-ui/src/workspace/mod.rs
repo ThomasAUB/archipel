@@ -127,6 +127,8 @@ pub struct Workspace {
     title: String,
     /// Release whose status bar badge the user dismissed.
     dismissed_update: Option<String>,
+    /// Repo tab last given the keyboard: a tab shown again gets it back.
+    focused_tab: Option<RepoId>,
 }
 
 impl Workspace {
@@ -187,6 +189,7 @@ impl Workspace {
             opening: None,
             title: String::new(),
             dismissed_update: None,
+            focused_tab: None,
         }
     }
 

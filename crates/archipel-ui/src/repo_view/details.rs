@@ -115,7 +115,7 @@ impl RepoView {
                     .child(
                         div()
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .child(title),
+                            .child(self.highlighted(title, cx)),
                     );
                 if !body.is_empty() {
                     text = text.child(
@@ -125,7 +125,7 @@ impl RepoView {
                             .overflow_y_scrollbar()
                             .text_sm()
                             .text_color(color(cx, T::FgMuted))
-                            .child(body.to_owned()),
+                            .child(self.highlighted(body.to_owned(), cx)),
                     );
                 }
                 el = el.child(text);

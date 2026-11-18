@@ -2,7 +2,7 @@
 
 use std::ops::ControlFlow;
 
-use archipel_model::history::{CommitMeta, TopologyNode, WalkOrder};
+use archipel_model::history::{CommitMeta, CommitText, TopologyNode, WalkOrder};
 use archipel_model::ports::HistoryReader;
 use archipel_model::{CancelToken, GitError, Oid, RepoPath, Timestamp};
 use gix::bstr::ByteSlice;
@@ -84,20 +84,14 @@ impl HistoryReader for GixReader {
     fn commit_meta(&self, path: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitMeta>, GitError> {
         let repo = self.open(path)?;
         oids.iter()
-            .map(|oid| {
-                let commit = repo.find_commit(to_gix(*oid)?).map_err(backend)?;
-                let decoded = commit.decode().map_err(backend)?;
-                let author = decoded.author().map_err(backend)?;
-                let committer = decoded.committer().map_err(backend)?;
-                Ok(CommitMeta {
-                    oid: *oid,
-                    summary: decoded.message_summary().to_str_lossy().into_owned(),
-                    author_name: author.name.to_str_lossy().into_owned(),
-                    author_email: author.email.to_str_lossy().into_owned(),
-                    author_time: Timestamp(author.time().map_err(backend)?.seconds),
-                    commit_time: Timestamp(committer.time().map_err(backend)?.seconds),
-                })
-            })
+            .map(|oid| read_commit(&repo, *oid, false).map(|t| t.meta))
+            .collect()
+    }
+
+    fn commit_texts(&self, path: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitText>, GitError> {
+        let repo = self.open(path)?;
+        oids.iter()
+            .map(|oid| read_commit(&repo, *oid, true))
             .collect()
     }
 
@@ -123,4 +117,28 @@ impl HistoryReader for GixReader {
         let base = repo.merge_base(ancestor, to_gix(descendant)?);
         Ok(matches!(base, Ok(Some(b)) if b.detach() == ancestor))
     }
+}
+
+/// Decodes commit `oid`: its metadata, and its full message when
+/// `message` (else left empty).
+fn read_commit(repo: &gix::Repository, oid: Oid, message: bool) -> Result<CommitText, GitError> {
+    let commit = repo.find_commit(to_gix(oid)?).map_err(backend)?;
+    let decoded = commit.decode().map_err(backend)?;
+    let author = decoded.author().map_err(backend)?;
+    let committer = decoded.committer().map_err(backend)?;
+    Ok(CommitText {
+        meta: CommitMeta {
+            oid,
+            summary: decoded.message_summary().to_str_lossy().into_owned(),
+            author_name: author.name.to_str_lossy().into_owned(),
+            author_email: author.email.to_str_lossy().into_owned(),
+            author_time: Timestamp(author.time().map_err(backend)?.seconds),
+            commit_time: Timestamp(committer.time().map_err(backend)?.seconds),
+        },
+        message: if message {
+            decoded.message.to_str_lossy().trim_end().to_owned()
+        } else {
+            String::new()
+        },
+    })
 }

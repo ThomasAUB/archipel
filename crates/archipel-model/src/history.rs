@@ -55,6 +55,17 @@ impl CommitMeta {
     }
 }
 
+/// What history search reads of a commit: its metadata and its full
+/// message. Read per search chunk and dropped, never cached: messages can
+/// be long.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitText {
+    /// Display metadata.
+    pub meta: CommitMeta,
+    /// Full message, summary included, trailing whitespace trimmed.
+    pub message: String,
+}
+
 /// Order of the topology walk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WalkOrder {

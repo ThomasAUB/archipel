@@ -181,6 +181,10 @@ fn history_agrees_and_is_topological() {
             cli.commit_meta(&path, &oids).unwrap(),
             gix.commit_meta(&path, &oids).unwrap()
         );
+        assert_eq!(
+            cli.commit_texts(&path, &oids).unwrap(),
+            gix.commit_texts(&path, &oids).unwrap()
+        );
         let (first, last) = (b[0].oid, b[b.len() - 1].oid);
         assert_eq!(
             cli.is_ancestor(&path, last, first).unwrap(),
@@ -308,5 +312,35 @@ fn cached_gix_handles_see_new_commits_refs_and_config() {
     assert_eq!(
         gix.summary(&path).unwrap().upstream.unwrap().name,
         "origin/main"
+    );
+}
+
+#[test]
+fn commit_texts_hold_the_full_message() {
+    let repo = archipel_fixtures::TestRepo::new().unwrap();
+    repo.write("a.txt", "a").unwrap();
+    let one = repo.commit_all("one").unwrap();
+    repo.write("b.txt", "b").unwrap();
+    let two = repo
+        .commit_all("Fix the parser\n\nCloses #42.\n\nCo-authored-by: Dev <dev@example.com>\n")
+        .unwrap();
+    let path = RepoPath::new(repo.path());
+    let oids = [
+        archipel_model::Oid::from_hex(&two).unwrap(),
+        archipel_model::Oid::from_hex(&one).unwrap(),
+    ];
+    let (cli, gix) = (GitCli::default(), GixReader::default());
+    let texts = gix.commit_texts(&path, &oids).unwrap();
+    assert_eq!(cli.commit_texts(&path, &oids).unwrap(), texts);
+    assert_eq!(texts[0].meta.oid, oids[0]);
+    assert_eq!(texts[0].meta.summary, "Fix the parser");
+    assert_eq!(
+        texts[0].message,
+        "Fix the parser\n\nCloses #42.\n\nCo-authored-by: Dev <dev@example.com>"
+    );
+    assert_eq!(texts[1].message, "one");
+    assert_eq!(
+        texts[0].meta,
+        gix.commit_meta(&path, &oids[..1]).unwrap()[0]
     );
 }

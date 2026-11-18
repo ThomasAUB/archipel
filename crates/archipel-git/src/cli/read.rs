@@ -5,7 +5,7 @@ use std::thread;
 
 use archipel_model::changes::FileChange;
 use archipel_model::diff::FileDiff;
-use archipel_model::history::{CommitMeta, TopologyNode, WalkOrder};
+use archipel_model::history::{CommitMeta, CommitText, TopologyNode, WalkOrder};
 use archipel_model::journal::{HeadRef, RefSnapshot};
 use archipel_model::ports::{
     ChurnReader, CommitChurn, DiffReader, DiffSide, HistoryReader, RefReader, RemoteInfo,
@@ -28,6 +28,8 @@ use crate::parse::refs::{
 use crate::parse::status::{StatusReport, parse_status};
 
 const META_FORMAT: &str = "--format=%H%x1f%s%x1f%an%x1f%ae%x1f%at%x1f%ct";
+/// [`META_FORMAT`] then the full message; records separated by NUL (`-z`).
+const TEXT_FORMAT: &str = "--format=%H%x1f%s%x1f%an%x1f%ae%x1f%at%x1f%ct%x1f%B";
 
 impl GitCli {
     fn read(&self, repo: &RepoPath, args: &[&str]) -> Result<String, GitError> {
@@ -372,23 +374,38 @@ impl HistoryReader for GitCli {
         if oids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut input = String::with_capacity(oids.len() * 65);
-        for o in oids {
-            input.push_str(&o.to_hex());
-            input.push('\n');
-        }
         let out = self.runner.run(
             Cmd::new(
                 repo.as_path(),
                 CmdKind::Read,
                 &["log", "--no-walk=unsorted", "--stdin", META_FORMAT],
             )
-            .stdin(input),
+            .stdin(oid_lines(oids)),
         )?;
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| !l.is_empty())
             .map(parse_meta)
+            .collect()
+    }
+
+    fn commit_texts(&self, repo: &RepoPath, oids: &[Oid]) -> Result<Vec<CommitText>, GitError> {
+        if oids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let out = self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &["log", "-z", "--no-walk=unsorted", "--stdin", TEXT_FORMAT],
+            )
+            .stdin(oid_lines(oids)),
+        )?;
+        String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .map(|r| r.trim_start_matches('\n'))
+            .filter(|r| !r.is_empty())
+            .map(parse_text)
             .collect()
     }
 
@@ -422,6 +439,31 @@ impl HistoryReader for GitCli {
         )?;
         Ok(out.code == Some(0))
     }
+}
+
+/// Commit ids one per line, for `--stdin`.
+fn oid_lines(oids: &[Oid]) -> String {
+    let mut input = String::with_capacity(oids.len() * 65);
+    for o in oids {
+        input.push_str(&o.to_hex());
+        input.push('\n');
+    }
+    input
+}
+
+/// A [`TEXT_FORMAT`] record: the metadata fields, then the message (which
+/// may hold anything, so it is split off last).
+fn parse_text(record: &str) -> Result<CommitText, GitError> {
+    let Some(i) = record.match_indices('\x1f').nth(5).map(|(i, _)| i) else {
+        return Err(GitError::Parse {
+            what: "git log text",
+            detail: record.to_owned(),
+        });
+    };
+    Ok(CommitText {
+        meta: parse_meta(&record[..i])?,
+        message: record[i + 1..].trim_end().to_owned(),
+    })
 }
 
 fn parse_meta(line: &str) -> Result<CommitMeta, GitError> {

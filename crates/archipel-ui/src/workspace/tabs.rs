@@ -155,18 +155,26 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Entity<RepoView>> {
         let ui = self.core.ui_state()?;
-        let TabState::Repo(id) = ui.tabs.get(ui.active_tab)? else {
+        let Some(TabState::Repo(id)) = ui.tabs.get(ui.active_tab) else {
+            self.focused_tab = None;
             return None;
         };
-        if let Some(view) = self.repo_views.get(id) {
-            return Some(view.clone());
+        let view = if let Some(view) = self.repo_views.get(id) {
+            view.clone()
+        } else {
+            let row = self.core.row(*id)?;
+            let core = self.core.clone();
+            let view = cx.new(|cx| RepoView::new(core, row.path.clone(), row.label(), window, cx));
+            // Lives as long as the view.
+            cx.subscribe_in(&view, window, Self::on_staging).detach();
+            self.repo_views.insert(*id, view.clone());
+            view
+        };
+        // A tab just shown takes the keyboard, once no overlay holds it.
+        if self.focused_tab != Some(*id) && self.overlay.is_none() {
+            self.focused_tab = Some(*id);
+            view.update(cx, |v, cx| v.focus_graph(window, cx));
         }
-        let row = self.core.row(*id)?;
-        let core = self.core.clone();
-        let view = cx.new(|cx| RepoView::new(core, row.path.clone(), row.label(), window, cx));
-        // Lives as long as the view.
-        cx.subscribe_in(&view, window, Self::on_staging).detach();
-        self.repo_views.insert(*id, view.clone());
         Some(view)
     }
 

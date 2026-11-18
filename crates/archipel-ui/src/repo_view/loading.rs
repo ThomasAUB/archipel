@@ -93,6 +93,7 @@ impl RepoView {
                         v.load_stashes(cx);
                         v.load_head_link(cx);
                         v.place_selection(cx);
+                        v.refresh_search(cx);
                     }
                     Err(e) => v.graph_error = Some(e),
                 }

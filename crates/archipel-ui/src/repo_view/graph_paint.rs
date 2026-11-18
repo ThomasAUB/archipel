@@ -56,6 +56,7 @@ impl RepoView {
         }
         let columns = self.shown_columns();
         let header = self.render_graph_header(&columns, cx);
+        let search = self.render_search(cx);
         let count = usize::try_from(self.item_count()).unwrap_or(0);
         let list = uniform_list(
             "graph",
@@ -122,6 +123,7 @@ impl RepoView {
             .size_full()
             .flex()
             .flex_col()
+            .children(search)
             .child(header)
             .child(
                 div()
@@ -283,16 +285,14 @@ impl RepoView {
         let width = px(lane_x(self.lane_count()));
         // Before the lanes, which keep `cx` borrowed.
         let worktree_badges = self.worktree_badges(row.oid, row.row, cx);
+        let summary = self.highlighted(
+            meta.as_ref().map(|m| m.summary.clone()).unwrap_or_default(),
+            cx,
+        );
         let lanes = graph_cell(row, stash_lane, wip_lane, cx);
-        let (summary, author, time) = meta.map_or_else(
-            || (String::new(), String::new(), None),
-            |m| {
-                (
-                    m.summary.clone(),
-                    m.author_name.clone(),
-                    Some(m.commit_time),
-                )
-            },
+        let (author, time) = meta.map_or_else(
+            || (String::new(), None),
+            |m| (m.author_name.clone(), Some(m.commit_time)),
         );
         let oid = row.oid;
         let index = row.row;
@@ -400,6 +400,10 @@ impl RepoView {
             .items_center()
             .gap_2()
             .pr_3()
+            // A match of the find bar: tinted (unless selected).
+            .when(!selected && self.is_hit(index), |d| {
+                d.bg(color(cx, T::StatusWarning).opacity(0.18))
+            })
             // The checked-out commit: tinted (unless selected), with an
             // accent bar on its edge.
             .when(is_head, |d| {
