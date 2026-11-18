@@ -117,9 +117,10 @@ impl Workspace {
         // than its footer buttons; capped at half the window.
         let (size, xs) = (text_size(cx), rems(0.75).to_pixels(window.rem_size()));
         let measure = |text: &str, size| text_width(text, size, window, cx).ceil();
-        // List padding (px_1) and right border, plus a pixel of slack so
+        // List padding (pl_1, and pr_3 keeping rows clear of the overlaid
+        // scrollbar thumb) and right border, plus a pixel of slack so
         // rounding never truncates the longest name.
-        let frame = 8.0 + 1.0 + 1.0;
+        let frame = 4.0 + 12.0 + 1.0 + 1.0;
         // Repo row: left padding (pl_5 grouped, else px_2), right padding,
         // dot, and the gaps around the name.
         let row_frame = if grouped { 20.0 } else { 8.0 } + 8.0 + 8.0 + 2.0 * 8.0;
@@ -265,7 +266,10 @@ impl Workspace {
                     .overflow_y_scroll()
                     .track_scroll(&self.sidebar_scroll)
                     .vertical_scrollbar(&self.sidebar_scroll)
-                    .px_1()
+                    // The scrollbar is drawn over the list: the right
+                    // gutter keeps the row highlights out from under it.
+                    .pl_1()
+                    .pr_3()
                     .children(repos),
             )
             .child(
