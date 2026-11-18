@@ -8,7 +8,9 @@ use archipel_model::RepoId;
 use archipel_model::ui_state::TabState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, MouseButton, MouseDownEvent, SharedString, Window, div, px};
+use gpui_kit::{
+    Context, Entity, MouseButton, MouseDownEvent, MouseUpEvent, SharedString, Window, div, px,
+};
 
 use crate::repo_view::RepoView;
 use crate::staging::StagingEvent;
@@ -121,9 +123,17 @@ impl Workspace {
                 .child(label.clone());
             if i > 0 {
                 let label = SharedString::from(label);
-                el = el.on_drag(TabDrag(i), move |_, _, _, cx| {
-                    cx.new(|_| TabGhost(label.clone()))
-                });
+                el = el
+                    .on_drag(TabDrag(i), move |_, _, _, cx| {
+                        cx.new(|_| TabGhost(label.clone()))
+                    })
+                    // Middle click closes a repo tab, as in a browser.
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            this.dispatch(Command::CloseTab(i), cx);
+                        }),
+                    );
                 el = el.child(
                     div()
                         .id(SharedString::from(format!("tab-close-{i}")))
