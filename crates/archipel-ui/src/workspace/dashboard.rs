@@ -77,29 +77,122 @@ impl Workspace {
 
     /// ↑ / ↓ / Esc on the dashboard go to the quick edit pane (its open
     /// diff first), unless a menu or overlay is up or an input has focus.
+    /// Whether the pane took the key.
     pub(super) fn quick_edit_key(
         &mut self,
         e: &KeyDownEvent,
         window: &Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if !unmodified(e.keystroke.modifiers) {
-            return;
+            return false;
         }
         if self.overlay.is_some() || self.menu.is_some() {
-            return;
+            return false;
         }
         let on_dashboard = self
             .core
             .ui_state()
             .is_some_and(|ui| !matches!(ui.tabs.get(ui.active_tab), Some(TabState::Repo(_))));
         let Some((pane, _)) = &self.quick_edit else {
-            return;
+            return false;
         };
         let keys_free = self.focus.is_focused(window) || pane.read(cx).is_focused(window);
         if on_dashboard && keys_free && pane.update(cx, |p, cx| p.on_key(&e.keystroke.key, cx)) {
             cx.stop_propagation();
+            return true;
         }
+        false
+    }
+
+    /// Typing on the dashboard filters the repos by name: a character adds
+    /// to the filter, Backspace removes the last one, Esc clears it (once
+    /// the quick edit pane, which hears it first, is closed). Only when the
+    /// dashboard itself or the quick edit pane has focus, not an input, and
+    /// no menu or overlay is up.
+    pub(super) fn name_filter_key(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let m = e.keystroke.modifiers;
+        if m.control || m.alt || m.platform {
+            return;
+        }
+        if self.overlay.is_some() || self.menu.is_some() || self.core.project().is_none() {
+            return;
+        }
+        let on_dashboard = self
+            .core
+            .ui_state()
+            .is_some_and(|ui| !matches!(ui.tabs.get(ui.active_tab), Some(TabState::Repo(_))));
+        let pane_focused = self
+            .quick_edit
+            .as_ref()
+            .is_some_and(|(p, _)| p.read(cx).is_focused(window));
+        if !on_dashboard || !(self.focus.is_focused(window) || pane_focused) {
+            return;
+        }
+        let mut filter = self.core.name_filter();
+        match e.keystroke.key.as_str() {
+            "backspace" if !filter.is_empty() => {
+                filter.pop();
+            }
+            "escape" if !filter.is_empty() && self.quick_edit.is_none() => filter.clear(),
+            _ => {
+                let Some(typed) = e.keystroke.key_char.as_deref() else {
+                    return;
+                };
+                // A leading space is no name.
+                if typed.chars().any(char::is_control)
+                    || filter.is_empty() && typed.trim().is_empty()
+                {
+                    return;
+                }
+                filter.push_str(typed);
+            }
+        }
+        self.core.set_name_filter(&filter);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// The name filter typed on the dashboard, with a button clearing it.
+    fn render_name_filter(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let filter = self.core.name_filter();
+        if filter.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .rounded(radius(cx))
+                .border_1()
+                .border_color(color(cx, T::Accent))
+                .text_xs()
+                .child(div().text_color(color(cx, T::FgMuted)).child("Name:"))
+                .child(div().font_family(crate::theme::mono_font(cx)).child(filter))
+                .child(
+                    div()
+                        .id("name-filter-clear")
+                        .cursor_pointer()
+                        .text_color(color(cx, T::FgMuted))
+                        .hover(|s| s.text_color(color(cx, T::FgDefault)))
+                        .tooltip(|_, cx| {
+                            TextTooltip::view(&["Clear the name filter (Esc)".into()], cx)
+                        })
+                        .child("✕")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.core.set_name_filter("");
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_dashboard_toolbar(&mut self, ui: &UiState, cx: &mut Context<Self>) -> AnyElement {
@@ -146,6 +239,7 @@ impl Workspace {
             ),
             _ => None,
         };
+        let name_filter = self.render_name_filter(cx);
         let category_dropdown = self.render_category_filter(ui, cx);
         let set_selector = self.render_set_selector(ui, cx);
         let filters = ext.filters.filters().iter().map(|f| {
@@ -175,6 +269,7 @@ impl Workspace {
                     .items_center()
                     .flex_wrap()
                     .gap_3()
+                    .children(name_filter)
                     .child(div().flex().flex_wrap().gap_1().children(filters))
                     .children(category_dropdown)
                     .child(set_selector)
