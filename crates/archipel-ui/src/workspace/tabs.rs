@@ -9,7 +9,8 @@ use archipel_model::ui_state::TabState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, MouseButton, MouseDownEvent, MouseUpEvent, SharedString, Window, div, px,
+    Context, Div, Entity, MouseButton, MouseDownEvent, MouseUpEvent, SharedString, Stateful,
+    Window, div, px,
 };
 
 use crate::repo_view::RepoView;
@@ -122,33 +123,11 @@ impl Workspace {
                 })
                 .child(label.clone());
             if i > 0 {
-                let label = SharedString::from(label);
-                el = el
-                    .on_drag(TabDrag(i), move |_, _, _, cx| {
-                        cx.new(|_| TabGhost(label.clone()))
-                    })
-                    // Middle click closes a repo tab, as in a browser.
-                    .on_mouse_up(
-                        MouseButton::Middle,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.dispatch(Command::CloseTab(i), cx);
-                        }),
-                    );
-                el = el.child(
-                    div()
-                        .id(SharedString::from(format!("tab-close-{i}")))
-                        .text_color(color(cx, T::FgMuted))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            // Stop the click bubbling to the tab itself, whose handler
-                            // would otherwise activate index `i` — now the next tab.
-                            cx.stop_propagation();
-                            this.dispatch(Command::CloseTab(i), cx);
-                        }))
-                        .child("×"),
-                );
+                el = Self::repo_tab(el, i, label.into(), cx);
             }
             el
         });
+        let tabs: Vec<_> = tabs.collect();
         div()
             .h(px(34.0))
             .flex()
@@ -157,6 +136,38 @@ impl Workspace {
             .border_b_1()
             .border_color(color(cx, T::BorderSubtle))
             .children(tabs)
+    }
+
+    /// What a repo tab adds to the dashboard tab: it can be dragged and
+    /// closed (× button or middle click).
+    fn repo_tab(
+        el: Stateful<Div>,
+        i: usize,
+        label: SharedString,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        el.on_drag(TabDrag(i), move |_, _, _, cx| {
+            cx.new(|_| TabGhost(label.clone()))
+        })
+        // Middle click closes a repo tab, as in a browser.
+        .on_mouse_up(
+            MouseButton::Middle,
+            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                this.dispatch(Command::CloseTab(i), cx);
+            }),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("tab-close-{i}")))
+                .text_color(color(cx, T::FgMuted))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    // Stop the click bubbling to the tab itself, whose handler
+                    // would otherwise activate index `i` — now the next tab.
+                    cx.stop_propagation();
+                    this.dispatch(Command::CloseTab(i), cx);
+                }))
+                .child("×"),
+        )
     }
 
     pub(super) fn active_repo_view(
