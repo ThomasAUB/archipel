@@ -183,8 +183,8 @@ pub struct RepoView {
     stash_selected: Option<Oid>,
     /// Diff of the selected commit or stash, listed in the details pane.
     details: Option<(Oid, Arc<DiffDoc>)>,
-    /// Diff between the two commits of a two-commit selection: older,
-    /// newer, and the diff from the older to the newer.
+    /// Diff between the ends of a multi-selection: oldest, newest, and
+    /// the diff from the oldest to the newest.
     compare: Option<(Oid, Oid, Arc<DiffDoc>)>,
     /// Full message of the selected commit, shown above its files.
     message: Option<(Oid, SharedString)>,

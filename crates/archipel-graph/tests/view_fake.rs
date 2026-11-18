@@ -537,6 +537,29 @@ fn shallow_parents_and_empty_history() {
 }
 
 #[test]
+fn reachable_rows_follow_parents_without_passing_the_bottom_row() {
+    // 0 merges 1 (main) and 3 (feature); 2 is another branch on 4:
+    //   0 -> 1, 3
+    //   1 -> 4
+    //   2 -> 4
+    //   3 -> 4
+    //   4 -> 5
+    //   5 (root)
+    let env = Env::new(&[vec![1, 3], vec![4], vec![4], vec![4], vec![5], vec![]]);
+    let view = env.opened(options(2));
+    assert_eq!(view.reachable_rows(0, 4).unwrap(), Some(vec![0, 1, 3, 4]));
+    assert_eq!(view.reachable_rows(0, 3).unwrap(), Some(vec![0, 1, 3]));
+    assert_eq!(view.reachable_rows(1, 4).unwrap(), Some(vec![1, 4]));
+    // From a commit off the branch of the bottom row: the bottom row is
+    // not reached.
+    assert_eq!(view.reachable_rows(2, 3).unwrap(), Some(vec![2]));
+    assert_eq!(view.reachable_rows(5, 5).unwrap(), Some(vec![5]));
+    // Clamped past the last row; nothing from a row past it.
+    assert_eq!(view.reachable_rows(4, 99).unwrap(), Some(vec![4, 5]));
+    assert_eq!(view.reachable_rows(9, 12).unwrap(), Some(vec![]));
+}
+
+#[test]
 fn out_of_range_windows_are_clamped() {
     let env = Env::new(&random_dag(50, 1));
     let view = env.opened(options(8));

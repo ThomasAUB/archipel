@@ -15,7 +15,7 @@ use archipel_model::settings::Settings;
 use archipel_model::{CancelToken, Oid, ProgressSink, RepoPath};
 
 use crate::error::GraphError;
-use crate::layout::{Edge, LaneState, RowLayout};
+use crate::layout::{Edge, LaneState, ParentLink, RowLayout};
 use crate::search::{SearchQuery, SearchResult, Searcher};
 use crate::stream::{BuildJob, Ready, Stream};
 use crate::topology::{self, TopologyFile, Unusable};
@@ -505,6 +505,46 @@ impl HistoryView {
             out.push(loaded.graph_row(row, oid, layout));
         }
         Ok(out)
+    }
+
+    /// Rows from `from` to `until` (both included) that are `from` or one
+    /// of its ancestors, in row order: the commits of `until..from` in Git
+    /// terms when `until` is an ancestor of `from`, `until` itself excluded
+    /// unless reached. `None` while the topology is still being built, as
+    /// parent rows are not known yet.
+    pub fn reachable_rows(&self, from: u32, until: u32) -> Result<Option<Vec<u32>>, GraphError> {
+        let loaded = self.loaded.as_ref().ok_or(GraphError::NotOpen)?;
+        let Some(ready) = loaded.ready() else {
+            return Ok(None);
+        };
+        let file = &ready.file;
+        let range = clamp(from..until.saturating_add(1), file.rows());
+        if range.start != from || range.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let index = |row: u32| usize::try_from(row - range.start).unwrap_or(usize::MAX);
+        let records = file.read_parent_records(range.clone())?;
+        // Parents always come after their child: one pass in row order
+        // marks every ancestor before its row is reached.
+        let mut reached = vec![false; index(range.end)];
+        reached[0] = true;
+        let mut links = Vec::new();
+        let mut out = Vec::new();
+        for (row, record) in range.clone().zip(records) {
+            if !reached[index(row)] {
+                continue;
+            }
+            out.push(row);
+            file.decode_parents(row, record, &mut links)?;
+            for link in &links {
+                if let ParentLink::Row(parent) = *link
+                    && parent < range.end
+                {
+                    reached[index(parent)] = true;
+                }
+            }
+        }
+        Ok(Some(out))
     }
 
     /// Object ids of rows `range` (clamped to the available rows).
