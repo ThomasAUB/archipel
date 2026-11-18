@@ -9,6 +9,7 @@ use archipel_app::forge::{BranchCiMark, branch_ci_mark};
 use archipel_model::Oid;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::submodule::SubmoduleInfo;
+use archipel_model::ui_state::UiState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -16,7 +17,7 @@ use gpui_kit::{
     uniform_list,
 };
 
-use crate::theme::{color, radius, row_height, tone};
+use crate::theme::{color, radius, repo_surface, row_height, tone};
 use crate::widgets::{SHORT_OID, TextTooltip, scroll_list};
 
 use super::RepoView;
@@ -82,10 +83,27 @@ impl RepoView {
         })
     }
 
+    /// The refs pane at its width with its collapse button, or the thin
+    /// strip expanding it back when collapsed.
+    pub(super) fn render_refs_pane(&mut self, ui: &UiState, cx: &mut Context<Self>) -> AnyElement {
+        if ui.refs_collapsed {
+            return render_refs_strip(cx);
+        }
+        div()
+            .w(px(ui.refs_width))
+            .flex_none()
+            .bg(repo_surface(cx))
+            .flex()
+            .flex_col()
+            .child(render_refs_hide(cx))
+            .child(self.render_refs(cx))
+            .into_any_element()
+    }
+
     /// Branches and tags: click jumps to the commit, double click checks
     /// out. Then the submodules, when any: double click opens one. A click
     /// on a section header collapses or expands it.
-    pub(super) fn render_refs(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_refs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let refs = Arc::clone(&self.refs);
         let subs = Arc::clone(&self.submodules);
         let collapsed = self
@@ -225,7 +243,7 @@ pub(super) fn branch_drag_and_drop<E: StatefulInteractiveElement>(
 }
 
 /// The top row of the expanded refs pane: a button collapsing it.
-pub(super) fn render_refs_hide(cx: &mut Context<RepoView>) -> AnyElement {
+fn render_refs_hide(cx: &mut Context<RepoView>) -> AnyElement {
     let hover = color(cx, T::BgHover);
     div()
         .h(row_height(cx))
@@ -255,7 +273,7 @@ pub(super) fn render_refs_hide(cx: &mut Context<RepoView>) -> AnyElement {
 }
 
 /// The collapsed refs pane: a thin strip, a click expands it.
-pub(super) fn render_refs_strip(cx: &mut Context<RepoView>) -> AnyElement {
+fn render_refs_strip(cx: &mut Context<RepoView>) -> AnyElement {
     let hover = color(cx, T::BgHover);
     div()
         .id("refs-strip")
@@ -264,7 +282,7 @@ pub(super) fn render_refs_strip(cx: &mut Context<RepoView>) -> AnyElement {
         .flex()
         .flex_col()
         .items_center()
-        .bg(crate::theme::repo_surface(cx))
+        .bg(repo_surface(cx))
         .border_r_1()
         .border_color(color(cx, T::BorderSubtle))
         .cursor_pointer()
@@ -272,9 +290,7 @@ pub(super) fn render_refs_strip(cx: &mut Context<RepoView>) -> AnyElement {
         .text_sm()
         .text_color(color(cx, T::FgDefault))
         .child(div().h(row_height(cx)).flex().items_center().child("▸"))
-        .tooltip(|_, cx| {
-            TextTooltip::view(&["Show branches, tags and submodules".into()], cx)
-        })
+        .tooltip(|_, cx| TextTooltip::view(&["Show branches, tags and submodules".into()], cx))
         .on_click(cx.listener(|v, _, _, cx| v.toggle_refs_pane(cx)))
         .into_any_element()
 }
