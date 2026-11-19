@@ -12,7 +12,7 @@ use gpui_kit::{
 use super::{Computed, ImageDiff, Loaded, Mode};
 use crate::image_view::Picture;
 use crate::image_view::stage::{Clip, Layer, fraction_at, split_line, stage};
-use crate::image_view::viewer::{info, zoom_chips};
+use crate::image_view::viewer::{info, zoom_control};
 use crate::theme::color;
 use crate::widgets::{button, check, chip};
 
@@ -26,12 +26,12 @@ impl ImageDiff {
     }
 
     /// A stage of the shared canvas, showing `layers`.
-    fn stage_of(&self, id: &'static str, layers: Vec<Layer>, cx: &Context<Self>) -> AnyElement {
-        stage(id, self.canvas(), layers, self.prefs.zoom, None, None, cx).into_any_element()
+    fn stage_of(&self, id: &'static str, layers: Vec<Layer>, cx: &mut Context<Self>) -> AnyElement {
+        stage(id, self.canvas(), layers, self.nav, None, None, cx).into_any_element()
     }
 
     /// One side's pane: its label and size, then its image.
-    fn pane(&self, before: bool, cx: &Context<Self>) -> AnyElement {
+    fn pane(&self, before: bool, cx: &mut Context<Self>) -> AnyElement {
         let (loaded, other) = if before {
             (&self.old, &self.new)
         } else {
@@ -67,7 +67,7 @@ impl ImageDiff {
     }
 
     /// Both sides next to each other, or the one there is.
-    fn side_by_side(&self, cx: &Context<Self>) -> AnyElement {
+    fn side_by_side(&self, cx: &mut Context<Self>) -> AnyElement {
         let panes = div().flex_1().min_h_0().flex();
         match (&self.old, &self.new) {
             (Loaded::Absent, _) => panes.child(self.pane(false, cx)),
@@ -92,13 +92,13 @@ impl ImageDiff {
             layer(b, Clip::After(self.split)),
         ];
         let canvas = self.canvas();
-        let line = split_line(canvas, self.prefs.zoom, self.split, cx);
+        let line = split_line(canvas, self.nav.zoom, self.split, cx);
         let placed = self.placed.clone();
         stage(
             "image-swipe",
             canvas,
             layers,
-            self.prefs.zoom,
+            self.nav,
             Some(placed),
             Some(line),
             cx,
@@ -239,9 +239,7 @@ impl ImageDiff {
             })
             .when_some(self.mode_controls(cx).filter(|_| both), Div::child)
             .child(div().flex_1())
-            .child(zoom_chips(self.prefs.zoom, cx, |v: &mut Self, z| {
-                v.prefs.zoom = z;
-            }))
+            .child(zoom_control(self.nav.zoom, cx))
     }
 }
 

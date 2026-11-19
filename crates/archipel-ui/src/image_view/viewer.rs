@@ -1,11 +1,12 @@
-//! One image, in the file browser: its size, format and weight, a Fit /
-//! 100 % toggle, then the image over a checkerboard.
+//! One image, in the file browser: its size, format and weight, its zoom,
+//! then the image over a checkerboard, zoomed with the scroll wheel and
+//! dragged around.
 
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Div, Window, div};
 
-use super::stage::{Layer, Zoom, stage};
+use super::stage::{Layer, Nav, Navigate, Zoom, stage};
 use super::{Picture, release};
 use crate::theme::color;
 use crate::widgets::chip;
@@ -13,7 +14,7 @@ use crate::widgets::chip;
 /// The image viewer's state.
 pub(crate) struct ImageViewer {
     picture: Picture,
-    zoom: Zoom,
+    nav: Nav,
 }
 
 impl ImageViewer {
@@ -23,26 +24,37 @@ impl ImageViewer {
             .detach();
         Self {
             picture,
-            zoom: Zoom::Fit,
+            nav: Nav::default(),
         }
     }
 }
 
-/// The Fit / 100 % chips, `zoom` active; a click sets it with `set`.
-pub(crate) fn zoom_chips<V: 'static>(
-    zoom: Zoom,
-    cx: &mut Context<V>,
-    set: fn(&mut V, Zoom),
-) -> Div {
-    let chips = [(Zoom::Fit, "Fit"), (Zoom::Actual, "100 %")].map(|(z, label)| {
-        chip(format!("zoom-{label}"), label, zoom == z, cx).on_click(cx.listener(
-            move |v: &mut V, _, _, cx| {
-                set(v, z);
+impl Navigate for ImageViewer {
+    fn nav_mut(&mut self) -> &mut Nav {
+        &mut self.nav
+    }
+}
+
+/// The zoom: its percentage once zoomed, and the Fit chip, active while
+/// fitted, setting it back.
+pub(crate) fn zoom_control<V: Navigate>(zoom: Zoom, cx: &mut Context<V>) -> Div {
+    let fit = zoom.scale.is_none();
+    let percent = zoom
+        .scale
+        .map(|s| format!("{:.0} %", s * 100.0))
+        .unwrap_or_default();
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_2()
+        .child(info(percent, cx))
+        .child(
+            chip("zoom-fit", "Fit", fit, cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
+                v.nav_mut().zoom = Zoom::FIT;
                 cx.notify();
-            },
-        ))
-    });
-    div().flex().flex_none().gap_1().children(chips)
+            })),
+        )
 }
 
 /// A muted line of information.
@@ -64,7 +76,7 @@ impl Render for ImageViewer {
             .px_2()
             .py_1()
             .child(info(p.info(), cx).flex_1().min_w_0().truncate())
-            .child(zoom_chips(self.zoom, cx, |v: &mut Self, z| v.zoom = z));
+            .child(zoom_control(self.nav.zoom, cx));
         div()
             .flex_1()
             .min_h_0()
@@ -75,7 +87,7 @@ impl Render for ImageViewer {
                 "image-view",
                 (p.width, p.height),
                 vec![Layer::whole(p)],
-                self.zoom,
+                self.nav,
                 None,
                 None,
                 cx,
