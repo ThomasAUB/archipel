@@ -237,7 +237,9 @@ impl RepoView {
         let run = self.loads.refs.begin();
         let task = cx.background_spawn(async move {
             let branches = refs.branches(&path)?;
-            let tags = refs.tags(&path)?;
+            let mut tags = refs.tags(&path)?;
+            // Newest first, by when each tag was made (issue #71).
+            tags.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| a.name.cmp(&b.name)));
             let (remote, local): (Vec<_>, Vec<_>) = branches.into_iter().partition(|b| b.is_remote);
             let mut list = RefList {
                 locals: local.iter().map(|b| b.name.clone()).collect(),
@@ -264,15 +266,14 @@ impl RepoView {
                 }
             }
             list.rows.push(RefRow::Header("TAGS", tags.len()));
-            list.rows
-                .extend(tags.into_iter().rev().map(|t| RefRow::Tip {
-                    current: false,
-                    tip: RefTip {
-                        name: t.name,
-                        kind: RefKind::Tag,
-                        target: t.target,
-                    },
-                }));
+            list.rows.extend(tags.into_iter().map(|t| RefRow::Tip {
+                current: false,
+                tip: RefTip {
+                    name: t.name,
+                    kind: RefKind::Tag,
+                    target: t.target,
+                },
+            }));
             Ok::<_, archipel_model::GitError>(list)
         });
         cx.spawn(async move |this, cx| {

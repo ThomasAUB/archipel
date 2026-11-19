@@ -32,6 +32,10 @@ pub struct TagInfo {
     pub target: Oid,
     /// Whether it is an annotated tag object.
     pub annotated: bool,
+    /// When the tag was made: the tagger date of an annotated tag, the
+    /// committer date of the commit a lightweight tag points to.
+    #[serde(default)]
+    pub time: Timestamp,
 }
 
 /// A stash entry.

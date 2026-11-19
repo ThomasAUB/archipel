@@ -7,7 +7,8 @@ use archipel_model::{GitError, Oid, Timestamp, Upstream};
 pub const BRANCH_FORMAT: &str = "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(committerdate:unix)";
 
 /// `--format` used for tags.
-pub const TAG_FORMAT: &str = "%(refname:short)%00%(objectname)%00%(objecttype)%00%(*objectname)";
+pub const TAG_FORMAT: &str =
+    "%(refname:short)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(creatordate:unix)";
 
 /// `--format` used for ref tips.
 pub const TIP_FORMAT: &str = "%(refname)%00%(objectname)%00%(*objectname)";
@@ -88,7 +89,7 @@ pub fn parse_tags(output: &str) -> Result<Vec<TagInfo>, GitError> {
         .filter(|l| !l.is_empty())
         .map(|line| {
             let f: Vec<&str> = line.split('\0').collect();
-            let [name, target, kind, peeled] = f[..] else {
+            let [name, target, kind, peeled, time] = f[..] else {
                 return Err(err(line));
             };
             let annotated = kind == "tag";
@@ -101,6 +102,7 @@ pub fn parse_tags(output: &str) -> Result<Vec<TagInfo>, GitError> {
                 name: name.to_owned(),
                 target: oid(target, line)?,
                 annotated,
+                time: Timestamp(time.parse().unwrap_or(0)),
             })
         })
         .collect()
@@ -170,11 +172,13 @@ mod tests {
 
     #[test]
     fn tag_parsing_peels_annotated() {
-        let out = format!("v1\0{A}\0tag\0{B}\nlight\0{A}\0commit\0\n");
+        let out = format!("v1\0{A}\0tag\0{B}\0200\nlight\0{A}\0commit\0\0100\n");
         let t = parse_tags(&out).unwrap();
         assert_eq!(t[0].target.to_hex(), B);
         assert!(t[0].annotated);
+        assert_eq!(t[0].time, Timestamp(200));
         assert_eq!(t[1].target.to_hex(), A);
+        assert_eq!(t[1].time, Timestamp(100));
     }
 
     #[test]
