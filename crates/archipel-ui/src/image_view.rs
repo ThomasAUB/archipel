@@ -57,12 +57,29 @@ pub(crate) struct Picture {
     pub(crate) width: u32,
     /// Height, in logical pixels.
     pub(crate) height: u32,
+    /// Texture pixels per logical pixel: a small image is enlarged, an
+    /// SVG rasterized finer.
+    pub(crate) density: u32,
     pub(crate) format: ImageFormat,
     /// Size of the file.
     pub(crate) bytes: usize,
 }
 
 impl Picture {
+    /// Its texture, as pixels to sample.
+    fn sampled(&self) -> Option<Sampled<'_>> {
+        let size = self.render.size(0);
+        Some(Sampled {
+            pixels: self.render.as_bytes(0)?,
+            texture: (
+                u32::try_from(size.width.0).ok()?,
+                u32::try_from(size.height.0).ok()?,
+            ),
+            density: self.density.max(1),
+            size: (self.width, self.height),
+        })
+    }
+
     /// `W × H · FORMAT · N KB`.
     pub(crate) fn info(&self) -> String {
         format!(
@@ -95,7 +112,7 @@ pub(crate) fn decode(
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(format!("Too large to show ({})", size_label(bytes.len())));
     }
-    let (render, width, height, _density) = if format == ImageFormat::Svg {
+    let (render, width, height, density) = if format == ImageFormat::Svg {
         rasterize(bytes, svg)?
     } else {
         let rgba = decode_raster(format, bytes)?;
@@ -108,6 +125,7 @@ pub(crate) fn decode(
         render,
         width,
         height,
+        density,
         format,
         bytes: bytes.len(),
     })
@@ -210,6 +228,104 @@ pub(crate) fn release(render: Arc<RenderImage>, cx: &mut App) {
 }
 
 // Needs a headless renderer, which gpui only has on Linux and macOS.
+/// The pixel difference of two images: `|a − b|` per channel, on the
+/// canvas holding both (aligned top-left; a pixel only one of them covers
+/// differs from nothing), opaque.
+pub(crate) struct Difference {
+    pub(crate) picture: Picture,
+    /// Pixels differing.
+    pub(crate) changed: u64,
+    /// Pixels of the canvas.
+    pub(crate) total: u64,
+}
+
+impl Difference {
+    /// `N px changed (x %)`.
+    pub(crate) fn summary(&self) -> String {
+        if self.changed == 0 {
+            return "no pixel changed".to_owned();
+        }
+        let per_mille = (self.changed * 1000).div_ceil(self.total.max(1));
+        format!(
+            "{} px changed ({}.{} %)",
+            self.changed,
+            per_mille / 10,
+            per_mille % 10
+        )
+    }
+}
+
+/// The difference of `a` and `b`, pixel by logical pixel (off the UI
+/// thread), amplified ×4 with `amplify` so faint changes show.
+pub(crate) fn difference(a: &Picture, b: &Picture, amplify: bool) -> Option<Difference> {
+    let (pixels, changed) = diff_pixels(&a.sampled()?, &b.sampled()?, amplify);
+    let (width, height) = pixels.dimensions();
+    let density = upscale(width, height);
+    Some(Difference {
+        picture: Picture {
+            render: texture(nearest(&pixels, density)),
+            width,
+            height,
+            density,
+            format: b.format,
+            bytes: 0,
+        },
+        changed,
+        total: u64::from(width) * u64::from(height),
+    })
+}
+
+/// An image's texture, read pixel by logical pixel.
+struct Sampled<'a> {
+    /// 4 bytes a pixel.
+    pixels: &'a [u8],
+    /// Texture width and height.
+    texture: (u32, u32),
+    /// Texture pixels per logical pixel.
+    density: u32,
+    /// Logical width and height.
+    size: (u32, u32),
+}
+
+impl Sampled<'_> {
+    /// Logical pixel `(x, y)`, transparent outside the image; a fully
+    /// transparent pixel reads as transparent black, whatever its color.
+    fn at(&self, x: u32, y: u32) -> [u8; 4] {
+        if x >= self.size.0 || y >= self.size.1 {
+            return [0; 4];
+        }
+        let (tx, ty) = (x * self.density, y * self.density);
+        if tx >= self.texture.0 || ty >= self.texture.1 {
+            return [0; 4];
+        }
+        let at = (ty as usize * self.texture.0 as usize + tx as usize) * 4;
+        match self.pixels.get(at..at + 4) {
+            Some(&[_, _, _, 0]) | None => [0; 4],
+            Some(p) => [p[0], p[1], p[2], p[3]],
+        }
+    }
+}
+
+/// `|a − b|` of two images (same channel order), on the canvas holding
+/// both, with the count of pixels differing. A color channel shows the
+/// larger of its own and the alpha difference.
+fn diff_pixels(a: &Sampled, b: &Sampled, amplify: bool) -> (RgbaImage, u64) {
+    let width = a.size.0.max(b.size.0);
+    let height = a.size.1.max(b.size.1);
+    let gain = if amplify { 4 } else { 1 };
+    let mut changed = 0;
+    let out = RgbaImage::from_fn(width, height, |x, y| {
+        let (before, after) = (a.at(x, y), b.at(x, y));
+        let alpha = before[3].abs_diff(after[3]);
+        if before != after {
+            changed += 1;
+        }
+        let channel = |i: usize| before[i].abs_diff(after[i]).max(alpha).saturating_mul(gain);
+        image::Rgba([channel(0), channel(1), channel(2), u8::MAX])
+    });
+    (out, changed)
+}
+
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod render_tests;
@@ -259,6 +375,99 @@ mod tests {
         assert_eq!(big.dimensions(), (6, 3));
         assert_eq!(big.get_pixel(2, 2).0, [1; 4]);
         assert_eq!(big.get_pixel(3, 0).0, [2; 4]);
+    }
+
+    /// A `w × h` image of `fill`, at density 1.
+    fn sampled(pixels: &[u8], w: u32, h: u32) -> Sampled<'_> {
+        Sampled {
+            pixels,
+            texture: (w, h),
+            density: 1,
+            size: (w, h),
+        }
+    }
+
+    fn image(w: u32, h: u32, fill: [u8; 4]) -> Vec<u8> {
+        fill.repeat((w * h) as usize)
+    }
+
+    #[test]
+    fn identical_images_do_not_differ() {
+        let a = image(4, 3, [1, 2, 3, 255]);
+        let (out, changed) = diff_pixels(&sampled(&a, 4, 3), &sampled(&a, 4, 3), false);
+        assert_eq!(changed, 0);
+        assert_eq!(out.dimensions(), (4, 3));
+        assert!(out.pixels().all(|p| p.0 == [0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn one_pixel_differs() {
+        let a = image(4, 3, [1, 2, 3, 255]);
+        let mut b = a.clone();
+        b[(4 + 2) * 4] = 11; // pixel (2, 1), first channel
+        let (a, b) = (sampled(&a, 4, 3), sampled(&b, 4, 3));
+        let (out, changed) = diff_pixels(&a, &b, false);
+        assert_eq!(changed, 1);
+        assert_eq!(out.get_pixel(2, 1).0, [10, 0, 0, 255]);
+        let (out, _) = diff_pixels(&a, &b, true);
+        assert_eq!(out.get_pixel(2, 1).0, [40, 0, 0, 255]);
+    }
+
+    #[test]
+    fn sizes_differ_on_the_canvas_holding_both() {
+        let a = image(2, 2, [9, 9, 9, 255]);
+        let b = image(3, 1, [9, 9, 9, 255]);
+        let (out, changed) = diff_pixels(&sampled(&a, 2, 2), &sampled(&b, 3, 1), false);
+        assert_eq!(out.dimensions(), (3, 2));
+        // (2, 0) is only in b, (0, 1) and (1, 1) only in a; (2, 1) in none.
+        assert_eq!(changed, 3);
+        assert_eq!(out.get_pixel(2, 1).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn enlarged_textures_are_read_per_logical_pixel() {
+        let small = RgbaImage::from_raw(2, 1, vec![1, 1, 1, 255, 2, 2, 2, 255]).unwrap();
+        let big = nearest(&small, 4);
+        let enlarged = Sampled {
+            pixels: big.as_raw(),
+            texture: (8, 4),
+            density: 4,
+            size: (2, 1),
+        };
+        let (_, changed) = diff_pixels(&enlarged, &sampled(small.as_raw(), 2, 1), false);
+        assert_eq!(changed, 0);
+    }
+
+    #[test]
+    fn transparent_pixels_match_whatever_their_color() {
+        let a = image(1, 1, [5, 5, 5, 0]);
+        let b = image(1, 1, [7, 7, 7, 0]);
+        assert_eq!(
+            diff_pixels(&sampled(&a, 1, 1), &sampled(&b, 1, 1), false).1,
+            0
+        );
+    }
+
+    #[test]
+    fn the_summary_counts_changed_pixels() {
+        let p = |changed, total| {
+            Difference {
+                picture: Picture {
+                    render: texture(RgbaImage::new(1, 1)),
+                    width: 1,
+                    height: 1,
+                    density: 1,
+                    format: ImageFormat::Png,
+                    bytes: 0,
+                },
+                changed,
+                total,
+            }
+            .summary()
+        };
+        assert_eq!(p(0, 100), "no pixel changed");
+        assert_eq!(p(1, 3), "1 px changed (33.4 %)");
+        assert_eq!(p(50, 100), "50 px changed (50.0 %)");
     }
 
     #[test]

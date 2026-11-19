@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 use image::RgbaImage;
 
-use super::compare::{ImageDiff, sides};
+use super::compare::{ImageDiff, Mode, Prefs, sides};
 use super::stage::{Layer, Zoom, stage};
 use super::viewer::ImageViewer;
 use super::{Picture, decode};
@@ -60,7 +60,15 @@ impl Render for Stage {
             .size_full()
             .flex()
             .bg(color(cx, T::BgApp))
-            .child(stage("test", self.canvas, layers, Zoom::Fit, None, cx))
+            .child(stage(
+                "test",
+                self.canvas,
+                layers,
+                Zoom::Fit,
+                None,
+                None,
+                cx,
+            ))
     }
 }
 
@@ -229,10 +237,16 @@ fn fake_actions(index: Vec<u8>, worktree: Vec<u8>) -> (archipel_ops::RepoActions
     (RepoActions::new(GitPorts::from_backend(git), journal), repo)
 }
 
-#[test]
-fn an_image_diff_shows_both_versions_side_by_side() {
+/// The frame of an 800 × 400 image diff of `a.png`, from `old` (index) to
+/// `new` (disk), in `prefs`, once read, after `setup`.
+fn diff_shot(
+    old: Vec<u8>,
+    new: Vec<u8>,
+    prefs: Prefs,
+    setup: impl FnOnce(&mut ImageDiff) + 'static,
+) -> (RgbaImage, f32) {
     let mut cx = context();
-    let (actions, repo) = fake_actions(png(2, 2, RED, RED), png(2, 2, BLUE, BLUE));
+    let (actions, repo) = fake_actions(old, new);
     let file = FileDiff {
         old_path: Some("a.png".into()),
         new_path: Some("a.png".into()),
@@ -248,13 +262,19 @@ fn an_image_diff_shows_both_versions_side_by_side() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(gpui_kit::Bounds {
                         origin: gpui_kit::Point::default(),
-                        size: size(px(400.), px(200.)),
+                        size: size(px(800.), px(400.)),
                     })),
                     focus: false,
                     show: false,
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| ImageDiff::new(actions, repo, sides, 0, cx)),
+                |_, cx| {
+                    cx.new(|cx| {
+                        let mut diff = ImageDiff::new(actions, repo, sides, 0, prefs, cx);
+                        setup(&mut diff);
+                        diff
+                    })
+                },
             )
         })
         .unwrap()
@@ -265,11 +285,106 @@ fn an_image_diff_shows_both_versions_side_by_side() {
         .unwrap();
     let image = cx.capture_screenshot(handle).unwrap();
     save(&image);
-    let shot = (image, scale);
-    assert!(
-        near(at(&shot, 100.0, 120.0), RED),
-        "{:?}",
-        at(&shot, 100.0, 120.0)
+    (image, scale)
+}
+
+fn in_mode(mode: Mode) -> Prefs {
+    Prefs {
+        mode,
+        ..Prefs::default()
+    }
+}
+
+#[test]
+fn an_image_diff_shows_both_versions_side_by_side() {
+    let shot = diff_shot(
+        png(2, 2, RED, RED),
+        png(2, 2, BLUE, BLUE),
+        Prefs::default(),
+        |_| {},
     );
-    assert!(near(at(&shot, 300.0, 120.0), BLUE));
+    assert!(
+        near(at(&shot, 200.0, 250.0), RED),
+        "{:?}",
+        at(&shot, 200.0, 250.0)
+    );
+    assert!(near(at(&shot, 600.0, 250.0), BLUE));
+}
+
+#[test]
+fn a_swipe_shows_before_left_of_the_split_and_after_right_of_it() {
+    let shot = diff_shot(
+        png(2, 2, RED, RED),
+        png(2, 2, BLUE, BLUE),
+        in_mode(Mode::Swipe),
+        |d| d.split = 0.5,
+    );
+    assert!(
+        near(at(&shot, 330.0, 250.0), RED),
+        "{:?}",
+        at(&shot, 330.0, 250.0)
+    );
+    assert!(near(at(&shot, 470.0, 250.0), BLUE));
+}
+
+#[test]
+fn an_onion_skin_blends_after_over_before() {
+    let shot = diff_shot(
+        png(2, 2, RED, RED),
+        png(2, 2, BLUE, BLUE),
+        in_mode(Mode::Onion),
+        |_| {},
+    );
+    let [r, g, b, _] = at(&shot, 400.0, 250.0);
+    assert!(
+        r.abs_diff(128) < 20 && g < 10 && b.abs_diff(128) < 20,
+        "{r} {g} {b}"
+    );
+}
+
+#[test]
+fn blinking_shows_after_and_before_while_held() {
+    let (old, new) = (png(2, 2, RED, RED), png(2, 2, BLUE, BLUE));
+    let shot = diff_shot(old.clone(), new.clone(), in_mode(Mode::Blink), |_| {});
+    assert!(near(at(&shot, 400.0, 250.0), BLUE));
+    let shot = diff_shot(old, new, in_mode(Mode::Blink), |d| d.held = true);
+    assert!(near(at(&shot, 400.0, 250.0), RED));
+}
+
+#[test]
+fn the_difference_shows_changed_pixels() {
+    let before = png(2, 2, RED, RED);
+    let after = png(2, 2, RED, BLUE);
+    let shot = diff_shot(before, after, in_mode(Mode::Difference), |_| {});
+    // Left: same red, black; right: red to blue, |Δ| on red and blue.
+    assert!(
+        near(at(&shot, 330.0, 250.0), [0, 0, 0, 255]),
+        "{:?}",
+        at(&shot, 330.0, 250.0)
+    );
+    assert!(near(at(&shot, 470.0, 250.0), [255, 0, 255, 255]));
+}
+
+#[test]
+fn at_100_percent_an_image_keeps_its_size() {
+    let prefs = Prefs {
+        zoom: Zoom::Actual,
+        ..in_mode(Mode::Blink)
+    };
+    let shot = diff_shot(
+        png(20, 20, RED, RED),
+        png(20, 20, BLUE, BLUE),
+        prefs,
+        |_| {},
+    );
+    // Its widest row of blue, wherever the canvas sits.
+    let widest = (100..400u16)
+        .map(|y| {
+            (0..800u16)
+                .filter(|&x| near(at(&shot, f32::from(x), f32::from(y)), BLUE))
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    assert!((19..=21).contains(&widest), "{widest} px wide");
 }

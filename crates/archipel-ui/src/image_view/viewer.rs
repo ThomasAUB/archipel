@@ -77,6 +77,7 @@ impl Render for ImageViewer {
                 vec![Layer::whole(p)],
                 self.zoom,
                 None,
+                None,
                 cx,
             ))
     }
