@@ -142,13 +142,20 @@ impl HttpTransport for UreqTransport {
             .filter_map(|(k, v)| Some((k.as_str().to_owned(), v.to_str().ok()?.to_owned())))
             .collect();
         let status = response.status().as_u16();
-        // CI logs run past ureq's default 10 MB limit.
-        let body = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_BODY_BYTES)
-            .read_to_string()
-            .map_err(|e| e.to_string())?;
+        // 204 and 304 never carry a body. GitHub still labels its 304 as
+        // `Content-Encoding: gzip`, and decoding that empty body fails, so
+        // every conditional GET of an unchanged answer would error out.
+        let body = if matches!(status, 204 | 304) {
+            String::new()
+        } else {
+            // CI logs run past ureq's default 10 MB limit.
+            response
+                .body_mut()
+                .with_config()
+                .limit(MAX_BODY_BYTES)
+                .read_to_string()
+                .map_err(|e| e.to_string())?
+        };
         Ok(HttpResponse {
             status,
             headers,
@@ -635,5 +642,28 @@ mod tests {
             seen.iter().map(conditional).collect::<Vec<_>>(),
             [false, true, false]
         );
+    }
+
+    /// GitHub answers a conditional GET with `304`, no body, yet
+    /// `Content-Encoding: gzip`: decoding that empty body must not fail.
+    #[test]
+    fn ureq_reads_a_bodiless_gzip_304() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/r", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf).unwrap();
+            s.write_all(
+                b"HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\n\
+                  Content-Encoding: gzip\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        });
+        let http = UreqTransport::new(Duration::from_secs(5));
+        let response = http.send(&get(&url, "t")).unwrap();
+        server.join().unwrap();
+        assert_eq!((response.status, response.body.as_str()), (304, ""));
     }
 }
