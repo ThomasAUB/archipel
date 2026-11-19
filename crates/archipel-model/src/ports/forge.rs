@@ -11,8 +11,8 @@
 use crate::error::ForgeError;
 use crate::forge::{
     CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
-    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, Release,
-    RemoteRepo,
+    MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    Release, RemoteRepo,
 };
 
 /// Reads open pull / merge requests (dashboard column, review list).
@@ -72,7 +72,8 @@ pub trait PullRequestWriter: Send + Sync {
     ) -> Result<MergeReport, ForgeError>;
 }
 
-/// Lists what an account can see (clone from an account / org / group).
+/// Lists what an account can see (clone from an account / org / group),
+/// and creates repositories there (publish a local repository).
 pub trait ForgeDirectory: Send + Sync {
     /// The user's own namespace first, then its organizations / groups.
     fn namespaces(&self, account: &ForgeAccount) -> Result<Vec<Namespace>, ForgeError>;
@@ -82,6 +83,14 @@ pub trait ForgeDirectory: Send + Sync {
         account: &ForgeAccount,
         namespace: &Namespace,
     ) -> Result<Vec<RemoteRepo>, ForgeError>;
+    /// Creates an empty repository (no README, no first commit, so a local
+    /// history can be pushed to it) in `namespace`.
+    fn create_repository(
+        &self,
+        account: &ForgeAccount,
+        namespace: &Namespace,
+        repo: &NewRemoteRepo,
+    ) -> Result<RemoteRepo, ForgeError>;
 }
 
 /// Checks a token and identifies the forge behind a host.

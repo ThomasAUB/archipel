@@ -7,12 +7,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use archipel_app::forge::{BranchCi, ForgePorts, ForgeStatus};
-use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, Services};
+use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, PublishTarget, Services};
 use archipel_model::forge::{
-    CiJob, CiJobLog, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, NamespaceKind,
-    PullRequestStatus, RemoteRepo, ReviewState,
+    CiJob, CiJobLog, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, Namespace,
+    NamespaceKind, NewRemoteRepo, PullRequestStatus, RemoteRepo, ReviewState,
 };
-use archipel_model::ports::{CredentialStore, ForgeAccountStore, RemoteInfo};
+use archipel_model::ports::{CredentialStore, ForgeAccountStore, ForgeDirectory, RemoteInfo};
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
 use archipel_model::refs::BranchInfo;
 use archipel_model::settings::Settings;
@@ -721,6 +721,133 @@ fn clone_from_an_account_adds_repos() {
     assert_eq!(clones[0].detail, "git@github.com:acme/tools.git");
     let id = RepoPath::new(folder.join("tools")).id();
     assert!(e.app.all_rows().iter().any(|r| r.id == id));
+}
+
+/// Git calls of `op` on `repo`, their details.
+fn calls_of(e: &Env, op: &str, repo: &RepoPath) -> Vec<String> {
+    e.git
+        .calls()
+        .into_iter()
+        .filter(|c| c.op == op && c.repo == repo.as_path().display().to_string())
+        .map(|c| c.detail)
+        .collect()
+}
+
+/// Publishes row `i` to `target`.
+fn publish(e: &Env, i: usize, target: PublishTarget) -> Result<String, AppError> {
+    let app = e.app.clone();
+    let id = e.repos[i].id();
+    e.rt.block_on(async move { app.publish_repo(id, target).await })
+        .map(|o| o.url)
+}
+
+fn new_repo(e: &Env, namespace: &str, name: &str) -> PublishTarget {
+    PublishTarget::Forge {
+        account: e.app.forge_accounts().remove(0),
+        namespace: Namespace {
+            path: namespace.into(),
+            kind: if namespace == "me" {
+                NamespaceKind::User
+            } else {
+                NamespaceKind::Organization
+            },
+        },
+        repo: NewRemoteRepo {
+            name: name.into(),
+            description: Some("A tool".into()),
+            private: true,
+        },
+        protocol: CloneProtocol::Https,
+    }
+}
+
+#[test]
+fn publish_creates_the_repo_adds_origin_and_pushes() {
+    let e = env();
+    sign_in(&e);
+    let path = e.repos[1].clone();
+    e.git.with_repo(&path, |r| r.remotes.clear());
+
+    let url = publish(&e, 1, new_repo(&e, "acme", " tool ")).unwrap();
+    assert_eq!(url, "https://github.com/acme/tool.git");
+    let account = e.app.forge_accounts().remove(0);
+    let listed = e
+        .forge
+        .repositories(
+            &account,
+            &Namespace {
+                path: "acme".into(),
+                kind: NamespaceKind::Organization,
+            },
+        )
+        .unwrap();
+    assert_eq!(listed[0].path, "acme/tool");
+    assert_eq!(
+        calls_of(&e, "set_remote_url", &path),
+        ["origin->https://github.com/acme/tool.git"]
+    );
+    assert_eq!(calls_of(&e, "push", &path), ["feat/x"]);
+
+    // It has a remote now: publishing again is refused, nothing created.
+    let err = publish(&e, 1, new_repo(&e, "acme", "other")).unwrap_err();
+    assert!(
+        err.to_string().contains("already has the remote origin"),
+        "{err}"
+    );
+    assert_eq!(calls_of(&e, "push", &path).len(), 1);
+}
+
+#[test]
+fn publish_refuses_what_cannot_be_pushed_before_creating_anything() {
+    let e = env();
+    sign_in(&e);
+    let path = e.repos[1].clone();
+    e.git.with_repo(&path, |r| {
+        r.remotes.clear();
+        r.summary.head = HeadState::Unborn("main".into());
+    });
+    let err = publish(&e, 1, new_repo(&e, "me", "tool")).unwrap_err();
+    assert!(err.to_string().contains("no commit yet"), "{err}");
+    let account = e.app.forge_accounts().remove(0);
+    let mine = Namespace {
+        path: "me".into(),
+        kind: NamespaceKind::User,
+    };
+    assert!(e.forge.repositories(&account, &mine).unwrap().is_empty());
+    assert!(calls_of(&e, "set_remote_url", &path).is_empty());
+
+    // A name taken on the forge: refused, no remote added.
+    e.git.with_repo(&path, |r| {
+        r.summary.head = HeadState::Branch("feat/x".into());
+    });
+    publish(&e, 1, new_repo(&e, "me", "tool")).unwrap();
+    let other = e.repos[2].clone();
+    e.git.with_repo(&other, |r| r.remotes.clear());
+    let err = publish(&e, 2, new_repo(&e, "me", "tool")).unwrap_err();
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert!(calls_of(&e, "set_remote_url", &other).is_empty());
+    assert!(calls_of(&e, "push", &other).is_empty());
+}
+
+#[test]
+fn publish_to_a_url_needs_no_account() {
+    let e = env();
+    let path = e.repos[2].clone();
+    e.git.with_repo(&path, |r| r.remotes.clear());
+    let err = publish(&e, 2, PublishTarget::Url("  ".into())).unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+    let url = publish(
+        &e,
+        2,
+        PublishTarget::Url(" git@example.com:me/tool.git ".into()),
+    )
+    .unwrap();
+    assert_eq!(url, "git@example.com:me/tool.git");
+    assert_eq!(
+        calls_of(&e, "set_remote_url", &path),
+        ["origin->git@example.com:me/tool.git"]
+    );
+    assert_eq!(calls_of(&e, "push", &path), ["feat/x"]);
 }
 
 #[test]

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use archipel_model::ForgeError;
 use archipel_model::forge::{
     CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
-    MergeReport, Namespace, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
-    normalize_host,
+    MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    RemoteRepo, normalize_host,
 };
 use archipel_model::ports::{
     CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
@@ -175,6 +175,15 @@ impl ForgeDirectory for ForgeClient {
         namespace: &Namespace,
     ) -> Result<Vec<RemoteRepo>, ForgeError> {
         self.with(account, |p, at| p.repositories(at, namespace))
+    }
+
+    fn create_repository(
+        &self,
+        account: &ForgeAccount,
+        namespace: &Namespace,
+        repo: &NewRemoteRepo,
+    ) -> Result<RemoteRepo, ForgeError> {
+        self.with(account, |p, at| p.create_repository(at, namespace, repo))
     }
 }
 

@@ -505,16 +505,47 @@ pub fn next_link(header: &str) -> Option<String> {
     })
 }
 
-/// The `message` of a JSON error body, else the start of the body.
+/// The `message` of a JSON error body, else the start of the body. The
+/// details go with it: GitHub's `errors` (`name already exists on this
+/// account`), GitLab's per-field messages (`path has already been taken`).
 fn error_message(body: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.get("message")
-                .or_else(|| v.get("error"))
-                .map(|m| m.as_str().map_or_else(|| m.to_string(), str::to_owned))
-        })
-        .unwrap_or_else(|| body.chars().take(200).collect())
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.chars().take(200).collect();
+    };
+    let Some(message) = value.get("message").or_else(|| value.get("error")) else {
+        return body.chars().take(200).collect();
+    };
+    let text = match message {
+        serde_json::Value::String(text) => text.clone(),
+        // GitLab: `{"name": ["has already been taken"], …}`.
+        serde_json::Value::Object(fields) => fields
+            .iter()
+            .flat_map(|(field, problems)| {
+                let problems = match problems {
+                    serde_json::Value::Array(list) => list.clone(),
+                    other => vec![other.clone()],
+                };
+                problems.into_iter().map(move |p| match p {
+                    serde_json::Value::String(p) => format!("{field} {p}"),
+                    p => format!("{field} {p}"),
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        other => other.to_string(),
+    };
+    let details: Vec<&str> = value
+        .get("errors")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.get("message").and_then(serde_json::Value::as_str))
+        .collect();
+    if details.is_empty() {
+        text
+    } else {
+        format!("{text} ({})", details.join("; "))
+    }
 }
 
 /// Percent-encodes everything except unreserved characters (a path
@@ -554,6 +585,24 @@ mod tests {
         assert_eq!(encode("feat/x y"), "feat%2Fx%20y");
         assert_eq!(encode_path("o/r é"), "o/r%20%C3%A9");
         assert_eq!(error_message("{\"message\":\"Bad\"}"), "Bad");
+    }
+
+    #[test]
+    fn error_messages_keep_their_details() {
+        assert_eq!(error_message(r#"{"message":"Not Found"}"#), "Not Found");
+        assert_eq!(
+            error_message(
+                r#"{"message":"Repository creation failed.","errors":[{"resource":"Repository","code":"custom","field":"name","message":"name already exists on this account"}]}"#
+            ),
+            "Repository creation failed. (name already exists on this account)"
+        );
+        assert_eq!(
+            error_message(
+                r#"{"message":{"name":["has already been taken"],"path":["has already been taken"]}}"#
+            ),
+            "name has already been taken; path has already been taken"
+        );
+        assert_eq!(error_message("<html>oops"), "<html>oops");
     }
 
     #[test]

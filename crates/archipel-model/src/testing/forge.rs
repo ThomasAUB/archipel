@@ -8,8 +8,8 @@ use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
     CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
-    MergeReport, MergeState, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, Release, RemoteRepo, ReviewState,
+    MergeReport, MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, Release, RemoteRepo, ReviewState,
 };
 use crate::ports::{
     CiReader, CiWriter, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn,
@@ -391,6 +391,40 @@ impl ForgeDirectory for FakeForge {
             .get(&namespace.path)
             .cloned()
             .unwrap_or_default())
+    }
+
+    /// Adds the repository to the namespace's list; a name taken there, or
+    /// a path made to [`FakeForge::fail`], is refused.
+    fn create_repository(
+        &self,
+        account: &ForgeAccount,
+        namespace: &Namespace,
+        repo: &NewRemoteRepo,
+    ) -> Result<RemoteRepo, ForgeError> {
+        let path = format!("{}/{}", namespace.path, repo.name);
+        let mut s = lock(&self.state);
+        if let Some(e) = s.failing.get(&path) {
+            return Err(e.clone());
+        }
+        let list = s.repos.entry(namespace.path.clone()).or_default();
+        if list.iter().any(|r| r.name == repo.name) {
+            return Err(ForgeError::Http {
+                host: account.host.clone(),
+                status: 422,
+                message: "name already exists on this account".into(),
+            });
+        }
+        let created = RemoteRepo {
+            path: path.clone(),
+            name: repo.name.clone(),
+            description: repo.description.clone(),
+            https_url: format!("https://{}/{path}.git", account.host),
+            ssh_url: format!("git@{}:{path}.git", account.host),
+            default_branch: None,
+            archived: false,
+        };
+        list.push(created.clone());
+        Ok(created)
     }
 }
 

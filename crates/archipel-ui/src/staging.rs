@@ -15,7 +15,7 @@ use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, FetchRequest, ForceMode, PullMode, PushRequest,
     SequenceAction, StashApplyMode, StashRequest,
 };
-use archipel_model::{Oid, RepoOp, RepoPath, RepoSummary, Upstream};
+use archipel_model::{HeadState, Oid, RepoOp, RepoPath, RepoSummary, Upstream};
 use archipel_ops::actions::split_remote_ref;
 use archipel_ops::{OpClass, OpContext, OpError, RepoActions};
 use archipel_theme::ColorToken as T;
@@ -225,6 +225,9 @@ pub enum StagingEvent {
     /// Ask for a new URL of a remote of this repo: of the remote of this
     /// remote branch (`origin/main`) when given, else as the dashboard does.
     ChangeRemoteUrl(archipel_model::RepoId, Option<String>),
+    /// Open the Publish dialog for this branch of this repo, which has no
+    /// remote yet.
+    Publish(archipel_model::RepoId, std::path::PathBuf, String),
 }
 
 pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {
@@ -581,7 +584,8 @@ fn push<V: Staging>(v: &mut V, window: &mut Window, cx: &mut Context<V>) {
 }
 
 /// Pushes `branch`, which has no upstream: to the only remote, or once
-/// picked among several (read off the UI thread).
+/// picked among several (read off the UI thread). Without remote, the
+/// repository is published: the workspace asks where.
 fn ask_push_remote<V: Staging>(
     v: &mut V,
     branch: String,
@@ -594,6 +598,7 @@ fn ask_push_remote<V: Staging>(
     cx.spawn_in(window, async move |this, cx| {
         let result = task.await;
         let _ = this.update(cx, |v: &mut V, cx| match result {
+            Ok(remotes) if remotes.is_empty() => publish(v, branch, cx),
             Ok(remotes) => match PushChoice::new(branch, remotes) {
                 Some(choice) => {
                     v.panel().push_choice = Some(choice);
@@ -607,6 +612,29 @@ fn ask_push_remote<V: Staging>(
         });
     })
     .detach();
+}
+
+/// Asks the workspace to publish `branch` of a repo without remote; a
+/// branch without commit has nothing to push yet.
+fn publish<V: Staging>(v: &mut V, branch: String, cx: &mut Context<V>) {
+    let unborn = v
+        .panel()
+        .summary
+        .as_ref()
+        .is_some_and(|s| matches!(s.head, HeadState::Unborn(_)));
+    if unborn {
+        v.report(
+            format!("Push: {branch} has no commit yet, commit before publishing"),
+            cx,
+        );
+        return;
+    }
+    let path = v.repo_path().clone();
+    cx.emit(StagingEvent::Publish(
+        path.id(),
+        path.as_path().to_path_buf(),
+        branch,
+    ));
 }
 
 /// Pushes the branch of the pending choice to `remote`.
