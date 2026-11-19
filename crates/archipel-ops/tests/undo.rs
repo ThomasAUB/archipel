@@ -589,7 +589,9 @@ fn remote_tag_is_deleted_and_the_local_one_kept() {
         .git(&["remote", "add", "origin", bare.to_str().unwrap()])
         .unwrap();
     e.repo.git(&["tag", "v1"]).unwrap();
-    e.repo.git(&["push", "-q", "origin", "refs/tags/v1"]).unwrap();
+    e.repo
+        .git(&["push", "-q", "origin", "refs/tags/v1"])
+        .unwrap();
     e.actions
         .delete_remote_tag(&e.path, "origin", "v1", &NoProgress, &CancelToken::new())
         .unwrap();
