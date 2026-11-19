@@ -915,4 +915,4 @@ mod tests {
 // Needs a headless renderer, which gpui only has on Linux and macOS.
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod render_tests;
+pub(crate) mod render_tests;

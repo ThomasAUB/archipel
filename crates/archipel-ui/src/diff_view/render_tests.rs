@@ -33,7 +33,8 @@ fn text_system() -> Arc<dyn gpui_kit::PlatformTextSystem> {
     }
 }
 
-fn context() -> HeadlessAppContext {
+/// A headless app with the default theme (the image view's tests too).
+pub(crate) fn context() -> HeadlessAppContext {
     let mut cx = HeadlessAppContext::with_platform(
         text_system(),
         Arc::new(Assets),

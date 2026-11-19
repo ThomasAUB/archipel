@@ -32,6 +32,7 @@ mod fonts;
 mod forecast_badge;
 mod forge_panel;
 mod ignore;
+mod image_view;
 mod instance;
 mod keys;
 mod latest;
