@@ -77,6 +77,8 @@ pub(super) enum MenuAction {
     /// A remote branch, `remote/branch`, deleted on the remote.
     DeleteRemoteBranch(String),
     DeleteTag(String),
+    /// A tag deleted on the remote it is pushed to; the local one stays.
+    DeleteRemoteTag(String),
     PushTag(String),
     Stash(Oid, Option<StashApplyMode>),
     /// A submodule opened as a repo tab.
@@ -117,6 +119,9 @@ impl MenuAction {
             Self::DeleteRemoteBranch(name) => {
                 Some(format!("Delete {name} on the remote? Others lose it too."))
             }
+            Self::DeleteRemoteTag(name) => Some(format!(
+                "Delete tag {name} on the remote? Others lose it too; the local tag is kept."
+            )),
             _ => None,
         }
     }
@@ -408,6 +413,10 @@ fn ref_entries(
             out.push(item(format!("Push {name}"), A::PushTag(name.clone())));
             out.push(MenuEntry::Separator);
             out.push(danger(format!("Delete {name}"), A::DeleteTag(name.clone())));
+            out.push(danger(
+                format!("Delete {name} on the remote…"),
+                A::DeleteRemoteTag(name.clone()),
+            ));
         }
         RefKind::Head | RefKind::Stash => {}
     }
@@ -736,6 +745,20 @@ impl RepoView {
                             OpError::Refused("the repository has no remote".into())
                         })?;
                         a.push_tag(p, &remote.name, &name, op, op.cancel())
+                    },
+                );
+            }
+            MenuAction::DeleteRemoteTag(name) => {
+                self.run_as(
+                    OpClass::Network,
+                    format!("Delete tag {name} on the remote"),
+                    cx,
+                    move |a, p, op| {
+                        let remotes = a.ports().remotes.remotes(p)?;
+                        let remote = pick_remote(&remotes, None).ok_or_else(|| {
+                            OpError::Refused("the repository has no remote".into())
+                        })?;
+                        a.delete_remote_tag(p, &remote.name, &name, op, op.cancel())
                     },
                 );
             }
@@ -1148,6 +1171,7 @@ mod tests {
         let tag = actions(&tag);
         assert!(tag.contains(&&MenuAction::PushTag("v1".into())));
         assert!(tag.contains(&&MenuAction::DeleteTag("v1".into())));
+        assert!(tag.contains(&&MenuAction::DeleteRemoteTag("v1".into())));
         let remote = menu_entries(
             &MenuTarget::Ref(tip("origin/feat", RefKind::RemoteBranch)),
             Some("main"),
@@ -1194,5 +1218,10 @@ mod tests {
                 .is_some()
         );
         assert!(MenuAction::DeleteTag("v1".into()).confirmation().is_none());
+        assert!(
+            MenuAction::DeleteRemoteTag("v1".into())
+                .confirmation()
+                .is_some()
+        );
     }
 }
