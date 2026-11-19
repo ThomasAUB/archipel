@@ -10,7 +10,7 @@ use std::rc::Rc;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, Context, Corners, Div, Hsla, MouseButton, MouseDownEvent,
+    AnyElement, App, Bounds, ContentMask, Context, Corners, Div, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point, ScrollEvent, SharedString, Stateful,
     Window, canvas, div, fill, point, px, size,
 };
@@ -447,14 +447,20 @@ fn paint_layer(layer: Layer, canvas_size: (u32, u32), zoom: Zoom) -> AnyElement 
                 ),
             };
             if f32::from(shown.size.width) > 0.0 {
-                let _ = window.paint_image(
-                    shown,
-                    image,
-                    Corners::default(),
-                    picture.render.clone(),
-                    0,
-                    false,
-                );
+                // The whole image, clipped by a mask: painting only the
+                // shown part would crop the texture to whole texels, so the
+                // image would stretch by a fraction of one as the split
+                // moves.
+                window.with_content_mask(Some(ContentMask { bounds: shown }), |window| {
+                    let _ = window.paint_image(
+                        image,
+                        image,
+                        Corners::default(),
+                        picture.render.clone(),
+                        0,
+                        false,
+                    );
+                });
             }
         },
     )
