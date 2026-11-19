@@ -57,7 +57,7 @@ too; prefer the names of this document in prose and in new code.
 │ v Uncategorized (1)    │
 │     * app         -3   │
 ├────────────────────────┤
-│[Add repos...][Clone...]│
+│[Add repos][New][Clone] │
 └────────────────────────┘
   * / o  Status Dot (dirty / clean)    +2 / -3  Sync Badge (ahead / behind)
 ```
@@ -68,7 +68,7 @@ too; prefer the names of this document in prose and in new code.
 | **Repo List** | The project's repositories, grouped by category when the project has categories (flat list otherwise). |
 | **Category Header** | Collapsible group title with its repo count. Right-click opens the **Category Menu** (rename, remove). |
 | **Sidebar Repo Row** | One repo: **Status Dot** (clean / dirty / …) and **Sync Badge** (`↑ahead ↓behind`). |
-| **Add repos… / Clone…** | Add local repos (pick a repo or a folder to scan), or open the Forge Panel's **Clone** tab. |
+| **Add repos… / New… / Clone…** | Add local repos (pick a repo or a folder to scan), create one in a local folder (the **New Repository** dialog: folder, first branch, "Commit the files already in the folder"; the new repo joins the Repo List selected), or open the Forge Panel's **Clone** tab. ([new_repo_dialog.rs](../crates/archipel-ui/src/new_repo_dialog.rs)) |
 
 ## 3. Tab Bar
 

@@ -11,8 +11,8 @@ use archipel_git::GitCli;
 use archipel_model::changes::ChangeKind;
 use archipel_model::ports::{
     BranchWriter, ChurnReader, CommitWriter, DiffReader, DiffSide, HistoryRewriter, IndexWriter,
-    RefReader, RefWriter, RemoteOps, RemoteReader, RemoteWriter, StashReader, StashWriter,
-    StatusReader, TagWriter, TreeReader, WorktreeSnapshots,
+    RefReader, RefWriter, RemoteOps, RemoteReader, RemoteWriter, RepoCreator, StashReader,
+    StashWriter, StatusReader, TagWriter, TreeReader, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -860,4 +860,27 @@ three
 fn commit_all(repo: &TestRepo, path: &RepoPath, cli: &GitCli) -> Oid {
     repo.git(&["add", "-A"]).unwrap();
     commit(cli, path, "more").unwrap()
+}
+
+#[test]
+fn init_repo_creates_the_folder_and_names_the_first_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cli = GitCli::default();
+    // A missing folder, with a branch name.
+    let dir = tmp.path().join("a").join("new");
+    let path = cli.init_repo(&dir, Some("trunk")).unwrap();
+    assert_eq!(path, RepoPath::new(&dir));
+    let head = std::fs::read_to_string(dir.join(".git").join("HEAD")).unwrap();
+    assert_eq!(head.trim(), "ref: refs/heads/trunk");
+    // A folder holding files: they stay, untracked.
+    let old = tmp.path().join("old");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("notes.txt"), "keep").unwrap();
+    let path = cli.init_repo(&old, None).unwrap();
+    assert!(old.join(".git").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(old.join("notes.txt")).unwrap(),
+        "keep"
+    );
+    assert_eq!(cli.summary(&path).unwrap().changes.untracked, 1);
 }

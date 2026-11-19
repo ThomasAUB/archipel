@@ -306,6 +306,14 @@ pub trait WorktreeSnapshots: Send + Sync {
     fn restore_paths(&self, repo: &RepoPath, snapshot: Oid) -> Result<(), GitError>;
 }
 
+/// Creates repositories (issue #68).
+pub trait RepoCreator: Send + Sync {
+    /// Makes `dir` (created when missing) a new, empty repository, its
+    /// first branch named `initial_branch` (Git's `init.defaultBranch` when
+    /// `None`).
+    fn init_repo(&self, dir: &Path, initial_branch: Option<&str>) -> Result<RepoPath, GitError>;
+}
+
 /// Network operations.
 pub trait RemoteOps: Send + Sync {
     /// Fetches.

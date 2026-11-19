@@ -10,6 +10,7 @@ use gpui_kit::{Context, PathPromptOptions, Point, Window};
 
 use crate::commit_panel::CommitPanel;
 use crate::forge_panel::ForgeTab;
+use crate::new_repo_dialog::{NewRepoDialog, NewRepoEvent};
 
 use super::Workspace;
 use super::menus::Menu;
@@ -72,6 +73,7 @@ impl Workspace {
             "palette.actions" => self.open_palette(PaletteKind::Actions, window, cx),
             "project.new" => self.new_project_from_folder(cx),
             "project.add_repos" => self.add_repos(cx),
+            "project.new_repo" => self.open_new_repo(window, cx),
             "project.clone" | "forge.clone" => self.open_forge(ForgeTab::Clone, window, cx),
             "commit.open" | "commit.submit" => self.open_commit(window, cx),
             "repos.checkout_all" => self.open_palette(PaletteKind::Checkout, window, cx),
@@ -244,6 +246,16 @@ impl Workspace {
                 core.open_project(&id)
             });
         });
+    }
+
+    /// Opens the New Repository dialog (issue #68).
+    pub(super) fn open_new_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        let dialog = cx.new(|cx| NewRepoDialog::new(core, window, cx));
+        let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| match e {
+            NewRepoEvent::Closed => this.close_overlay(window, cx),
+        });
+        self.show_overlay(Overlay::NewRepo(dialog), sub, cx);
     }
 
     #[allow(clippy::unused_self)] // called like every other view action
