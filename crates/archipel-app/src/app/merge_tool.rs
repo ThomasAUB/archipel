@@ -3,7 +3,9 @@
 //!
 //! * Opened by itself when a write or network operation of Archipel (pull,
 //!   merge, rebase, cherry-pick, stash pop, continue…) leaves a repo with
-//!   conflicts it did not have before; on demand with "Resolve conflicts".
+//!   conflicts it did not have before, or moves `HEAD` and stops on
+//!   conflicts (a rebase continued onto its next conflicting commit); on
+//!   demand with "Resolve conflicts".
 //! * What opens is the choice of the `merge_tool` setting, also set from
 //!   the action palette ([`MergeToolChoice`]): the built-in merge view by
 //!   default (the UI opens the repo tab on the first conflicted file, from
@@ -28,7 +30,7 @@ use crate::dashboard::DashboardRow;
 
 /// Label of the external merge tool operations: they are not watched for
 /// conflicts themselves (closing the tool with conflicts left must not
-/// reopen it). The merge view's own "Merge tool on <file>" shares it.
+/// reopen it).
 const MERGE_TOOL_OP: &str = "Merge tool";
 
 /// The merge tool choice and the repos whose external tool is open, shared
@@ -123,20 +125,43 @@ impl App {
                 let mut guard = lock(&self.session);
                 let Some(s) = guard.as_mut() else { return };
                 if let Some(row) = s.rows.iter().find(|r| r.id == repo) {
-                    let before = conflicted(row);
-                    s.conflicts_before.insert(repo, before);
+                    let head = row.summary().and_then(|s| s.head_oid);
+                    s.conflicts_before.insert(repo, (conflicted(row), head));
                 }
             }
             OpEventKind::Finished(_) => {
                 let before = lock(&self.session)
                     .as_mut()
                     .and_then(|s| s.conflicts_before.remove(&repo));
-                if before == Some(0) {
-                    self.resolve_conflicts(repo, true);
+                match before {
+                    Some((0, _)) => self.resolve_conflicts(repo, true),
+                    // In conflict already (the count may also be stale: the
+                    // watcher had not read the last resolution yet): new
+                    // conflicts only when the operation moved `HEAD`.
+                    Some((_, head)) => self.resolve_conflicts_if_moved(repo, head),
+                    None => {}
                 }
             }
             OpEventKind::Queued | OpEventKind::Progress(_) => {}
         }
+    }
+
+    /// Opens what resolves the conflicts of `repo` when its `HEAD` is no
+    /// longer `before` (read off the caller's thread).
+    fn resolve_conflicts_if_moved(&self, repo: RepoId, before: Option<archipel_model::Oid>) {
+        let Some(path) = self.path_of(repo) else {
+            return;
+        };
+        let refs = self.services.git.refs.clone();
+        let me = self.me.clone();
+        self.scheduler.runtime().spawn_blocking(move || {
+            let head = refs.resolve(&path, "HEAD").ok().flatten();
+            if head != before
+                && let Some(app) = me.upgrade()
+            {
+                app.resolve_conflicts(repo, true);
+            }
+        });
     }
 
     /// Opens what resolves the conflicts of `repo`, once its conflicted
