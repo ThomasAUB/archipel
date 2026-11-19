@@ -3,7 +3,8 @@
 //! uncommitted-changes row, or when nothing is selected) as a folder tree,
 //! with a fuzzy filter. A file clicked there opens read-only, highlighted,
 //! in place of the graph; selecting another commit shows the same file
-//! there, so a file can be followed through the history.
+//! there, so a file can be followed through the history. An image file
+//! shows as its image (an SVG can show its source instead).
 
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
@@ -16,12 +17,14 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
-    ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window, div, px,
-    uniform_list,
+    AnyElement, Context, Entity, FocusHandle, ImageFormat, KeyDownEvent, MouseButton,
+    MouseDownEvent, ScrollStrategy, SharedString, Subscription, SvgRenderer,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
 use crate::file_edit::{self, language_of};
+use crate::image_view::viewer::ImageViewer;
+use crate::image_view::{self, Picture, image_format};
 use crate::theme::{color, mono_font, row_height};
 use crate::widgets::{ListMove, SHORT_OID, button, list_row, scroll_list, section, unmodified};
 
@@ -162,6 +165,8 @@ pub(super) struct FileBrowser {
     selected: Option<String>,
     /// File open in place of the graph, reopened at the next commit selected.
     open: Option<String>,
+    /// SVG files show their source, not their image.
+    svg_source: bool,
     filter: Entity<InputState>,
     _filter_sub: Subscription,
     focus: FocusHandle,
@@ -182,8 +187,32 @@ enum Content {
     /// Read, waiting for the next render to build its editor.
     Loaded(String),
     Shown(Entity<EditorState>),
+    /// An image file, decoded.
+    Image(Entity<ImageViewer>),
     /// Why the file is not shown (binary, too large, unreadable).
     Note(String),
+}
+
+/// What a file shows once read.
+enum Readable {
+    Text(String),
+    Image(Picture),
+}
+
+/// What to show of `bytes` of `path`: an image file its image (an SVG
+/// its source with `svg_source`), any other file, or an image that does
+/// not decode, its text.
+fn readable(
+    path: &str,
+    bytes: &[u8],
+    svg: &SvgRenderer,
+    svg_source: bool,
+) -> Result<Readable, String> {
+    let format = image_format(path).filter(|&f| !(svg_source && f == ImageFormat::Svg));
+    if let Some(picture) = format.and_then(|f| image_view::decode(f, bytes, svg).ok()) {
+        return Ok(Readable::Image(picture));
+    }
+    viewable_text(bytes).map(Readable::Text)
 }
 
 /// The text of `bytes` to show, CRLF turned into LF; refused for binary
@@ -241,6 +270,7 @@ impl RepoView {
             rows: Arc::default(),
             selected: None,
             open: None,
+            svg_source: false,
             filter,
             _filter_sub: sub,
             focus,
@@ -338,7 +368,7 @@ impl RepoView {
         let Some(b) = &mut self.browser else {
             return;
         };
-        let at = b.at;
+        let (at, svg_source) = (b.at, b.svg_source);
         let mut dir = parent(&path);
         while let Some(d) = dir {
             b.expanded.insert(d.to_owned());
@@ -371,13 +401,14 @@ impl RepoView {
         }
         let actions = self.core.repo_actions().clone();
         let repo = self.path.clone();
+        let svg = cx.svg_renderer();
         let task = {
             let path = path.clone();
             cx.background_spawn(async move {
                 actions
                     .read_file_at(&repo, at, &path)
                     .map_err(|e| e.to_string())
-                    .and_then(|bytes| viewable_text(&bytes))
+                    .and_then(|bytes| readable(&path, &bytes, &svg, svg_source))
             })
         };
         cx.spawn(async move |this, cx| {
@@ -390,7 +421,10 @@ impl RepoView {
                     return; // another file was opened meanwhile
                 }
                 open.content = match result {
-                    Ok(text) => Content::Loaded(text),
+                    Ok(Readable::Text(text)) => Content::Loaded(text),
+                    Ok(Readable::Image(picture)) => {
+                        Content::Image(cx.new(|cx| ImageViewer::new(picture, cx)))
+                    }
                     Err(e) if kind.is_none() && at.is_some() => {
                         Content::Note(format!("Not in this commit ({e})"))
                     }
@@ -658,6 +692,10 @@ impl RepoView {
             Content::Note(note) => Some(note.clone()),
             _ => None,
         };
+        let image = match &open.content {
+            Content::Image(image) => Some(image.clone()),
+            _ => None,
+        };
         // At a commit, Edit goes to the working-copy file (see
         // `edit_open_file`).
         let editable = (viewer.is_some() || was_editing)
@@ -677,17 +715,6 @@ impl RepoView {
             self.open_tree_file(path, cx);
             return self.render_open_file(window, cx);
         }
-        let place = match at {
-            Some(oid) => format!("at {}", oid.short(SHORT_OID)),
-            None => "working copy".to_owned(),
-        };
-        let keys = if editable && at.is_none() {
-            "double-click edits · ↑↓ files · Esc closes"
-        } else if editable {
-            "double-click edits the working copy · ↑↓ files · Esc closes"
-        } else {
-            "read-only · ↑↓ files · Esc closes"
-        };
         let bar = if editing {
             file_edit::render_bar(self, cx)
         } else {
@@ -709,9 +736,13 @@ impl RepoView {
                         .flex_none()
                         .text_xs()
                         .text_color(color(cx, T::FgMuted))
-                        .child(format!("{place} · {keys}")),
+                        .child(file_note(at, editable)),
                 )
             })
+            .when(
+                !editing && image_format(&path) == Some(ImageFormat::Svg),
+                |header| header.child(self.svg_toggle(path.clone(), cx)),
+            )
             .when(editable && !editing, |header| {
                 header.child(button("file-edit", "Edit", cx).on_click(
                     cx.listener(|v: &mut Self, _, window, cx| v.edit_open_file(window, cx)),
@@ -722,6 +753,8 @@ impl RepoView {
             file_edit::render_body(self, cx)
         } else if let Some(editor) = viewer {
             Self::render_viewer(&editor, editable, cx)
+        } else if let Some(image) = image {
+            image.into_any_element()
         } else if let Some(note) = note {
             muted(note, cx)
         } else {
@@ -735,6 +768,20 @@ impl RepoView {
             .overflow_hidden()
             .child(header)
             .child(body)
+            .into_any_element()
+    }
+
+    /// The button showing an SVG's source or its image.
+    fn svg_toggle(&self, path: String, cx: &mut Context<Self>) -> AnyElement {
+        let source = self.browser.as_ref().is_some_and(|b| b.svg_source);
+        let label = if source { "Image" } else { "Source" };
+        button("file-svg-source", label, cx)
+            .on_click(cx.listener(move |v: &mut Self, _, _, cx| {
+                if let Some(b) = &mut v.browser {
+                    b.svg_source = !b.svg_source;
+                }
+                v.open_tree_file(path.clone(), cx);
+            }))
             .into_any_element()
     }
 
@@ -792,6 +839,22 @@ impl RepoView {
         }
         file_edit::open(self, path, line, window, cx);
     }
+}
+
+/// Where the open file is read from, and its keys.
+fn file_note(at: Option<Oid>, editable: bool) -> String {
+    let place = match at {
+        Some(oid) => format!("at {}", oid.short(SHORT_OID)),
+        None => "working copy".to_owned(),
+    };
+    let keys = if editable && at.is_none() {
+        "double-click edits · ↑↓ files · Esc closes"
+    } else if editable {
+        "double-click edits the working copy · ↑↓ files · Esc closes"
+    } else {
+        "read-only · ↑↓ files · Esc closes"
+    };
+    format!("{place} · {keys}")
 }
 
 fn muted(text: impl Into<SharedString>, cx: &Context<RepoView>) -> AnyElement {
