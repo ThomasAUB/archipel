@@ -658,8 +658,9 @@ impl RepoView {
             Content::Note(note) => Some(note.clone()),
             _ => None,
         };
-        let editable = at.is_none()
-            && (viewer.is_some() || was_editing)
+        // At a commit, Edit goes to the working-copy file (see
+        // `edit_open_file`).
+        let editable = (viewer.is_some() || was_editing)
             && self.browser.as_ref().is_some_and(|b| {
                 b.files.as_ref().is_some_and(|f| {
                     f.iter().any(|e| {
@@ -667,7 +668,7 @@ impl RepoView {
                     })
                 })
             });
-        let editing = editable && file_edit::current(self, Some(&path), cx);
+        let editing = editable && at.is_none() && file_edit::current(self, Some(&path), cx);
         if let Some(OpenDiff::File(open)) = &mut self.open_diff {
             open.editing = editing;
         }
@@ -680,8 +681,10 @@ impl RepoView {
             Some(oid) => format!("at {}", oid.short(SHORT_OID)),
             None => "working copy".to_owned(),
         };
-        let keys = if editable {
+        let keys = if editable && at.is_none() {
             "double-click edits · ↑↓ files · Esc closes"
+        } else if editable {
+            "double-click edits the working copy · ↑↓ files · Esc closes"
         } else {
             "read-only · ↑↓ files · Esc closes"
         };
@@ -769,20 +772,24 @@ impl RepoView {
             .into_any_element()
     }
 
-    /// Opens the diff view's editor on the open working-copy file, at the
-    /// viewer's cursor line.
+    /// Opens the diff view's editor on the open file as it is in the
+    /// working copy, at the viewer's cursor line. Opened at a commit, the
+    /// uncommitted-changes row is selected first: what is edited and saved
+    /// is the file on disk, local changes included, never that commit's
+    /// version.
     fn edit_open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(OpenDiff::File(open)) = &self.open_diff else {
             return;
         };
-        if open.at.is_some() {
-            return;
-        }
         let line = match &open.content {
             Content::Shown(editor) => editor.read(cx).cursor_position().line + 1,
             _ => 1,
         };
         let path = open.path.clone();
+        if open.at.is_some() {
+            // Reopens the file, from the working copy, in the browser.
+            self.select_wip(cx);
+        }
         file_edit::open(self, path, line, window, cx);
     }
 }
