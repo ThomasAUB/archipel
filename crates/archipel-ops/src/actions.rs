@@ -696,6 +696,23 @@ impl RepoActions {
         Ok(self.git.remote.push(repo, &request, progress, cancel)?)
     }
 
+    /// Deletes a tag on a remote; the local tag is kept.
+    pub fn delete_remote_tag(
+        &self,
+        repo: &RepoPath,
+        remote: &str,
+        name: &str,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), OpError> {
+        let request = PushRequest {
+            remote: Some(remote.into()),
+            refspec: Some(format!(":{}", tag_ref(name))),
+            ..PushRequest::default()
+        };
+        Ok(self.git.remote.push(repo, &request, progress, cancel)?)
+    }
+
     /// Deletes a branch on its remote; `short` is the remote-tracking name
     /// (`origin/feat`, or `team/fork/feat` for a remote named `team/fork`).
     pub fn delete_remote_branch(

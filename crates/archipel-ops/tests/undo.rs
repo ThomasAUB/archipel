@@ -575,6 +575,29 @@ fn remote_branch_of_a_remote_named_with_a_slash_is_deleted() {
     assert!(left.trim().is_empty(), "{left}");
 }
 
+#[test]
+fn remote_tag_is_deleted_and_the_local_one_kept() {
+    let e = env();
+    let remote_dir = tempfile::tempdir().unwrap();
+    let bare = remote_dir.path().join("origin.git");
+    git(
+        remote_dir.path(),
+        &["init", "-q", "--bare", bare.to_str().unwrap()],
+    )
+    .unwrap();
+    e.repo
+        .git(&["remote", "add", "origin", bare.to_str().unwrap()])
+        .unwrap();
+    e.repo.git(&["tag", "v1"]).unwrap();
+    e.repo.git(&["push", "-q", "origin", "refs/tags/v1"]).unwrap();
+    e.actions
+        .delete_remote_tag(&e.path, "origin", "v1", &NoProgress, &CancelToken::new())
+        .unwrap();
+    let left = git(&bare, &["tag", "--list", "v1"]).unwrap();
+    assert!(left.trim().is_empty(), "{left}");
+    assert!(e.cli.resolve(&e.path, "refs/tags/v1").unwrap().is_some());
+}
+
 impl Env {
     fn read(&self, file: &str) -> String {
         std::fs::read_to_string(self.repo.path().join(file)).unwrap()
