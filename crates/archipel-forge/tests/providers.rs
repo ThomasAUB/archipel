@@ -11,7 +11,8 @@ use archipel_forge::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use archipel_model::ForgeError;
 use archipel_model::forge::{
     CiJob, CiJobState, CiRun, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod,
-    MergeOptions, MergeState, Namespace, NamespaceKind, PullRequestDraft, ReviewState,
+    MergeOptions, MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft,
+    ReviewState,
 };
 use archipel_model::ports::{
     CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
@@ -1140,4 +1141,134 @@ fn gitlab_job_log_and_pipeline_retry() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("api scope"), "{e}");
+}
+
+fn new_repo(private: bool) -> NewRemoteRepo {
+    NewRemoteRepo {
+        name: "tool".into(),
+        description: Some("A tool".into()),
+        private,
+    }
+}
+
+#[test]
+fn github_creates_repositories_for_the_user_or_an_organization() {
+    let http = Arc::new(FakeHttp::default());
+    let created = |full: &str| {
+        json!({"full_name": full, "name": "tool", "description": "A tool",
+               "clone_url": format!("https://github.com/{full}.git"),
+               "ssh_url": format!("git@github.com:{full}.git")})
+    };
+    http.on(Method::Post, "/user/repos", 201, created("me/tool"));
+    http.on(Method::Post, "/orgs/acme/repos", 201, created("acme/tool"));
+    let c = client(&http, &["github.com"]);
+    let acct = account("github.com", ForgeKind::github(), "https://api.github.com");
+    let user = Namespace {
+        path: "me".into(),
+        kind: NamespaceKind::User,
+    };
+    let repo = c.create_repository(&acct, &user, &new_repo(true)).unwrap();
+    assert_eq!(repo.path, "me/tool");
+    assert_eq!(repo.https_url, "https://github.com/me/tool.git");
+    let sent = http.seen();
+    assert_eq!(sent[0].url, "https://api.github.com/user/repos");
+    assert_eq!(
+        body(&sent[0]),
+        json!({"name": "tool", "description": "A tool", "private": true, "auto_init": false})
+    );
+
+    let org = Namespace {
+        path: "acme".into(),
+        kind: NamespaceKind::Organization,
+    };
+    let repo = c.create_repository(&acct, &org, &new_repo(false)).unwrap();
+    assert_eq!(repo.ssh_url, "git@github.com:acme/tool.git");
+    assert_eq!(body(&http.seen()[1])["private"], json!(false));
+}
+
+#[test]
+fn github_repository_creation_failures_say_why() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Post,
+        "/user/repos",
+        422,
+        json!({"message": "Repository creation failed.",
+               "errors": [{"resource": "Repository", "code": "custom", "field": "name",
+                           "message": "name already exists on this account"}]}),
+    );
+    http.on(
+        Method::Post,
+        "/orgs/acme/repos",
+        403,
+        json!({"message": "Forbidden"}),
+    );
+    let c = client(&http, &["github.com"]);
+    let acct = account("github.com", ForgeKind::github(), "https://api.github.com");
+    let user = Namespace {
+        path: "me".into(),
+        kind: NamespaceKind::User,
+    };
+    let err = c
+        .create_repository(&acct, &user, &new_repo(true))
+        .unwrap_err();
+    assert!(err.to_string().contains("name already exists"), "{err}");
+    let org = Namespace {
+        path: "acme".into(),
+        kind: NamespaceKind::Organization,
+    };
+    let err = c
+        .create_repository(&acct, &org, &new_repo(true))
+        .unwrap_err();
+    assert!(err.to_string().contains("Administration"), "{err}");
+}
+
+#[test]
+fn gitlab_creates_projects_in_the_user_namespace_or_a_group() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/namespaces/grp%2Fsub",
+        200,
+        json!({"id": 42, "full_path": "grp/sub"}),
+    );
+    http.on(
+        Method::Post,
+        "/projects",
+        201,
+        json!({"path_with_namespace": "grp/sub/tool", "path": "tool",
+               "http_url_to_repo": "https://gitlab.com/grp/sub/tool.git",
+               "ssh_url_to_repo": "git@gitlab.com:grp/sub/tool.git"}),
+    );
+    let c = client(&http, &["gitlab.com"]);
+    let acct = account(
+        "gitlab.com",
+        ForgeKind::gitlab(),
+        "https://gitlab.com/api/v4",
+    );
+    let user = Namespace {
+        path: "me".into(),
+        kind: NamespaceKind::User,
+    };
+    c.create_repository(&acct, &user, &new_repo(true)).unwrap();
+    let sent = http.seen();
+    assert_eq!(sent.len(), 1, "no namespace lookup for the user's own");
+    assert_eq!(
+        body(&sent[0]),
+        json!({"name": "tool", "path": "tool", "description": "A tool",
+               "visibility": "private", "initialize_with_readme": false})
+    );
+
+    let group = Namespace {
+        path: "grp/sub".into(),
+        kind: NamespaceKind::Group,
+    };
+    let repo = c
+        .create_repository(&acct, &group, &new_repo(false))
+        .unwrap();
+    assert_eq!(repo.path, "grp/sub/tool");
+    let sent = http.seen();
+    let created = body(&sent[2]);
+    assert_eq!(created["namespace_id"], json!(42));
+    assert_eq!(created["visibility"], json!("public"));
 }

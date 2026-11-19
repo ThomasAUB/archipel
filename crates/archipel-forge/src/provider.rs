@@ -4,8 +4,8 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJobLog, CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo,
+    CiJobLog, CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace, NewRemoteRepo,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 
 use crate::http::HttpTransport;
@@ -107,7 +107,8 @@ pub trait CiApi: Send + Sync {
     }
 }
 
-/// Account browsing (clone from an account / org / group).
+/// Account browsing (clone from an account / org / group) and repository
+/// creation (publish a local repository).
 pub trait DirectoryApi: Send + Sync {
     /// `user`'s own namespace first, then its organizations / groups.
     fn namespaces(&self, at: &Endpoint, user: &str) -> Result<Vec<Namespace>, ForgeError>;
@@ -117,6 +118,18 @@ pub trait DirectoryApi: Send + Sync {
         at: &Endpoint,
         namespace: &Namespace,
     ) -> Result<Vec<RemoteRepo>, ForgeError>;
+    /// Creates an empty repository in `namespace`. Unsupported by default.
+    fn create_repository(
+        &self,
+        at: &Endpoint,
+        namespace: &Namespace,
+        repo: &NewRemoteRepo,
+    ) -> Result<RemoteRepo, ForgeError> {
+        let _ = (at, namespace, repo);
+        Err(ForgeError::Unsupported(
+            "this forge cannot create repositories".into(),
+        ))
+    }
 }
 
 /// A complete provider: what [`crate::ForgeClient::register`] takes.

@@ -225,6 +225,9 @@ impl Workspace {
             StagingEvent::ChangeRemoteUrl(id, branch) => {
                 self.change_remote_url(*id, branch.clone(), window, cx);
             }
+            StagingEvent::Publish(id, dir, branch) => {
+                self.open_publish(*id, dir, branch.clone(), window, cx);
+            }
         }
     }
 }

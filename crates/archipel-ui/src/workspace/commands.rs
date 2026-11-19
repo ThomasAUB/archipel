@@ -11,6 +11,7 @@ use gpui_kit::{Context, PathPromptOptions, Point, Window};
 use crate::commit_panel::CommitPanel;
 use crate::forge_panel::ForgeTab;
 use crate::new_repo_dialog::{NewRepoDialog, NewRepoEvent};
+use crate::publish_dialog::{PublishDialog, PublishEvent};
 
 use super::Workspace;
 use super::menus::Menu;
@@ -257,6 +258,25 @@ impl Workspace {
             NewRepoEvent::Closed => this.close_overlay(window, cx),
         });
         self.show_overlay(Overlay::NewRepo(dialog), sub, cx);
+    }
+
+    /// Opens the Publish dialog for `branch` of repo row `repo` (at `dir`),
+    /// which has no remote: Push on it creates the repository on a forge.
+    pub(super) fn open_publish(
+        &mut self,
+        repo: RepoId,
+        dir: &std::path::Path,
+        branch: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let core = self.core.clone();
+        let dialog = cx.new(|cx| PublishDialog::new(core, repo, dir, branch, window, cx));
+        let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| match e {
+            PublishEvent::Closed => this.close_overlay(window, cx),
+            PublishEvent::SignIn => this.open_forge(ForgeTab::Accounts, window, cx),
+        });
+        self.show_overlay(Overlay::Publish(dialog), sub, cx);
     }
 
     #[allow(clippy::unused_self)] // called like every other view action

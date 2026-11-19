@@ -4,8 +4,8 @@
 use archipel_model::ForgeError;
 use archipel_model::forge::{
     CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeOptions, MergeReport,
-    MergeState, Namespace, NamespaceKind, PullRequestDraft, PullRequestRef, PullRequestStatus,
-    RemoteRepo, ReviewState,
+    MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef,
+    PullRequestStatus, RemoteRepo, ReviewState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -111,6 +111,29 @@ struct Project {
     #[serde(default)]
     archived: bool,
 }
+
+impl From<Project> for RemoteRepo {
+    fn from(p: Project) -> Self {
+        Self {
+            path: p.path_with_namespace,
+            name: p.path,
+            description: p.description.filter(|d| !d.is_empty()),
+            https_url: p.http_url_to_repo,
+            ssh_url: p.ssh_url_to_repo,
+            default_branch: p.default_branch,
+            archived: p.archived,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct NamespaceId {
+    id: u64,
+}
+
+/// What a token needs to create a project.
+const CREATE_SCOPE: &str = "the token needs the api scope, and in a group a role allowed to \
+                            create projects there";
 
 /// What a token needs to read job logs.
 const LOG_SCOPE: &str = "the token needs the read_api scope";
@@ -462,17 +485,38 @@ impl DirectoryApi for GitLab {
             ),
         };
         let projects: Vec<Project> = api(at).get_pages(&path, &namespace.path)?;
-        Ok(projects
-            .into_iter()
-            .map(|p| RemoteRepo {
-                path: p.path_with_namespace,
-                name: p.path,
-                description: p.description.filter(|d| !d.is_empty()),
-                https_url: p.http_url_to_repo,
-                ssh_url: p.ssh_url_to_repo,
-                default_branch: p.default_branch,
-                archived: p.archived,
-            })
-            .collect())
+        Ok(projects.into_iter().map(RemoteRepo::from).collect())
+    }
+
+    fn create_repository(
+        &self,
+        at: &Endpoint,
+        namespace: &Namespace,
+        repo: &NewRemoteRepo,
+    ) -> Result<RemoteRepo, ForgeError> {
+        let api = api(at);
+        let mut body = json!({
+            "name": repo.name,
+            "path": repo.name,
+            "visibility": if repo.private { "private" } else { "public" },
+            "initialize_with_readme": false,
+        });
+        // The user's own namespace is the default; a group is named by id.
+        if namespace.kind != NamespaceKind::User {
+            let found: NamespaceId = api.get(
+                &format!("/namespaces/{}", encode(&namespace.path)),
+                &namespace.path,
+            )?;
+            body["namespace_id"] = json!(found.id);
+        }
+        if let Some(description) = repo.description.as_deref().filter(|d| !d.is_empty()) {
+            body["description"] = json!(description);
+        }
+        let created: Project = scoped(
+            api.write(Method::Post, "/projects", body, &namespace.path),
+            "create a project",
+            CREATE_SCOPE,
+        )?;
+        Ok(created.into())
     }
 }

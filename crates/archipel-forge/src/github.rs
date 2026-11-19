@@ -3,8 +3,8 @@
 use archipel_model::ForgeError;
 use archipel_model::forge::{
     CiJob, CiJobState, CiRun, ForgeKind, MergeMethod, MergeOptions, MergeReport, MergeState,
-    Namespace, NamespaceKind, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
-    ReviewState, overall_ci_state,
+    Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    RemoteRepo, ReviewState, overall_ci_state,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -146,6 +146,25 @@ struct Repo {
     #[serde(default)]
     archived: bool,
 }
+
+impl From<Repo> for RemoteRepo {
+    fn from(r: Repo) -> Self {
+        Self {
+            path: r.full_name,
+            name: r.name,
+            description: r.description.filter(|d| !d.is_empty()),
+            https_url: r.clone_url,
+            ssh_url: r.ssh_url,
+            default_branch: r.default_branch,
+            archived: r.archived,
+        }
+    }
+}
+
+/// What a token needs to create a repository.
+const CREATE_SCOPE: &str = "the token needs the repo scope (classic token) or Administration: \
+                            read and write (fine-grained token), and in an organization the \
+                            right to create repositories there";
 
 /// The app slug of GitHub Actions check runs.
 const ACTIONS_APP: &str = "github-actions";
@@ -569,17 +588,34 @@ impl DirectoryApi for GitHub {
             }
         };
         let repos: Vec<Repo> = api(at).get_pages(&path, &namespace.path)?;
-        Ok(repos
-            .into_iter()
-            .map(|r| RemoteRepo {
-                path: r.full_name,
-                name: r.name,
-                description: r.description.filter(|d| !d.is_empty()),
-                https_url: r.clone_url,
-                ssh_url: r.ssh_url,
-                default_branch: r.default_branch,
-                archived: r.archived,
-            })
-            .collect())
+        Ok(repos.into_iter().map(RemoteRepo::from).collect())
+    }
+
+    fn create_repository(
+        &self,
+        at: &Endpoint,
+        namespace: &Namespace,
+        repo: &NewRemoteRepo,
+    ) -> Result<RemoteRepo, ForgeError> {
+        let path = match namespace.kind {
+            NamespaceKind::User => "/user/repos".to_owned(),
+            NamespaceKind::Organization | NamespaceKind::Group => {
+                format!("/orgs/{}/repos", encode(&namespace.path))
+            }
+        };
+        let mut body = json!({
+            "name": repo.name,
+            "private": repo.private,
+            "auto_init": false,
+        });
+        if let Some(description) = repo.description.as_deref().filter(|d| !d.is_empty()) {
+            body["description"] = json!(description);
+        }
+        let created: Repo = scoped(
+            api(at).write(Method::Post, &path, body, &namespace.path),
+            "create a repository",
+            CREATE_SCOPE,
+        )?;
+        Ok(created.into())
     }
 }

@@ -390,3 +390,14 @@ pub struct RemoteRepo {
     /// Archived (read-only).
     pub archived: bool,
 }
+
+/// A repository to create on a forge (publish a local repository).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewRemoteRepo {
+    /// Name, also its path in the namespace (`my-tool`).
+    pub name: String,
+    /// Description.
+    pub description: Option<String>,
+    /// Visible to its members only.
+    pub private: bool,
+}

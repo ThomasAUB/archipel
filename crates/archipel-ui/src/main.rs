@@ -40,6 +40,7 @@ mod menu;
 mod merge_view;
 mod new_repo_dialog;
 mod palette;
+mod publish_dialog;
 mod quick_edit;
 mod repo_view;
 mod staging;

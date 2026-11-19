@@ -57,7 +57,7 @@ impl App {
 
     /// Reads again the forge status of repo row `main` and of its linked
     /// worktree rows.
-    fn reload_forge_of(&self, main: RepoId) {
+    pub(super) fn reload_forge_of(&self, main: RepoId) {
         let ids: Vec<RepoId> = lock(&self.session)
             .as_ref()
             .map(|s| {
