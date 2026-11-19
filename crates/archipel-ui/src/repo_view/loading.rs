@@ -239,6 +239,10 @@ impl RepoView {
     ) {
         self.select_wip(cx);
         self.focus.focus(window, cx);
+        // In place of the stopped operation's "failed: git … exit 1".
+        self.status = Some(format!(
+            "Stopped on conflicts: resolve {file} below, then the other conflicted files"
+        ));
         working_copy::load_changes(self, cx);
         working_copy::open_worktree_file(self, file, archipel_model::ports::DiffSide::Unstaged, cx);
     }
