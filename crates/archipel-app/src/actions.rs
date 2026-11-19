@@ -334,6 +334,7 @@ impl ActionRegistry {
         r.register(ui("palette.actions", "Show all actions…", always));
         r.register(ui("project.new", "New project…", always));
         r.register(ui("project.add_repos", "Add repositories…", with_project));
+        r.register(ui("project.new_repo", "New repository…", with_project));
         r.register(ui(
             "project.clone",
             "Clone a repository into the project…",

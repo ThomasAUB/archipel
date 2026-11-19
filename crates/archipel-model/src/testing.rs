@@ -22,9 +22,9 @@ use crate::ports::{
     DiffReader, DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink,
     JournalStore, LocalFilesCopier, MergeForecaster, MergeToolLauncher, ProjectRegistry,
     ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RemoteWriter,
-    RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader, SubmoduleReader,
-    SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore, WatchHandle, WorktreeFiles,
-    WorktreeReader, WorktreeSnapshots, WorktreeWriter,
+    RepoCreator, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
+    SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore,
+    WatchHandle, WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -754,6 +754,15 @@ fn remove_stash(r: &mut FakeRepo, index: u32) {
         if s.index > index {
             s.index -= 1;
         }
+    }
+}
+
+impl RepoCreator for FakeGit {
+    fn init_repo(&self, dir: &Path, initial_branch: Option<&str>) -> Result<RepoPath, GitError> {
+        let path = RepoPath::new(dir);
+        self.record("init", &path, initial_branch.unwrap_or_default())?;
+        self.insert(&path, FakeRepo::default());
+        Ok(path)
     }
 }
 

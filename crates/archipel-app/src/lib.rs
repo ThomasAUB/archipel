@@ -42,9 +42,10 @@ pub mod settings;
 
 pub use actions::{Action, ActionContext, ActionRegistry, Command, CustomCommand};
 pub use app::{
-    App, AppError, AppEvent, CloneOutcome, CloneProtocol, DirectoryTarget, Extensions,
-    NewSetRequest, ProjectIcon, ProjectIdentity, ProjectWorktree, PullRequestOutcome,
-    PullRequestPlan, PullRequestTarget, RepoPullRequests, Services, SetMemberPlan, SetMemberState,
-    SetRepoInfo, SetReport, clone_dir_name, file_project_id, initials, split_clone_urls,
+    App, AppError, AppEvent, CloneOutcome, CloneProtocol, CreateRepoRequest, DirectoryTarget,
+    Extensions, INITIAL_COMMIT_MESSAGE, NewSetRequest, ProjectIcon, ProjectIdentity,
+    ProjectWorktree, PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoPullRequests,
+    Services, SetMemberPlan, SetMemberState, SetRepoInfo, SetReport, clone_dir_name,
+    file_project_id, initials, split_clone_urls,
 };
 pub use archipel_stats::{BranchRow, BranchesView, DEFAULT_STALE_BRANCH_DAYS};

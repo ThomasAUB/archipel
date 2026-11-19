@@ -795,3 +795,71 @@ fn conflict_forecast_checks_upstream_and_default_branch_once_per_commits() {
     assert!(!e.app.rows()[0].forecast.will_conflict());
     assert_eq!(forecast_calls(&e), calls + 1);
 }
+
+/// The ops the fake recorded on `path`, in order (issue #68).
+fn ops_on(e: &Env, path: &RepoPath) -> Vec<(&'static str, String)> {
+    let at = path.as_path().display().to_string();
+    e.git
+        .calls()
+        .into_iter()
+        .filter(|c| c.repo == at)
+        .map(|c| (c.op, c.detail))
+        .collect()
+}
+
+#[test]
+fn create_repo_inits_commits_its_files_and_adds_it() {
+    use archipel_app::{AppError, CreateRepoRequest, INITIAL_COMMIT_MESSAGE};
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    // A folder holding files: committed.
+    let dir = e.dir.path().join("notes");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("todo.md"), "- a").unwrap();
+    let path = e
+        .app
+        .create_repo(&CreateRepoRequest {
+            dir: dir.clone(),
+            initial_branch: Some(" trunk ".into()),
+            initial_commit: true,
+        })
+        .unwrap();
+    assert_eq!(path, RepoPath::new(&dir));
+    assert_eq!(
+        ops_on(&e, &path),
+        vec![
+            ("init", "trunk".to_owned()),
+            ("stage", String::new()),
+            ("commit", INITIAL_COMMIT_MESSAGE.to_owned()),
+        ]
+    );
+    assert!(e.app.all_rows().iter().any(|r| r.id == path.id()));
+    assert_eq!(e.app.ui_state().unwrap().selected_repo, Some(path.id()));
+
+    // A new, empty folder: nothing to commit, Git's default branch.
+    let empty = e.dir.path().join("fresh");
+    let path = e
+        .app
+        .create_repo(&CreateRepoRequest {
+            dir: empty.clone(),
+            initial_branch: None,
+            initial_commit: true,
+        })
+        .unwrap();
+    assert_eq!(ops_on(&e, &path), vec![("init", String::new())]);
+
+    // Already a repository, or inside one: refused before anything runs.
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    let calls = e.git.calls().len();
+    for refused in [dir.clone(), dir.join("sub")] {
+        let err = e
+            .app
+            .create_repo(&CreateRepoRequest {
+                dir: refused.clone(),
+                ..CreateRepoRequest::default()
+            })
+            .unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "{err}");
+    }
+    assert_eq!(e.git.calls().len(), calls);
+}

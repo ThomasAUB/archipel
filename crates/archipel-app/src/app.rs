@@ -30,6 +30,7 @@ use crate::keymap::Keymap;
 mod auto_fetch;
 mod categories;
 mod clone;
+mod create;
 mod dispatch;
 mod forecast;
 mod forge_flow;
@@ -50,6 +51,7 @@ mod worktree_sets;
 mod worktrees;
 
 pub use clone::{CloneOutcome, CloneProtocol, clone_dir_name, split_clone_urls};
+pub use create::{CreateRepoRequest, INITIAL_COMMIT_MESSAGE};
 pub use forge_flow::{PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoPullRequests};
 pub use identity::{ProjectIcon, ProjectIdentity, initials};
 pub use projects::{DirectoryTarget, file_project_id};

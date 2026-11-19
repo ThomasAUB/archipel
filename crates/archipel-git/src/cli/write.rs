@@ -4,7 +4,8 @@ use std::path::Path;
 
 use archipel_model::ports::{
     BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolLauncher, RefReader,
-    RefWriter, RemoteOps, RemoteReader, RemoteWriter, StashWriter, TagWriter, WorktreeSnapshots,
+    RefWriter, RemoteOps, RemoteReader, RemoteWriter, RepoCreator, StashWriter, TagWriter,
+    WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -605,6 +606,20 @@ impl RemoteWriter for GitCli {
             .map(str::trim)
             .find(|l| !l.is_empty())
             .map(str::to_owned))
+    }
+}
+
+impl RepoCreator for GitCli {
+    fn init_repo(&self, dir: &Path, initial_branch: Option<&str>) -> Result<RepoPath, GitError> {
+        std::fs::create_dir_all(dir).map_err(|e| GitError::Io {
+            path: dir.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let branch = initial_branch.map(|b| format!("--initial-branch={b}"));
+        let mut args = vec!["init", "--quiet"];
+        args.extend(branch.as_deref());
+        self.runner.run(Cmd::new(dir, CmdKind::Write, &args))?;
+        Ok(RepoPath::new(dir))
     }
 }
 

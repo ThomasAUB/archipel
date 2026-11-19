@@ -126,9 +126,13 @@ impl Workspace {
         let row_frame = if grouped { 20.0 } else { 8.0 } + 8.0 + 8.0 + 2.0 * 8.0;
         // Group header: padding (px_2), arrow, and the gaps around the name.
         let header_frame = 16.0 + 12.0 + 2.0 * 4.0;
-        // Footer: padding, the two buttons' padding and border, the gap.
-        let mut fit: f32 =
-            16.0 + 2.0 * 18.0 + 8.0 + measure("Add repos…", size) + measure("Clone…", size);
+        // Footer: padding, the three buttons' padding and border, the gaps.
+        let mut fit: f32 = 16.0
+            + 3.0 * 18.0
+            + 2.0 * 8.0
+            + measure("Add repos…", size)
+            + measure("New…", size)
+            + measure("Clone…", size);
         for group in &groups {
             if grouped {
                 let name = group.category.as_deref().unwrap_or("Uncategorized");
@@ -283,6 +287,9 @@ impl Workspace {
                         button("add-repo", "Add repos…", cx)
                             .on_click(cx.listener(|this, _, _, cx| this.add_repos(cx))),
                     )
+                    .child(button("new-repo", "New…", cx).on_click(
+                        cx.listener(|this, _, window, cx| this.open_new_repo(window, cx)),
+                    ))
                     .child(button("clone-repo", "Clone…", cx).on_click(cx.listener(
                         |this, _, window, cx| this.open_forge(ForgeTab::Clone, window, cx),
                     ))),

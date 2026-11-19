@@ -8,9 +8,9 @@ use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
     BranchWriter, CommitWriter, ConflictResolver, HistoryReader, HistoryRewriter, IndexWriter,
     LocalFilesCopier, MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps,
-    RemoteReader, RemoteWriter, StashReader, StashWriter, StatusReader, SubmoduleReader,
-    SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles, WorktreeReader, WorktreeSnapshots,
-    WorktreeWriter,
+    RemoteReader, RemoteWriter, RepoCreator, StashReader, StashWriter, StatusReader,
+    SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles, WorktreeReader,
+    WorktreeSnapshots, WorktreeWriter,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -52,6 +52,8 @@ pub struct GitPorts {
     pub snapshots: Arc<dyn WorktreeSnapshots>,
     /// Network.
     pub remote: Arc<dyn RemoteOps>,
+    /// New repositories (`git init`).
+    pub repo_init: Arc<dyn RepoCreator>,
     /// Merge, rebase, cherry-pick, revert.
     pub rewriter: Arc<dyn HistoryRewriter>,
     /// External merge tool.
@@ -96,6 +98,7 @@ impl GitPorts {
             + StashWriter
             + WorktreeSnapshots
             + RemoteOps
+            + RepoCreator
             + HistoryRewriter
             + MergeToolLauncher
             + ConflictResolver
@@ -124,6 +127,7 @@ impl GitPorts {
             stash_writer: backend.clone(),
             snapshots: backend.clone(),
             remote: backend.clone(),
+            repo_init: backend.clone(),
             rewriter: backend.clone(),
             merge_tool: backend.clone(),
             conflicts: backend.clone(),
