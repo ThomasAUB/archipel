@@ -327,7 +327,7 @@ impl RepoView {
 
     /// The Worktree Chip of the toolbar: `⧉ worktree of libfoo` on a linked
     /// worktree, `⧉ 2 worktrees` on a repo with some; a click opens the
-    /// Worktree Switcher.
+    /// Worktree Switcher on this repository's worktrees.
     pub(super) fn render_worktree_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let here = self.path.id();
         let row = self.core.row(here)?;
@@ -356,7 +356,9 @@ impl RepoView {
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .tooltip(move |_, cx| TextTooltip::view(&[path.clone(), switch_hint.clone()], cx))
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(StagingEvent::SwitchWorktree)))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(StagingEvent::SwitchWorktree(here));
+                }))
                 .child(label)
                 .into_any_element(),
         )

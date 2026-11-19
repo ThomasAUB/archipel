@@ -216,8 +216,12 @@ impl Workspace {
                 self.open_new_worktree(*repo, start, window, cx);
             }
             StagingEvent::RemoveWorktree(id) => self.open_remove_worktree(*id, window, cx),
-            StagingEvent::SwitchWorktree => {
-                self.open_palette(super::overlays::PaletteKind::Worktrees, window, cx);
+            StagingEvent::SwitchWorktree(id) => {
+                self.open_palette(
+                    super::overlays::PaletteKind::Worktrees(Some(*id)),
+                    window,
+                    cx,
+                );
             }
             StagingEvent::WorktreeMenu(id, position) => {
                 self.open_menu(Menu::Row(*id), *position, cx);

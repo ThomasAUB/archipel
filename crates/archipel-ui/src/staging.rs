@@ -218,8 +218,8 @@ pub enum StagingEvent {
     ),
     /// Open the Remove Worktree confirmation of this worktree.
     RemoveWorktree(archipel_model::RepoId),
-    /// Open the Worktree Switcher.
-    SwitchWorktree,
+    /// Open the Worktree Switcher on the worktrees of this repo's repository.
+    SwitchWorktree(archipel_model::RepoId),
     /// Open the Worktree Menu of this worktree at this position.
     WorktreeMenu(archipel_model::RepoId, gpui_kit::Point<gpui_kit::Pixels>),
     /// Ask for a new URL of a remote of this repo: of the remote of this
