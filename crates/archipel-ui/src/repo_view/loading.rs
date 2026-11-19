@@ -229,6 +229,20 @@ impl RepoView {
         cx.notify();
     }
 
+    /// Selects the uncommitted-changes row with `file`, a conflicted file,
+    /// open: the merge view shows it once the changes are read again.
+    pub(crate) fn open_conflict(
+        &mut self,
+        file: String,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_wip(cx);
+        self.focus.focus(window, cx);
+        working_copy::load_changes(self, cx);
+        working_copy::open_worktree_file(self, file, archipel_model::ports::DiffSide::Unstaged, cx);
+    }
+
     pub(super) fn load_refs(&mut self, cx: &mut Context<Self>) {
         let refs = self.core.repo_actions().ports().refs.clone();
         let path = self.path.clone();

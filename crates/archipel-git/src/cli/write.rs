@@ -3,9 +3,9 @@
 use std::path::Path;
 
 use archipel_model::ports::{
-    BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolLauncher, RefReader,
-    RefWriter, RemoteOps, RemoteReader, RemoteWriter, RepoCreator, StashWriter, TagWriter,
-    WorktreeSnapshots,
+    BranchWriter, CommitWriter, HistoryRewriter, IndexWriter, MergeToolInfo, MergeToolLauncher,
+    RefReader, RefWriter, RemoteOps, RemoteReader, RemoteWriter, RepoCreator, StashWriter,
+    TagWriter, WorktreeSnapshots,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, ForceMode, MergeMode,
@@ -836,5 +836,98 @@ impl MergeToolLauncher for GitCli {
             cmd = cmd.arg("--").arg(path);
         }
         self.runner.run(cmd).map(drop)
+    }
+
+    fn configured_tool(&self, repo: &RepoPath) -> Result<Option<String>, GitError> {
+        let out = self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &["config", "--get", "merge.tool"],
+            )
+            .ok_codes(&[0, 1]),
+        )?;
+        let value = out.stdout_text();
+        Ok((out.code == Some(0) && !value.is_empty()).then_some(value))
+    }
+
+    fn tools(&self, repo: &RepoPath) -> Result<Vec<MergeToolInfo>, GitError> {
+        let out = self.runner.run(Cmd::new(
+            repo.as_path(),
+            CmdKind::Read,
+            &["mergetool", "--tool-help"],
+        ))?;
+        Ok(parse_tool_help(&out.stdout_text()))
+    }
+}
+
+/// Parses `git mergetool --tool-help`: the installed tools, then those
+/// "valid, but not currently available", one indented `name  description`
+/// per line. Headers (`user-defined:`) and the closing notes are skipped.
+fn parse_tool_help(text: &str) -> Vec<MergeToolInfo> {
+    let mut tools = Vec::new();
+    let mut available = true;
+    for line in text.lines() {
+        if line.starts_with("The following tools are valid, but not currently available") {
+            available = false;
+            continue;
+        }
+        if !line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let line = line.trim();
+        let (name, detail) = line
+            .split_once(char::is_whitespace)
+            .map_or((line, ""), |(n, d)| (n, d.trim()));
+        if name.is_empty() || name.ends_with(':') {
+            continue;
+        }
+        // A user-defined tool shows as `name.cmd <its command>`.
+        let name = name.strip_suffix(".cmd").unwrap_or(name);
+        tools.push(MergeToolInfo {
+            name: name.to_owned(),
+            detail: detail.to_owned(),
+            available,
+        });
+    }
+    tools
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_help_lists_installed_tools_first() {
+        let text = "'git mergetool --tool=<tool>' may be set to one of the following:\n\
+\t\tvscode           Use Visual Studio Code (requires a graphical session)\n\
+\t\tuser-defined:\n\
+\t\tmine.cmd my-merge \"$LOCAL\" \"$REMOTE\"\n\
+\n\
+The following tools are valid, but not currently available:\n\
+\t\tmeld             Use Meld (requires a graphical session)\n\
+\t\temerge\n\
+\n\
+Some of the tools listed above only work in a windowed\n\
+environment. If run in a terminal-only session, they will fail.\n";
+        let tools = parse_tool_help(text);
+        let names: Vec<(&str, bool)> = tools
+            .iter()
+            .map(|t| (t.name.as_str(), t.available))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("vscode", true),
+                ("mine", true),
+                ("meld", false),
+                ("emerge", false)
+            ]
+        );
+        assert_eq!(
+            tools[0].detail,
+            "Use Visual Studio Code (requires a graphical session)"
+        );
+        assert_eq!(tools[3].detail, "");
     }
 }

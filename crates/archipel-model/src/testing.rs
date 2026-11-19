@@ -20,9 +20,9 @@ use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefS
 use crate::ports::{
     BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, ConflictResolver, Coverage,
     DiffReader, DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink,
-    JournalStore, LocalFilesCopier, MergeForecaster, MergeToolLauncher, ProjectRegistry,
-    ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RemoteWriter,
-    RepoCreator, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
+    JournalStore, LocalFilesCopier, MergeForecaster, MergeToolInfo, MergeToolLauncher,
+    ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader,
+    RemoteWriter, RepoCreator, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
     SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore,
     WatchHandle, WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
@@ -106,6 +106,8 @@ pub struct FakeRepo {
     pub worktrees: Vec<WorktreeInfo>,
     /// The index versions of conflicted paths, for `ConflictResolver`.
     pub conflict_sides: BTreeMap<String, ConflictSides>,
+    /// Git's `merge.tool` for `MergeToolLauncher::configured_tool`.
+    pub merge_tool: Option<String>,
 }
 
 impl Default for FakeRepo {
@@ -132,6 +134,7 @@ impl Default for FakeRepo {
             incoming: HashMap::new(),
             worktrees: Vec::new(),
             conflict_sides: BTreeMap::new(),
+            merge_tool: None,
         }
     }
 }
@@ -1167,6 +1170,27 @@ impl MergeToolLauncher for FakeGit {
         _tool: Option<&str>,
     ) -> Result<(), GitError> {
         self.record("mergetool", repo, path.unwrap_or_default())
+    }
+
+    fn configured_tool(&self, repo: &RepoPath) -> Result<Option<String>, GitError> {
+        self.read(repo, "configured_tool", |r| r.merge_tool.clone())
+    }
+
+    fn tools(&self, repo: &RepoPath) -> Result<Vec<MergeToolInfo>, GitError> {
+        self.read(repo, "merge_tools", |_| {
+            vec![
+                MergeToolInfo {
+                    name: "meld".into(),
+                    detail: String::new(),
+                    available: true,
+                },
+                MergeToolInfo {
+                    name: "kdiff3".into(),
+                    detail: String::new(),
+                    available: false,
+                },
+            ]
+        })
     }
 }
 

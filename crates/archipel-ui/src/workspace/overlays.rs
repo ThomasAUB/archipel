@@ -3,8 +3,9 @@
 
 use archipel_app::Command;
 use archipel_app::forge::pick_remote;
-use archipel_model::ports::RemoteInfo;
+use archipel_model::ports::{MergeToolInfo, RemoteInfo};
 use archipel_model::project::ProjectLocation;
+use archipel_model::settings::MergeToolChoice;
 use archipel_model::{ProjectId, RepoId};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -42,6 +43,8 @@ pub(super) enum PaletteKind {
     RenameSet,
     /// Which remote of this repo gets a new URL (its remotes).
     PickRemote(RepoId, Vec<RemoteInfo>),
+    /// The merge tool (the tools Git knows, installed first).
+    MergeTool(Vec<MergeToolInfo>),
     /// The new URL of a remote of this repo.
     RemoteUrl {
         repo: RepoId,
@@ -268,6 +271,42 @@ impl Workspace {
                     cx,
                 );
             }
+            PaletteKind::MergeTool(tools) => {
+                let current = self.core.merge_tool_choice();
+                let title = "What opens on conflicts: pick one, or type a merge tool's name";
+                let mark = |c: &MergeToolChoice| if *c == current { "current · " } else { "" };
+                let fixed = [
+                    (
+                        MergeToolChoice::BuiltIn,
+                        "Built-in merge view",
+                        "ours, theirs and the result, in the repo tab",
+                    ),
+                    (
+                        MergeToolChoice::GitConfig,
+                        "Git's merge tool",
+                        "the external tool of Git's merge.tool",
+                    ),
+                ];
+                let items = fixed
+                    .into_iter()
+                    .map(|(c, label, detail)| PaletteItem {
+                        id: c.setting().unwrap_or(MergeToolChoice::BUILT_IN).to_owned(),
+                        label: label.into(),
+                        detail: format!("{}{detail}", mark(&c)),
+                    })
+                    .chain(tools.iter().map(|t| PaletteItem {
+                        id: t.name.clone(),
+                        label: t.name.clone(),
+                        detail: format!(
+                            "{}{}{}",
+                            mark(&MergeToolChoice::External(t.name.clone())),
+                            if t.available { "" } else { "not installed · " },
+                            t.detail
+                        ),
+                    }))
+                    .collect();
+                return self.show_palette(kind, title, items, true, window, cx);
+            }
             PaletteKind::RemoteUrl {
                 remote, current, ..
             } => {
@@ -439,6 +478,9 @@ impl Workspace {
                     self.open_palette(kind, window, cx);
                 }
             }
+            PaletteKind::MergeTool(_) => {
+                self.set_merge_tool(MergeToolChoice::from_setting(Some(&value)), cx);
+            }
             PaletteKind::RemoteUrl {
                 repo,
                 remote,
@@ -450,6 +492,45 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// Asks what opens on conflicts: the built-in merge view, Git's merge
+    /// tool, or a tool Git knows (installed first, read off the UI thread);
+    /// any name can be typed (a `mergetool.<name>.cmd` of the user's).
+    pub(super) fn choose_merge_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        let repo = core.action_context().target_repo();
+        let task = cx.background_spawn(async move { core.merge_tool_choices(repo) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                let tools = result.unwrap_or_else(|e| {
+                    w.notice = Some(format!("cannot list the merge tools: {e}"));
+                    Vec::new()
+                });
+                w.open_palette(PaletteKind::MergeTool(tools), window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Uses `choice` in every window and saves it in the settings file.
+    fn set_merge_tool(&mut self, choice: MergeToolChoice, cx: &mut Context<Self>) {
+        let saved = match cx.try_global::<crate::SettingsFile>() {
+            Some(file) => archipel_app::settings::save_merge_tool(&file.0, choice.setting()),
+            None => Ok(()),
+        };
+        let now = match &choice {
+            MergeToolChoice::BuiltIn => "the built-in merge view".to_owned(),
+            MergeToolChoice::GitConfig => "Git's merge tool (merge.tool)".to_owned(),
+            MergeToolChoice::External(t) => format!("“{t}”"),
+        };
+        self.core.set_merge_tool_choice(choice);
+        self.notice = Some(match saved {
+            Ok(()) => format!("Conflicts now open {now}"),
+            Err(e) => format!("Conflicts now open {now}, for this session only: {e}"),
+        });
+        cx.notify();
     }
 
     /// Asks for the new URL of a remote of the repo of row `repo`: of the

@@ -62,6 +62,12 @@ use gpui_kit::{App, Global, KeyBinding};
 /// Keeps the core's async runtime alive for the lifetime of the GPUI app.
 struct CoreRuntime(Option<tokio::runtime::Runtime>);
 
+/// The settings file (`settings.toml`), for the settings changed in the app
+/// (the merge tool).
+pub(crate) struct SettingsFile(pub std::path::PathBuf);
+
+impl Global for SettingsFile {}
+
 impl Global for CoreRuntime {}
 
 impl Drop for CoreRuntime {
@@ -251,8 +257,10 @@ fn main() {
                 app,
                 runtime,
                 mut warnings,
+                dirs,
                 ..
             } = composition;
+            cx.set_global(SettingsFile(dirs.settings_file()));
             warnings.extend(theme_warning);
             for w in &warnings {
                 tracing::warn!("{w}");

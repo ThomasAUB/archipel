@@ -78,6 +78,10 @@ pub(super) struct Session {
     pub(super) worktrees_pending: HashSet<RepoId>,
     /// Repos whose worktree list changed while being read: read again.
     pub(super) worktrees_reread: HashSet<RepoId>,
+    /// Conflicted files of each repo when its running write or network
+    /// operation started: one that leaves conflicts where there were none
+    /// opens the merge tool.
+    pub(super) conflicts_before: HashMap<RepoId, u32>,
 }
 
 impl Session {
@@ -187,6 +191,7 @@ impl App {
             worktrees: HashMap::new(),
             worktrees_pending: HashSet::new(),
             worktrees_reread: HashSet::new(),
+            conflicts_before: HashMap::new(),
         });
         if let Err(e) = self.services.registry.mark_opened(id, Timestamp::now()) {
             tracing::warn!(error = %e, "could not update the recent list");

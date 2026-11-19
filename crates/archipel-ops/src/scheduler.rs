@@ -84,6 +84,8 @@ pub struct OpEvent {
     pub id: OpId,
     /// Repository, if any.
     pub repo: Option<RepoId>,
+    /// Its class (read, write, network).
+    pub class: OpClass,
     /// Label given at submission.
     pub label: String,
     /// What happened.
@@ -130,6 +132,7 @@ impl OpContext {
         let _ = self.events.send(OpEvent {
             id: self.id,
             repo: self.spec.repo,
+            class: self.spec.class,
             label: self.spec.label.clone(),
             kind,
         });

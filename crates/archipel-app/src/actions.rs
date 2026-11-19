@@ -35,6 +35,8 @@ pub enum Command {
     Undo(RepoId),
     /// Redo the last undone operation of a repo.
     Redo(RepoId),
+    /// Open what resolves the conflicts of a repo (merge view or tool).
+    ResolveConflicts(RepoId),
     /// Toggle a dashboard filter.
     ToggleFilter(String),
     /// Sort the dashboard by a column (toggles direction when already sorted).
@@ -420,7 +422,24 @@ impl ActionRegistry {
             with_repo,
             |c| c.target_repo().map(Command::OpenRepoTab),
         )));
+        r.register_merge_tool_actions();
         r
+    }
+
+    /// Conflicts: pick what resolves them, open it on a repo's.
+    fn register_merge_tool_actions(&mut self) {
+        self.register(Arc::new(SimpleAction::new(
+            "settings.merge_tool",
+            "Set merge tool…",
+            always,
+            |_| Some(Command::Ui("settings.merge_tool".to_owned())),
+        )));
+        self.register(Arc::new(SimpleAction::new(
+            "repo.resolve_conflicts",
+            "Resolve conflicts",
+            with_repo,
+            |c| c.target_repo().map(Command::ResolveConflicts),
+        )));
     }
 
     /// Windows, hidden repos, dependency tree and project identity.

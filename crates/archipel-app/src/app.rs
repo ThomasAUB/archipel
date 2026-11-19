@@ -35,6 +35,7 @@ mod dispatch;
 mod forecast;
 mod forge_flow;
 mod identity;
+mod merge_tool;
 mod projects;
 mod refresh;
 mod remotes;
@@ -103,6 +104,14 @@ pub enum AppEvent {
     BatchFinished(String, usize, usize, usize),
     /// Undo / redo result message.
     Notice(String),
+    /// An operation left conflicts to resolve in the built-in merge view:
+    /// open the repo tab on `file` (its first conflicted file).
+    ConflictsToResolve {
+        /// The repo row.
+        repo: RepoId,
+        /// Path of the file, relative to the repo root.
+        file: String,
+    },
     /// An operation event (operations drawer).
     Op(OpEvent),
     /// The registry changed (project created, removed, renamed).
@@ -215,6 +224,8 @@ pub struct App {
     auto_fetch: Mutex<auto_fetch::AutoFetch>,
     /// Update check (shared by the sibling cores).
     updates: Arc<update_check::UpdateCheck>,
+    /// Merge tool choice and open tools (shared by the sibling cores).
+    merge_tools: Arc<merge_tool::MergeTools>,
 }
 
 /// Event channel capacity; slow subscribers miss old events and re-read state.
@@ -259,6 +270,9 @@ impl App {
         let undo = UndoService::new(services.git.clone(), journal);
         let events = broadcast::channel(EVENT_CAPACITY).0;
         let settings_auto_fetch = settings.auto_fetch_secs;
+        let merge_tools = merge_tool::MergeTools::new(
+            archipel_model::settings::MergeToolChoice::from_setting(settings.merge_tool.as_deref()),
+        );
         let app = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             services,
@@ -277,6 +291,7 @@ impl App {
                 settings_auto_fetch,
             ))),
             updates: update_check::UpdateCheck::new(),
+            merge_tools,
         });
         app.forward_op_events();
         app.forward_updates();
@@ -286,10 +301,14 @@ impl App {
     fn forward_op_events(&self) {
         let mut ops = self.scheduler.subscribe();
         let events = self.events.clone();
+        let me = self.me.clone();
         self.scheduler.runtime().spawn(async move {
             loop {
                 match ops.recv().await {
                     Ok(e) => {
+                        if let Some(app) = me.upgrade() {
+                            app.on_op_event(&e);
+                        }
                         let _ = events.send(AppEvent::Op(e));
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -330,6 +349,7 @@ impl App {
                 settings_auto_fetch,
             ))),
             updates: self.updates.clone(),
+            merge_tools: self.merge_tools.clone(),
         });
         app.forward_op_events();
         app.forward_updates();

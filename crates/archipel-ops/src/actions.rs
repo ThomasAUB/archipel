@@ -1078,6 +1078,19 @@ impl RepoActions {
                 other => other.into(),
             })
     }
+
+    /// The merge tool Git's configuration names (`merge.tool`), if any.
+    pub fn configured_merge_tool(&self, repo: &RepoPath) -> Result<Option<String>, OpError> {
+        Ok(self.git.merge_tool.configured_tool(repo)?)
+    }
+
+    /// The merge tools Git knows, the installed ones first.
+    pub fn merge_tools(
+        &self,
+        repo: &RepoPath,
+    ) -> Result<Vec<archipel_model::ports::MergeToolInfo>, OpError> {
+        Ok(self.git.merge_tool.tools(repo)?)
+    }
 }
 
 #[cfg(test)]
