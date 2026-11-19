@@ -215,7 +215,7 @@ An Overlay sits on a transparent backdrop: clicking outside it dismisses it
 | ↳ **Project Switcher** | Pick a project (recent first). | `Ctrl+P`, Project Header |
 | ↳ **Action Palette** | Every action by name. | `Ctrl+Shift+P` |
 | ↳ **Prompt Palette** | The Palette as a one-line prompt: checkout target, branch name, tag name, category (with suggestions), category rename, project color, background tint, icon, worktree lock reason, set rename. (`PaletteKind`) | Actions |
-| ↳ **Worktree Switcher** | Every worktree of the project (`repo · branch`, folder), open tabs first; Enter opens its Repo Tab. | `Ctrl+Shift+O`, Worktree Chip |
+| ↳ **Worktree Switcher** | Every worktree of the project (`repo · branch`, folder), open tabs first; from the Worktree Chip, only the worktrees of that repo. Enter opens its Repo Tab. | `Ctrl+Shift+O`, Worktree Chip |
 | **Commit Panel** | Multi-repo commit (spec §4): repo list with staged-file previews, branch mismatch warning, one message, push option, per-repo report and Retry failed. ([commit_panel.rs](../crates/archipel-ui/src/commit_panel.rs)) | `Ctrl+K` |
 | **Forge Panel** | Forge integration (spec §8), with four **Forge Tabs**: **Accounts** (sign in / out), **Pull requests** (open PRs of the selected repos, merge with a confirming second click), **New pull request** (create PRs for the selected repos), **Clone** (into a folder, by default the project file's: from URLs typed or pasted, no account needed, or by browsing an account / org / group; clones join the Repo List expanded, selected and scrolled into view). ([forge_panel.rs](../crates/archipel-ui/src/forge_panel.rs)) | Action Palette, Row Menu |
 | **Branches Panel** | Branch cleanup across the selected repos (all when none), spec §7: **merged, not deleted** (pre-checked) and **stale** (unmerged, no commit for 90 days) local branches; Delete asks for a confirming second click, skips a branch that moved meanwhile; Undo on a repo restores its deleted branches one at a time. ([branches_panel.rs](../crates/archipel-ui/src/branches_panel.rs)) | Branches… chip, Action Palette |
@@ -237,7 +237,7 @@ Spec §10, [WORKTREES.md](WORKTREES.md). UI code: [workspace/worktrees.rs](../cr
 | **Worktree Row** | A linked worktree under its repo on the Dashboard, with tree connectors; every column but Fetch is its own. | `Nesting::Worktree` |
 | **Set Selector** | View Chip `Worktrees: all ▾`: All, Main only, each set, New set…, Rename / Finish / Forget the active set, Show other repos. A set view shows its worktrees in place of their repos, stripes the Project Band and names the set in the window title. | `Workspace::render_set_selector` |
 | **WORKTREES** | Refs Panel section after LOCAL: every worktree of the repo (current one marked), `+` for a new one; double-click opens, right-click gives the Worktree Menu. | `render_worktree_row` |
-| **Worktree Chip** | Repo Toolbar chip `⧉ worktree of libfoo · branch` (or `⧉ n worktrees`); click opens the Worktree Switcher. | `RepoView::render_worktree_chip` |
+| **Worktree Chip** | Repo Toolbar chip `⧉ worktree of libfoo · branch` (or `⧉ n worktrees`); click opens the Worktree Switcher on that repo's worktrees. | `RepoView::render_worktree_chip` |
 | **Worktree Prompt** | Replaces Git's "already checked out" refusal: Open that worktree · Check out detached · Cancel. | `RepoView::render_worktree_prompt` |
 
 ## 9. Naming rules

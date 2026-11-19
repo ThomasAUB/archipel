@@ -172,7 +172,7 @@ impl Workspace {
     ) {
         let target = self.target_worktree();
         match (id, target) {
-            ("palette.worktrees", _) => self.open_palette(PaletteKind::Worktrees, window, cx),
+            ("palette.worktrees", _) => self.open_palette(PaletteKind::Worktrees(None), window, cx),
             ("worktree.new_set", _) => self.open_new_set(window, cx),
             ("worktree.finish_set", _) => self.open_finish_set(None, window, cx),
             ("worktree.new", Some(row)) => {
@@ -235,13 +235,17 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Items of the Worktree Switcher: every worktree of the project, open
-    /// tabs first.
-    pub(super) fn worktree_items(&self) -> Vec<PaletteItem> {
+    /// Items of the Worktree Switcher: every worktree of the project, or of
+    /// the repository of row `of` only, open tabs first.
+    pub(super) fn worktree_items(&self, of: Option<RepoId>) -> Vec<PaletteItem> {
         let tabs = self.core.ui_state().map(|u| u.tabs).unwrap_or_default();
         let open =
             |w: &ProjectWorktree| tabs.contains(&archipel_model::ui_state::TabState::Repo(w.id));
         let mut list = self.core.project_worktrees();
+        // From a repo's Worktree Chip: only the worktrees of its repository.
+        if let Some(repo) = of.and_then(|id| list.iter().find(|w| w.id == id).map(|w| w.repo)) {
+            list.retain(|w| w.repo == repo);
+        }
         list.sort_by_key(|w| !open(w));
         list.into_iter()
             .map(|w| {

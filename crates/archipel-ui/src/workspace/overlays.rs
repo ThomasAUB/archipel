@@ -35,8 +35,9 @@ pub(super) enum PaletteKind {
     Category(Vec<RepoId>),
     /// A new name for this category.
     RenameCategory(String),
-    /// The Worktree Switcher (spec §10).
-    Worktrees,
+    /// The Worktree Switcher (spec §10): every worktree of the project, or
+    /// only those of the repository of this row (main or linked worktree).
+    Worktrees(Option<RepoId>),
     /// The reason this worktree is locked.
     LockReason(RepoId),
     /// A new name for the active Worktree Set.
@@ -232,9 +233,9 @@ impl Workspace {
                 Vec::new(),
                 true,
             ),
-            PaletteKind::Worktrees => (
+            PaletteKind::Worktrees(of) => (
                 "Switch worktree (repo · branch · folder)",
-                self.worktree_items(),
+                self.worktree_items(*of),
                 false,
             ),
             PaletteKind::LockReason(_) => (
@@ -455,7 +456,7 @@ impl Workspace {
             PaletteKind::RenameCategory(old) => {
                 self.dispatch(Command::RenameCategory(old, Some(value)), cx);
             }
-            PaletteKind::Worktrees => {
+            PaletteKind::Worktrees(_) => {
                 if let Ok(raw) = value.parse::<u64>() {
                     self.dispatch(Command::OpenRepoTab(RepoId(raw)), cx);
                 }
