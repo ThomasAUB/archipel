@@ -483,3 +483,25 @@ fn deleting_branches_skips_moved_ones_and_undoes_as_one_batch() {
         .unwrap();
     assert_eq!(cli.resolve(&path, "done").unwrap(), Some(tip));
 }
+
+#[test]
+fn reads_a_file_at_a_revision_and_in_the_index() {
+    let ops = ops();
+    let repo = TestRepo::new().unwrap();
+    repo.write("a.bin", "first").unwrap();
+    repo.commit_all("first").unwrap();
+    repo.write("a.bin", "second").unwrap();
+    repo.commit_all("second").unwrap();
+    repo.write("a.bin", "staged").unwrap();
+    repo.git(&["add", "a.bin"]).unwrap();
+    let path = RepoPath::new(repo.path());
+    let at = |rev: &str| ops.actions.read_file_at_rev(&path, rev, "a.bin").unwrap();
+    assert_eq!(at("HEAD").as_deref(), Some(&b"second"[..]));
+    assert_eq!(at("HEAD^").as_deref(), Some(&b"first"[..]));
+    // The parent of the root commit names nothing.
+    assert_eq!(at("HEAD^^"), None);
+    assert_eq!(
+        ops.actions.read_index_file(&path, "a.bin").unwrap(),
+        b"staged"
+    );
+}

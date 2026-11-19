@@ -10,7 +10,7 @@ use archipel_model::{CancelToken, NoProgress, Oid};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, KeyDownEvent, ScrollStrategy, Window, div};
 
-use crate::diff_view::{self, DiffDoc};
+use crate::diff_view::{self, DiffDoc, Revs};
 use crate::widgets::{ListMove, SHORT_OID, unmodified};
 use crate::working_copy;
 
@@ -27,7 +27,7 @@ impl RepoView {
         let doc = match file {
             None => Arc::clone(doc),
             Some(i) => match doc.files.get(i) {
-                Some(f) => Arc::new(DiffDoc::new(vec![f.clone()])),
+                Some(f) => Arc::new(DiffDoc::new(vec![f.clone()]).with_revs(doc.revs.clone())),
                 None => return,
             },
         };
@@ -205,7 +205,7 @@ impl RepoView {
         let task = cx.background_spawn(async move {
             diffs
                 .range_diff(&path, older, newer)
-                .map(|d| Arc::new(DiffDoc::new(d)))
+                .map(|d| Arc::new(DiffDoc::new(d).with_revs(Some(Revs::span(older, newer)))))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;

@@ -379,6 +379,26 @@ impl RepoActions {
         })
     }
 
+    /// The bytes of `path` as staged in the index (image diffs).
+    pub fn read_index_file(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, OpError> {
+        Ok(self.git.tree.read_index_blob(repo, path)?)
+    }
+
+    /// The bytes of `path` at revision `rev` (`HEAD`, `<oid>^`, …), for
+    /// image diffs; `None` when `rev` names no commit (the parent of a
+    /// root commit, `HEAD` on an unborn branch).
+    pub fn read_file_at_rev(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>, OpError> {
+        match self.git.refs.resolve(repo, rev)? {
+            Some(commit) => Ok(Some(self.git.tree.read_blob(repo, commit, path)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Saves an edit of a worktree file: writes `contents` over `path`,
     /// unless the file no longer holds `expected` (what the editor was
     /// opened on), so a change made meanwhile elsewhere is never lost.

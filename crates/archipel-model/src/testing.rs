@@ -92,6 +92,8 @@ pub struct FakeRepo {
     pub files: BTreeMap<String, Vec<u8>>,
     /// Files of commit trees (commit → path → bytes), for `TreeReader`.
     pub trees: HashMap<Oid, BTreeMap<String, Vec<u8>>>,
+    /// Staged files (path → bytes), for `TreeReader::read_index_blob`.
+    pub index: BTreeMap<String, Vec<u8>>,
     /// What `MergeForecaster::pull_strategy` returns.
     pub pull_strategy: MergeStrategy,
     /// Conflicting paths per `(ours, theirs)`, for `MergeForecaster::forecast`
@@ -124,6 +126,7 @@ impl Default for FakeRepo {
             submodules: Vec::new(),
             files: BTreeMap::new(),
             trees: HashMap::new(),
+            index: BTreeMap::new(),
             pull_strategy: MergeStrategy::Merge,
             conflicts: HashMap::new(),
             incoming: HashMap::new(),
@@ -488,6 +491,10 @@ impl TreeReader for FakeGit {
     fn read_blob(&self, repo: &RepoPath, commit: Oid, path: &str) -> Result<Vec<u8>, GitError> {
         self.with_repo(repo, |r| r.trees.get(&commit)?.get(path).cloned())
             .ok_or_else(|| GitError::InvalidRequest(format!("{path} is not in {commit}")))
+    }
+    fn read_index_blob(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError> {
+        self.with_repo(repo, |r| r.index.get(path).cloned())
+            .ok_or_else(|| GitError::InvalidRequest(format!("{path} is not in the index")))
     }
 }
 

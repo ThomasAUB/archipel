@@ -35,6 +35,7 @@ tracing.workspace = true
 embed-resource = "3"
 
 [dev-dependencies]
+archipel-model = { workspace = true, features = ["testing"] }
 gpui-kit = { version = "0.9.0", features = ["test-support"] }
 tempfile.workspace = true
 
