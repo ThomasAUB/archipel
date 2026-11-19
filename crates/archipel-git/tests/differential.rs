@@ -344,3 +344,39 @@ fn commit_texts_hold_the_full_message() {
         gix.commit_meta(&path, &oids[..1]).unwrap()[0]
     );
 }
+
+/// Runs `git` in `dir` with both dates set to `seconds` (issue #71).
+fn git_at(dir: &std::path::Path, seconds: i64, args: &[&str]) {
+    let date = format!("@{seconds} +0000");
+    let status = archipel_fixtures::base_command(dir)
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn tags_carry_when_they_were_made() {
+    let repo = archipel_fixtures::TestRepo::new().unwrap();
+    let dir = repo.path();
+    repo.write("a.txt", "a").unwrap();
+    git_at(dir, 1_000, &["add", "-A"]);
+    git_at(dir, 1_000, &["commit", "-q", "-m", "one"]);
+    repo.write("a.txt", "b").unwrap();
+    git_at(dir, 2_000, &["add", "-A"]);
+    git_at(dir, 2_000, &["commit", "-q", "-m", "two"]);
+    // Lightweight on the newest commit; annotated, later, on the oldest.
+    git_at(dir, 2_500, &["tag", "v9"]);
+    git_at(dir, 3_000, &["tag", "-a", "-m", "ten", "v10", "HEAD~1"]);
+    let path = RepoPath::new(dir);
+    for tags in [
+        GitCli::default().tags(&path).unwrap(),
+        GixReader::default().tags(&path).unwrap(),
+    ] {
+        let time = |name: &str| tags.iter().find(|t| t.name == name).unwrap().time.0;
+        assert_eq!(time("v9"), 2_000, "{tags:?}");
+        assert_eq!(time("v10"), 3_000, "{tags:?}");
+    }
+}

@@ -93,15 +93,23 @@ impl RefReader for GixReader {
         for r in platform.tags().map_err(backend)? {
             let mut r = r.map_err(backend)?;
             let direct = r.target().try_id().map(ToOwned::to_owned);
-            let annotated = direct.is_some_and(|id| {
-                repo.find_object(id)
-                    .is_ok_and(|o| o.kind == gix::object::Kind::Tag)
+            // The tagger date of an annotated tag.
+            let tagged = direct.and_then(|id| {
+                let tag = repo.find_object(id).ok()?.try_into_tag().ok()?;
+                let seconds = tag.tagger().ok().flatten()?.time().ok()?.seconds;
+                Some(Timestamp(seconds))
             });
+            let annotated = tagged.is_some()
+                || direct.is_some_and(|id| {
+                    repo.find_object(id)
+                        .is_ok_and(|o| o.kind == gix::object::Kind::Tag)
+                });
             let id = r.peel_to_id().map_err(backend)?.detach();
             out.push(TagInfo {
                 name: r.name().shorten().to_str_lossy().into_owned(),
                 target: to_oid(id)?,
                 annotated,
+                time: tagged.unwrap_or_else(|| commit_time(&repo, id)),
             });
         }
         Ok(out)
