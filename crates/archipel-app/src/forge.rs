@@ -20,8 +20,8 @@ pub use locate::{Located, locate, pick_remote};
 pub use ports::ForgePorts;
 pub use status::{
     BranchCi, BranchCiMark, CiColumn, CiFailingFilter, ForgeColumn, ForgeLimit, ForgeStatus,
-    PullRequestOpenFilter, StaleCause, branch_ci_mark, ci_cell, ci_label, ci_tooltip,
-    linked_description, review_label,
+    OUTDATED_MARK, PullRequestOpenFilter, StaleCause, branch_ci_mark, ci_cell, ci_label,
+    ci_tooltip, linked_description, review_label,
 };
 
 /// A repository on a forge, parsed from a remote URL.

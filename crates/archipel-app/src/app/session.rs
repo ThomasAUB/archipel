@@ -43,14 +43,15 @@ pub(super) struct Session {
     pub(super) dependencies: HashMap<RepoId, Vec<SubmoduleNode>>,
     /// Repos whose dependencies are being read.
     pub(super) tree_pending: HashSet<RepoId>,
-    /// Branch and time of the last forge status read, per repo.
-    pub(super) forge_checked: HashMap<RepoId, (String, Instant)>,
+    /// What the last forge status read was for (branch, head, upstream),
+    /// and when, per repo.
+    pub(super) forge_checked: HashMap<RepoId, (super::forge_flow::ForgeKey, Instant)>,
     /// Repos whose last forge read failed in passing (rate limit, network,
     /// forge-side error), with when they started failing: read again
     /// sooner than fresh ones.
     pub(super) forge_failed: HashMap<RepoId, Instant>,
-    /// Repos whose forge status is being read, with the branch read.
-    pub(super) forge_pending: HashMap<RepoId, String>,
+    /// Repos whose forge status is being read, with what is read.
+    pub(super) forge_pending: HashMap<RepoId, super::forge_flow::ForgeKey>,
     /// Repos refreshed while a read was pending: read again once it lands,
     /// as the pending read may predate what the refresh was asked for.
     pub(super) forge_reread: HashSet<RepoId>,

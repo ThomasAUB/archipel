@@ -365,7 +365,7 @@ impl ActionRegistry {
         r.register(ui("app.copy_diagnostics", "Copy diagnostics", always));
         r.register(Arc::new(SimpleAction::new(
             "repos.refresh",
-            "Refresh",
+            "Refresh: reload, fetch, pull request and CI status",
             with_project,
             |_| Some(Command::RefreshAll),
         )));

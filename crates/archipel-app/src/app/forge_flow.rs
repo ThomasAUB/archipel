@@ -16,7 +16,7 @@ use archipel_model::forge::{
 };
 use archipel_model::ports::RemoteInfo;
 use archipel_model::requests::PushRequest;
-use archipel_model::{ForgeError, RepoId, RepoPath, Timestamp};
+use archipel_model::{ForgeError, Oid, RepoId, RepoPath, RepoSummary, Timestamp, Upstream};
 use archipel_ops::{GitPorts, OpClass, OpError, OpSpec};
 
 use super::{App, AppError, AppEvent, lock, session::Session};
@@ -127,6 +127,31 @@ struct ForgeTarget {
     branch: String,
     /// Remote of the branch's upstream, tried first.
     preferred: Option<String>,
+    /// The branch's upstream (`origin/feat`), when it exists: the CI run
+    /// read should be for its tip.
+    upstream: Option<String>,
+}
+
+/// What a forge read describes: the branch, and where it and its upstream
+/// were. A read for another key is out of date: when the branch head or its
+/// upstream moves (a commit, a push, a fetch), the forge is read again,
+/// however recent the last read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ForgeKey {
+    pub(super) branch: String,
+    head: Option<Oid>,
+    upstream: Option<Upstream>,
+}
+
+impl ForgeKey {
+    /// The key of `summary`'s current branch, if one is checked out.
+    fn of(summary: &RepoSummary) -> Option<Self> {
+        Some(Self {
+            branch: summary.head.branch()?.to_owned(),
+            head: summary.head_oid,
+            upstream: summary.upstream.clone(),
+        })
+    }
 }
 
 /// What one forge read found for a repo.
@@ -248,7 +273,12 @@ fn read_forge(
     let mut ci_stale = None;
     let ci = match &located {
         Located::Repo { repo, .. } => match forge.ci.ci_for_branch(repo, branch) {
-            Ok(Some(run)) => BranchCi::Run(run),
+            Ok(Some(run)) => match upstream_tip(git, target) {
+                Some((upstream, tip)) if !same_commit(&run.sha, &tip) => {
+                    BranchCi::Outdated { run, upstream, tip }
+                }
+                _ => BranchCi::Run(run),
+            },
             Ok(None) => BranchCi::None,
             Err(ForgeError::NotSignedIn { .. }) => BranchCi::Unknown,
             // Reported once, by the pull request read below; logged, as
@@ -272,6 +302,28 @@ fn read_forge(
         limit: status_limit.or(ci_limit),
         error,
     }
+}
+
+/// The upstream of the read branch and its tip, when it is the branch of
+/// the same name on a remote (the CI read is for that branch on the forge).
+fn upstream_tip(git: &GitPorts, target: &ForgeTarget) -> Option<(String, String)> {
+    let upstream = target.upstream.as_deref()?;
+    let (_, name) = upstream.split_once('/')?;
+    if name != target.branch {
+        return None;
+    }
+    let tip = git
+        .refs
+        .resolve(&target.path, &format!("refs/remotes/{upstream}"))
+        .ok()??;
+    Some((upstream.to_owned(), tip.to_hex()))
+}
+
+/// Whether two commit ids, full or abbreviated, name the same commit.
+fn same_commit(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    let n = a.len().min(b.len());
+    n >= 7 && a.as_bytes()[..n].eq_ignore_ascii_case(&b.as_bytes()[..n])
 }
 
 /// The pull request status of a located repo, and the error for the drawer.
@@ -486,9 +538,10 @@ impl App {
     }
 
     /// Reads the forge status of one repo in the background, unless it was
-    /// read for the same branch less than `forge_refresh_secs` ago (or
-    /// `even_if_fresh`). Coalesced: at most one pending read per repo; one
-    /// asked meanwhile for another branch (a checkout) runs once it lands.
+    /// read less than `forge_refresh_secs` ago with the branch, its head and
+    /// its upstream where they are now (or `even_if_fresh`). Coalesced: at
+    /// most one pending read per repo; one asked meanwhile for another
+    /// branch or commit (a checkout, a push, a fetch) runs once it lands.
     ///
     /// On a branch change the status of the previous branch is cleared at
     /// once, rather than shown until the read of the new branch lands.
@@ -502,7 +555,7 @@ impl App {
                 return;
             };
             let Some(summary) = row.summary() else { return };
-            let Some(branch) = summary.head.branch().map(str::to_owned) else {
+            let Some(key) = ForgeKey::of(summary) else {
                 // Detached or no commit: nothing to show on the forge.
                 let changed = row.forge != ForgeStatus::NotOnForge || row.ci != BranchCi::Unknown;
                 row.forge = ForgeStatus::NotOnForge;
@@ -515,11 +568,16 @@ impl App {
                 return;
             };
             let preferred = upstream_remote(row);
+            let upstream = summary
+                .upstream
+                .as_ref()
+                .filter(|u| !u.gone)
+                .map(|u| u.name.clone());
             // What was read for another branch does not describe this one.
             let moved = s
                 .forge_checked
                 .get(&repo)
-                .is_some_and(|(b, _)| *b != branch);
+                .is_some_and(|(k, _)| k.branch != key.branch);
             if moved {
                 // Nor did its reads fail: see `apply_forge`.
                 s.forge_failed.remove(&repo);
@@ -544,30 +602,32 @@ impl App {
             let recent = s
                 .forge_checked
                 .get(&repo)
-                .is_some_and(|(b, at)| *b == branch && at.elapsed() < fresh);
+                .is_some_and(|(k, at)| *k == key && at.elapsed() < fresh);
             if recent && !even_if_fresh {
                 None
             } else if let Some(pending) = s.forge_pending.get(&repo) {
-                // The pending read is for another branch, or may predate
-                // what this one was asked for: read again once it lands.
-                if even_if_fresh || *pending != branch {
+                // The pending read is for another branch or commit, or may
+                // predate what this one was asked for: read again once it
+                // lands.
+                if even_if_fresh || *pending != key {
                     s.forge_reread.insert(repo);
                 }
                 None
             } else {
-                s.forge_pending.insert(repo, branch.clone());
+                s.forge_pending.insert(repo, key.clone());
                 let target = ForgeTarget {
                     path: row.path.clone(),
-                    branch,
+                    branch: key.branch.clone(),
                     preferred,
+                    upstream,
                 };
-                Some((target, row.name.clone(), s.forge_backoff.clone()))
+                Some((target, key, row.name.clone(), s.forge_backoff.clone()))
             }
         };
         if cleared {
             self.emit(AppEvent::RowsChanged(vec![repo]));
         }
-        let Some((target, name, backoff)) = job else {
+        let Some((target, key, name, backoff)) = job else {
             return;
         };
         let git = self.services.git.clone();
@@ -579,13 +639,14 @@ impl App {
             let mut read = read_forge(&git, &forge, &links, &target, &backoff);
             let error = read.error.take();
             if let Some(app) = me.upgrade() {
-                app.apply_forge(repo, target.branch, read);
+                app.apply_forge(repo, key, read);
             }
             error.map_or(Ok(()), |e| Err(OpError::Forge(e)))
         });
     }
 
-    fn apply_forge(&self, repo: RepoId, branch: String, read: ForgeRead) {
+    fn apply_forge(&self, repo: RepoId, key: ForgeKey, read: ForgeRead) {
+        let branch = key.branch.as_str();
         let (changed, reread, poll) = {
             let mut guard = lock(&self.session);
             let Some(s) = guard.as_mut() else { return };
@@ -597,7 +658,7 @@ impl App {
                 .as_ref()
                 .and_then(|r| r.summary())
                 .and_then(|s| s.head.branch())
-                == Some(branch.as_str());
+                == Some(branch);
             let now = Timestamp::now();
             let retry_at = read.limit.map(|(host, retry_at)| {
                 let until = retry_at.unwrap_or(Timestamp(now.0 + DEFAULT_BACKOFF_SECS));
@@ -608,7 +669,7 @@ impl App {
             let read_at = s
                 .forge_checked
                 .get(&repo)
-                .filter(|(b, _)| *b == branch)
+                .filter(|(k, _)| k.branch == branch)
                 .map(|(_, at)| {
                     Timestamp(now.0 - i64::try_from(at.elapsed().as_secs()).unwrap_or(0))
                 });
@@ -620,6 +681,7 @@ impl App {
                 .get(&repo)
                 .is_some_and(|since| since.elapsed() >= self.retry_failed() / 2);
             let mut ci_pending = false;
+            let mut outdated = false;
             let changed = match row {
                 Some(row) if current => {
                     // Rate limited, or a passing failure: what an earlier
@@ -663,6 +725,7 @@ impl App {
                         });
                     let changed = row.forge != status || row.ci != ci || row.forge_limit != limit;
                     ci_pending = matches!(&ci, BranchCi::Run(run) if run.state == CiState::Pending);
+                    outdated = matches!(ci, BranchCi::Outdated { .. });
                     row.forge = status;
                     row.ci = ci;
                     row.forge_limit = limit;
@@ -676,7 +739,8 @@ impl App {
                 } else {
                     s.forge_failed.remove(&repo);
                 }
-                s.forge_checked.insert(repo, (branch, Instant::now()));
+                self.watch_outdated_ci(s, repo, &key, outdated);
+                s.forge_checked.insert(repo, (key, Instant::now()));
             }
             let poll = current
                 .then(|| self.follow_up(s, repo, ci_pending, failed))
@@ -694,6 +758,18 @@ impl App {
         }
         // The pull request's target may have changed.
         self.load_forecast(repo);
+    }
+
+    /// The first read after the branch or its upstream moved (`key` not
+    /// the last one read) finds the run of an earlier commit (just pushed:
+    /// the forge takes a moment to register the new runs): followed closely
+    /// for a while, as after opening a pull request.
+    fn watch_outdated_ci(&self, s: &mut Session, repo: RepoId, key: &ForgeKey, outdated: bool) {
+        let first = s.forge_checked.get(&repo).is_none_or(|(k, _)| k != key);
+        if outdated && first && self.settings.ci_poll_secs != 0 {
+            let until = Instant::now() + Duration::from_secs(CI_WATCH_SECS);
+            s.ci_watch.insert(repo, until);
+        }
     }
 
     /// How soon a read that failed in passing is retried: never later than
