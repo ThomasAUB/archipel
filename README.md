@@ -145,7 +145,7 @@ folder, the last project reopens.
 | `Ctrl+H` / `Ctrl+Shift+H` | hide (or unhide) the selected repos / list hidden repos |
 | `Ctrl+Shift+T` | dependency tree (nested submodules) |
 | `Ctrl+N` (or `Ctrl+Shift+N`) | new window |
-| `F5` | reload the project file (after a hand edit or a pull) and refresh every repo |
+| `F5` | reload the project file (after a hand edit or a pull), refresh every repo, fetch the repos that have a remote, and read the pull request and CI status again |
 | right-click a repo | repo menu |
 
 On macOS, `Cmd` replaces `Ctrl` in every shortcut except `Ctrl+Tab`. The app

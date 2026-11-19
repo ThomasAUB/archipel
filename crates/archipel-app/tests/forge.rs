@@ -20,7 +20,7 @@ use archipel_model::testing::{
     FakeChangeSource, FakeDiscovery, FakeForge, FakeGit, FakeProjectSource, InMemoryCredentials,
     InMemoryStore, oid,
 };
-use archipel_model::{ForgeError, HeadState, ProjectId, RepoPath, Timestamp, Upstream};
+use archipel_model::{ForgeError, HeadState, Oid, ProjectId, RepoPath, Timestamp, Upstream};
 use archipel_ops::GitPorts;
 
 /// Where the test project is stored (in memory: the fake source).
@@ -855,6 +855,88 @@ fn ci_registered_after_a_pull_request_is_opened_shows() {
         "CI shown",
         || matches!(ci_of(&e, &extra), BranchCi::Run(r) if r.state == CiState::Pending),
     );
+}
+
+/// A run of `state` for commit `sha`.
+fn ci_run_of(state: CiState, sha: Oid) -> CiRun {
+    CiRun {
+        sha: sha.to_hex(),
+        ..ci_run(state)
+    }
+}
+
+#[test]
+fn ci_of_another_commit_than_the_upstream_is_outdated_until_the_forge_catches_up() {
+    let e = env_with(Settings {
+        ci_poll_secs: 1,
+        ..Settings::default()
+    });
+    let r0 = e.repos[0].clone();
+    let at = |e: &Env, n: u64| {
+        e.git.with_repo(&r0, |r| {
+            r.summary.head_oid = Some(oid(n));
+            r.refs.insert("refs/heads/feat/x".into(), oid(n));
+            r.refs.insert("refs/remotes/origin/feat/x".into(), oid(n));
+        });
+    };
+    at(&e, 1);
+    e.forge
+        .with_ci("acme/r0", "feat/x", ci_run_of(CiState::Success, oid(1)));
+    sign_in(&e);
+    wait_until(
+        "CI of the upstream's tip",
+        || matches!(ci_of(&e, &r0), BranchCi::Run(r) if r.state == CiState::Success),
+    );
+
+    // A push: the branch and its upstream move, the forge has not
+    // registered the new run yet. Read again at once, well within
+    // `forge_refresh_secs`, and shown as out of date.
+    at(&e, 2);
+    e.app.refresh_repo(r0.id());
+    wait_until(
+        "outdated CI",
+        || matches!(ci_of(&e, &r0), BranchCi::Outdated { ref tip, .. } if *tip == oid(2).to_hex()),
+    );
+    let cell =
+        archipel_app::forge::ci_cell(&ci_of(&e, &r0), &forge_of(&e, 0), None, Timestamp::now());
+    assert!(
+        cell.text.ends_with(archipel_app::forge::OUTDATED_MARK),
+        "{}",
+        cell.text
+    );
+
+    // No focus, no refresh: followed until the forge shows the new run.
+    e.forge
+        .with_ci("acme/r0", "feat/x", ci_run_of(CiState::Pending, oid(2)));
+    wait_until(
+        "CI of the new tip",
+        || matches!(ci_of(&e, &r0), BranchCi::Run(r) if r.state == CiState::Pending),
+    );
+}
+
+#[test]
+fn refresh_fetches_and_reads_the_forge_again() {
+    let e = env();
+    sign_in(&e);
+    let r0 = e.repos[0].clone();
+    wait_until("pull request shown", || {
+        matches!(forge_of_path(&e, &r0), ForgeStatus::Open(_))
+    });
+    let reads = e.forge.reads();
+    e.app.dispatch(Command::RefreshAll).unwrap();
+    // Only r0 has an upstream (nor was any repo fetched before).
+    wait_until("fetch", || {
+        let fetched: Vec<_> = e
+            .git
+            .calls()
+            .into_iter()
+            .filter(|c| c.op == "fetch")
+            .map(|c| c.repo)
+            .collect();
+        fetched == [r0.as_path().display().to_string()]
+    });
+    // Read again though fresh (`forge_refresh_secs` not elapsed).
+    wait_until("forge read again", || e.forge.reads() > reads);
 }
 
 /// Releases the held reads of a repo when dropped.

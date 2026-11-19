@@ -50,6 +50,14 @@ impl App {
                 self.refresh_all();
                 self.load_all_worktrees();
                 self.load_tree_if_shown();
+                // Then what lives on the remotes: a fetch (its new refs
+                // refresh the rows again), and the pull request and CI
+                // status, read again however recent.
+                let fetchable = self.fetchable_ids();
+                if !fetchable.is_empty() {
+                    self.fetch(&fetchable, false);
+                }
+                self.refresh_forge_all();
             }
             Command::RefreshForge => self.refresh_forge_all(),
             Command::RerunFailedCi(ids) => self.rerun_failed_ci(&ids),
@@ -264,6 +272,25 @@ impl App {
 
     /// Fetches every remote of `ids`; `prune` also drops the remote-tracking
     /// branches deleted on their remote.
+    /// The shown repos that fetch from somewhere: with an upstream, or
+    /// fetched before. Empty when there are none (never "all").
+    fn fetchable_ids(&self) -> Vec<RepoId> {
+        lock(&self.session)
+            .as_ref()
+            .map(|s| {
+                s.rows
+                    .iter()
+                    .filter(|r| !r.hidden)
+                    .filter(|r| {
+                        r.summary()
+                            .is_some_and(|x| x.upstream.is_some() || x.last_fetch.is_some())
+                    })
+                    .map(|r| r.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) fn fetch(&self, ids: &[RepoId], prune: bool) {
         // Once per repo, whichever of its worktrees was picked (spec §10).
         let mut mains: Vec<RepoId> = Vec::with_capacity(ids.len());

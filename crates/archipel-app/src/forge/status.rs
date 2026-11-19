@@ -59,20 +59,58 @@ pub enum BranchCi {
     None,
     /// The latest CI run of the branch head.
     Run(CiRun),
+    /// The latest CI run of the branch on the forge, for another commit
+    /// than the tip of the branch's upstream here: the forge has no run for
+    /// that commit yet (just pushed), or the upstream was not fetched.
+    Outdated {
+        /// The run, of another commit.
+        run: CiRun,
+        /// The upstream (`origin/feat`).
+        upstream: String,
+        /// The upstream's tip, the commit the run should be for.
+        tip: String,
+    },
     /// Reading the CI failed.
     Error(String),
 }
 
 impl BranchCi {
-    /// The CI run, if any.
+    /// The CI run, if any (also an outdated one).
     #[must_use]
     pub fn run(&self) -> Option<&CiRun> {
+        match self {
+            Self::Run(run) | Self::Outdated { run, .. } => Some(run),
+            _ => None,
+        }
+    }
+
+    /// The CI run, if it is for the upstream's tip (or there is no
+    /// upstream to compare with).
+    #[must_use]
+    pub fn current_run(&self) -> Option<&CiRun> {
         match self {
             Self::Run(run) => Some(run),
             _ => None,
         }
     }
+
+    /// Why the run shown is not for the upstream's tip, for the tooltips.
+    #[must_use]
+    pub fn outdated_note(&self) -> Option<String> {
+        let Self::Outdated { run, upstream, tip } = self else {
+            return None;
+        };
+        let short = |sha: &str| sha.chars().take(8).collect::<String>();
+        Some(format!(
+            "Out of date: this CI is for {}, not for {upstream} ({}): the forge has no run for it yet, or it was not fetched",
+            short(&run.sha),
+            short(tip)
+        ))
+    }
 }
+
+/// Mark appended to a CI cell whose run is not for the upstream's tip.
+pub const OUTDATED_MARK: &str = " ·old";
 
 /// Why the last forge read of a row could not refresh it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -394,7 +432,9 @@ pub fn ci_cell(
 ) -> Cell {
     let cell = ci_status_cell(ci, forge);
     match (limit, ci) {
-        (Some(limit), BranchCi::Run(_) | BranchCi::None) => limit.mark(cell, now),
+        (Some(limit), BranchCi::Run(_) | BranchCi::Outdated { .. } | BranchCi::None) => {
+            limit.mark(cell, now)
+        }
         _ => cell,
     }
 }
@@ -407,6 +447,13 @@ fn ci_status_cell(ci: &BranchCi, forge: &ForgeStatus) -> Cell {
     };
     match (ci, forge) {
         (BranchCi::Run(run), _) => CiColumn::run_cell(run),
+        (BranchCi::Outdated { run, .. }, _) => {
+            let mut cell = CiColumn::run_cell(run);
+            cell.text.push_str(OUTDATED_MARK);
+            cell.tone = Tone::Muted;
+            cell.detail = ci.outdated_note();
+            cell
+        }
         (BranchCi::Error(e), _) => Cell {
             text: "error".into(),
             detail: Some(e.clone()),
@@ -427,7 +474,9 @@ pub fn ci_tooltip(
     now: Timestamp,
 ) -> Option<Vec<String>> {
     let mut lines = ci_status_tooltip(ci, forge)?;
-    if let (Some(limit), BranchCi::Run(_) | BranchCi::None) = (limit, ci) {
+    if let (Some(limit), BranchCi::Run(_) | BranchCi::Outdated { .. } | BranchCi::None) =
+        (limit, ci)
+    {
         lines.insert(0, limit.note(now));
     }
     Some(lines)
@@ -435,9 +484,12 @@ pub fn ci_tooltip(
 
 fn ci_status_tooltip(ci: &BranchCi, forge: &ForgeStatus) -> Option<Vec<String>> {
     match (ci, forge) {
-        (BranchCi::Run(run), _) => {
+        (BranchCi::Run(run) | BranchCi::Outdated { run, .. }, _) => {
             let short: String = run.sha.chars().take(8).collect();
             let mut lines = vec![format!("{} · {short}", ci_label(Some(run.state)))];
+            if let Some(note) = ci.outdated_note() {
+                lines.insert(0, note);
+            }
             let mut jobs: Vec<&CiJob> = run.jobs.iter().collect();
             jobs.sort_by_key(|j| CiColumn::job_rank(j));
             lines.extend(
@@ -494,8 +546,14 @@ pub fn branch_ci_mark(
     ci: &BranchCi,
     open: &[PullRequestStatus],
 ) -> Option<BranchCiMark> {
-    if current && let BranchCi::Run(run) = ci {
+    if current && let Some(run) = ci.run() {
         let (mark, tone) = state_mark(run.state);
+        // An outdated run keeps its mark, muted.
+        let tone = if ci.current_run().is_some() {
+            tone
+        } else {
+            Tone::Muted
+        };
         return Some(BranchCiMark {
             mark,
             tone,
@@ -548,7 +606,7 @@ impl RepoFilter for CiFailingFilter {
     }
     fn matches(&self, row: &DashboardRow) -> bool {
         row.ci
-            .run()
+            .current_run()
             .is_some_and(|run| run.state == CiState::Failure)
             || row
                 .forge
