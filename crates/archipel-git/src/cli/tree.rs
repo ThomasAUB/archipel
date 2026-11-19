@@ -1,5 +1,6 @@
 //! The files of a commit or of the working copy (the repo view's file
-//! browser): `git ls-tree`, `git ls-files` and `git cat-file`.
+//! browser, image diffs): `git ls-tree`, `git ls-files` and
+//! `git cat-file`.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -38,6 +39,18 @@ impl TreeReader for GitCli {
 
     fn read_blob(&self, repo: &RepoPath, commit: Oid, path: &str) -> Result<Vec<u8>, GitError> {
         let spec = format!("{}:{path}", commit.to_hex());
+        Ok(self
+            .runner
+            .run(Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &["cat-file", "blob", &spec],
+            ))?
+            .stdout)
+    }
+
+    fn read_index_blob(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError> {
+        let spec = format!(":0:{path}");
         Ok(self
             .runner
             .run(Cmd::new(

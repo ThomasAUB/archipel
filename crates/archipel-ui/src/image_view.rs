@@ -2,6 +2,7 @@
 //! decoding off the UI thread into textures, and the pixel difference of
 //! two of them. [`stage`] paints them, [`viewer`] shows one.
 
+pub(crate) mod compare;
 pub(crate) mod stage;
 pub(crate) mod viewer;
 
@@ -94,25 +95,17 @@ pub(crate) fn decode(
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(format!("Too large to show ({})", size_label(bytes.len())));
     }
-    if format == ImageFormat::Svg {
-        let render = svg
-            .render_single_frame(bytes, 1.0)
-            .map_err(|e| e.to_string())?;
-        let size = render.size(0);
-        let density = svg_density();
-        let logical = |n: i32| u32::try_from(n).unwrap_or(0).div_ceil(density);
-        return Ok(Picture {
-            width: logical(size.width.0),
-            height: logical(size.height.0),
-            render,
-            format,
-            bytes: bytes.len(),
-        });
-    }
-    let rgba = decode_raster(format, bytes)?;
-    let (width, height) = rgba.dimensions();
+    let (render, width, height, _density) = if format == ImageFormat::Svg {
+        rasterize(bytes, svg)?
+    } else {
+        let rgba = decode_raster(format, bytes)?;
+        let (width, height) = rgba.dimensions();
+        let density = upscale(width, height);
+        let pixels = to_bgra(nearest(&rgba, density));
+        (texture(pixels), width, height, density)
+    };
     Ok(Picture {
-        render: texture(to_bgra(rgba)),
+        render,
         width,
         height,
         format,
@@ -120,7 +113,51 @@ pub(crate) fn decode(
     })
 }
 
-/// Texture pixels per logical pixel of a rasterized SVG.
+/// Texture side a small image is enlarged to at least: the renderer
+/// smooths a texture it enlarges, which blurs a small image's pixels.
+const MIN_TEXTURE: u32 = 512;
+
+/// The whole factor enlarging a `width × height` image's texture to
+/// [`MIN_TEXTURE`] (1 for a large image).
+fn upscale(width: u32, height: u32) -> u32 {
+    MIN_TEXTURE.div_ceil(width.max(height).max(1)).clamp(1, 64)
+}
+
+/// `pixels` enlarged `factor` times, each pixel a square.
+fn nearest(pixels: &RgbaImage, factor: u32) -> RgbaImage {
+    if factor <= 1 {
+        return pixels.clone();
+    }
+    let (w, h) = pixels.dimensions();
+    RgbaImage::from_fn(w * factor, h * factor, |x, y| {
+        *pixels.get_pixel(x / factor, y / factor)
+    })
+}
+
+/// An SVG's texture, its logical size and density: rendered finer when
+/// small.
+fn rasterize(bytes: &[u8], svg: &SvgRenderer) -> Result<(Arc<RenderImage>, u32, u32, u32), String> {
+    let smooth = svg_density();
+    let render = |scale: f32| {
+        let render = svg
+            .render_single_frame(bytes, scale)
+            .map_err(|e| e.to_string())?;
+        let size = render.size(0);
+        let px = |n: i32| u32::try_from(n).unwrap_or(0);
+        Ok::<_, String>((px(size.width.0), px(size.height.0), render))
+    };
+    let (w, h, image) = render(1.0)?;
+    let (width, height) = (w.div_ceil(smooth), h.div_ceil(smooth));
+    let factor = upscale(width, height).min(32);
+    if factor == 1 {
+        return Ok((image, width, height, smooth));
+    }
+    let scale = u16::try_from(factor).map_or(1.0, f32::from);
+    let (_, _, image) = render(scale)?;
+    Ok((image, width, height, smooth * factor))
+}
+
+/// Texture pixels per logical pixel of an SVG rendered at scale 1.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -210,6 +247,18 @@ mod tests {
         assert_eq!(rgba.dimensions(), (3, 2));
         assert_eq!(rgba.get_pixel(0, 0).0, [10, 20, 30, 255]);
         assert!(decode_raster(ImageFormat::Png, b"not a png").is_err());
+    }
+
+    #[test]
+    fn small_images_are_enlarged_in_whole_squares() {
+        assert_eq!(upscale(2000, 10), 1);
+        assert_eq!(upscale(100, 50), 6);
+        assert_eq!(upscale(1, 1), 64);
+        let small = RgbaImage::from_raw(2, 1, vec![1, 1, 1, 1, 2, 2, 2, 2]).unwrap();
+        let big = nearest(&small, 3);
+        assert_eq!(big.dimensions(), (6, 3));
+        assert_eq!(big.get_pixel(2, 2).0, [1; 4]);
+        assert_eq!(big.get_pixel(3, 0).0, [2; 4]);
     }
 
     #[test]

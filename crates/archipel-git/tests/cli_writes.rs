@@ -884,3 +884,16 @@ fn init_repo_creates_the_folder_and_names_the_first_branch() {
     );
     assert_eq!(cli.summary(&path).unwrap().changes.untracked, 1);
 }
+
+#[test]
+fn reads_the_staged_version_of_a_file() {
+    let (repo, path, cli) = setup();
+    repo.write("a.txt", "staged\n").unwrap();
+    repo.git(&["add", "a.txt"]).unwrap();
+    repo.write("a.txt", "on disk\n").unwrap();
+    repo.write("-dash.txt", "dash\n").unwrap();
+    repo.git(&["add", "--", "-dash.txt"]).unwrap();
+    assert_eq!(cli.read_index_blob(&path, "a.txt").unwrap(), b"staged\n");
+    assert_eq!(cli.read_index_blob(&path, "-dash.txt").unwrap(), b"dash\n");
+    assert!(cli.read_index_blob(&path, "missing.txt").is_err());
+}

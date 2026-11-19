@@ -14,7 +14,7 @@ use archipel_model::{CancelToken, HeadState, NoProgress, Oid, RepoSummary, Upstr
 use gpui_kit::Context;
 use gpui_kit::prelude::*;
 
-use crate::diff_view::DiffDoc;
+use crate::diff_view::{DiffDoc, Revs};
 use crate::staging;
 use crate::working_copy;
 
@@ -452,9 +452,10 @@ impl RepoView {
         let path = self.path.clone();
         let task = cx.background_spawn(async move {
             let message = history.commit_message(&path, oid).ok();
-            diffs
-                .commit_diff(&path, oid)
-                .map(|d| (Arc::new(DiffDoc::new(d)), message))
+            diffs.commit_diff(&path, oid).map(|d| {
+                let doc = DiffDoc::new(d).with_revs(Some(Revs::span(oid, oid)));
+                (Arc::new(doc), message)
+            })
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -493,7 +494,7 @@ impl RepoView {
         let task = cx.background_spawn(async move {
             diffs
                 .commit_diff(&path, oid)
-                .map(|d| Arc::new(DiffDoc::new(d)))
+                .map(|d| Arc::new(DiffDoc::new(d).with_revs(Some(Revs::span(oid, oid)))))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;

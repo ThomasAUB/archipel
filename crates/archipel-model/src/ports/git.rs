@@ -198,6 +198,8 @@ pub trait TreeReader: Send + Sync {
     fn list_files(&self, repo: &RepoPath, commit: Option<Oid>) -> Result<Vec<TreeEntry>, GitError>;
     /// The bytes of `path` in the tree of `commit`.
     fn read_blob(&self, repo: &RepoPath, commit: Oid, path: &str) -> Result<Vec<u8>, GitError>;
+    /// The bytes of `path` as staged in the index (stage 0).
+    fn read_index_blob(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError>;
 }
 
 /// Modifies the index and the worktree.

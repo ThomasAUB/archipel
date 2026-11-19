@@ -6,12 +6,14 @@
 //! (Edit, or a double-click on a line; see [`crate::file_edit`]). An
 //! unstaged diff names the file's line ending, with a button converting
 //! it to the other (LF ↔ CRLF). Lines are syntax highlighted after the
-//! file's extension (see [`crate::syntax`]).
+//! file's extension (see [`crate::syntax`]). A one-file diff of an image
+//! shows the images instead (see [`crate::image_view::compare`]).
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use archipel_model::Oid;
 use archipel_model::changes::{ChangeKind, FileChange};
 use archipel_model::diff::{DiffLine, FileDiff, LineOrigin};
 use archipel_model::ports::DiffSide;
@@ -20,11 +22,13 @@ use archipel_ops::patch::selection_patch;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, HighlightStyle, SharedString, StyledText,
-    UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, App, ClickEvent, Context, Div, Entity, HighlightStyle, ImageFormat, SharedString,
+    Stateful, StyledText, UniformListScrollHandle, div, px, uniform_list,
 };
 
 use crate::file_edit::{self, LineEnding};
+use crate::image_view::compare::{self, ImageDiff, is_image};
+use crate::image_view::image_format;
 use crate::merge_view;
 use crate::staging::{Staging, arm_discard};
 use crate::syntax::{self, LineHighlighter, Spans};
@@ -44,10 +48,31 @@ pub(crate) enum DiffRow {
     Line(usize, usize, usize),
 }
 
+/// The commits a commit diff compares, to read its files' versions:
+/// `old` names the tree before (the oldest commit's first parent), `new`
+/// the commit after.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Revs {
+    pub(crate) old: String,
+    pub(crate) new: Oid,
+}
+
+impl Revs {
+    /// From the first parent of `oldest` to `newest` (one commit: both).
+    pub(crate) fn span(oldest: Oid, newest: Oid) -> Self {
+        Self {
+            old: format!("{}^", oldest.to_hex()),
+            new: newest,
+        }
+    }
+}
+
 /// A diff flattened into rows once, so the view renders only the visible
 /// ones (a diff may hold tens of thousands of lines).
 pub(crate) struct DiffDoc {
     pub(crate) files: Vec<FileDiff>,
+    /// For a commit diff, the commits it compares.
+    pub(crate) revs: Option<Revs>,
     rows: Vec<DiffRow>,
     /// Digits of the largest line number, so the gutter has one width.
     lineno_width: usize,
@@ -174,7 +199,11 @@ impl DiffDoc {
         for (f, file) in files.iter().enumerate() {
             rows.push(DiffRow::File(f));
             if file.binary {
-                rows.push(DiffRow::Note("Binary file"));
+                rows.push(DiffRow::Note(if is_image(file.display_path()) {
+                    "Binary image · open the file to compare the images"
+                } else {
+                    "Binary file"
+                }));
                 continue;
             }
             if file.truncated {
@@ -202,12 +231,19 @@ impl DiffDoc {
             .collect();
         Self {
             files,
+            revs: None,
             rows,
             lineno_width: max_lineno.to_string().len(),
             endings,
             selection: Mutex::default(),
             colors: Mutex::default(),
         }
+    }
+
+    /// This diff, of the commits `revs`.
+    pub(crate) fn with_revs(mut self, revs: Option<Revs>) -> Self {
+        self.revs = revs;
+        self
     }
 
     /// The syntax colors of line `l` of hunk `h` of file `f`. A hunk is
@@ -622,7 +658,8 @@ pub(crate) fn render_open<V: Staging>(
     let id = SharedString::from(format!("open-diff-{note}-{title}"));
     // A working-copy diff is titled with its file.
     let editing = file_edit::current(v, side.map(|_| title.as_str()), cx);
-    let keys = if side.is_some() {
+    let (image, svg) = image_part(v, side, doc.as_ref(), editing, cx);
+    let keys = if side.is_some() && image.is_none() {
         "click lines to select · double-click edits · ↑↓ files · Esc closes"
     } else {
         "↑↓ files · Esc closes"
@@ -689,6 +726,7 @@ pub(crate) fn render_open<V: Staging>(
         .when_some(selection, |header, (side, (doc, (f, picks)))| {
             header.child(selection_bar(v, side, &doc, f, picks, cx))
         })
+        .when_some(svg, |header, shown| header.child(svg_button(shown, cx)))
         .when_some(endings, |header, endings| {
             header.child(endings_bar(title.clone(), endings, cx))
         })
@@ -700,10 +738,11 @@ pub(crate) fn render_open<V: Staging>(
             )))
         })
         .children(edit_bar);
-    let body = match doc {
+    let body = match (doc, image) {
         _ if editing => file_edit::render_body(v, cx),
-        Some(doc) => diff_list(id, doc, side, None, cx),
-        None => div()
+        (_, Some(image)) => image.into_any_element(),
+        (Some(doc), None) => diff_list(id, doc, side, None, cx),
+        (None, None) => div()
             .p_3()
             .text_color(color(cx, T::FgMuted))
             .child("Loading diff…")
@@ -718,6 +757,75 @@ pub(crate) fn render_open<V: Staging>(
         .child(header)
         .child(body)
         .into_any_element()
+}
+
+/// The image diff shown in place of the lines, if any (none while
+/// editing), and, for a text SVG diff, whether it shows the images.
+fn image_part<V: Staging>(
+    v: &mut V,
+    side: Option<DiffSide>,
+    doc: Option<&Arc<DiffDoc>>,
+    editing: bool,
+    cx: &mut Context<V>,
+) -> (Option<Entity<ImageDiff>>, Option<bool>) {
+    let image = if editing {
+        v.panel().image = None;
+        None
+    } else {
+        image_diff(v, side, doc, cx)
+    };
+    let svg = doc.and_then(|d| match d.files.as_slice() {
+        [f] if !f.binary && image_format(f.display_path()) == Some(ImageFormat::Svg) => {
+            Some(image.is_some())
+        }
+        _ => None,
+    });
+    (image, svg)
+}
+
+/// The image diff of a one-file diff of an image, kept in the panel; the
+/// panel drops it for any other diff.
+fn image_diff<V: Staging>(
+    v: &mut V,
+    side: Option<DiffSide>,
+    doc: Option<&Arc<DiffDoc>>,
+    cx: &mut Context<V>,
+) -> Option<Entity<ImageDiff>> {
+    let svg_images = v.panel().svg_images;
+    let found = doc.and_then(|d| match d.files.as_slice() {
+        [f] => Some((d, compare::sides(f, side, d.revs.as_ref(), svg_images)?)),
+        _ => None,
+    });
+    let Some((doc, sides)) = found else {
+        v.panel().image = None;
+        return None;
+    };
+    // A reloaded diff is a new doc: the images are read again.
+    let read_for = Arc::as_ptr(doc).addr();
+    let actions = v.core().repo_actions().clone();
+    let repo = v.repo_path().clone();
+    match v.panel().image.clone() {
+        Some(image) if image.read(cx).shows(&repo, &sides) => {
+            image.update(cx, |d, cx| d.refresh(actions, read_for, cx));
+            Some(image)
+        }
+        _ => {
+            let image = cx.new(|cx| ImageDiff::new(actions, repo, sides, read_for, cx));
+            v.panel().image = Some(image.clone());
+            Some(image)
+        }
+    }
+}
+
+/// The button showing an SVG diff as images or as text (`shown`: as
+/// images).
+fn svg_button<V: Staging>(shown: bool, cx: &mut Context<V>) -> Stateful<Div> {
+    let label = if shown { "Text" } else { "Images" };
+    button("diff-svg-images", label, cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
+        let panel = v.panel();
+        panel.svg_images = !panel.svg_images;
+        cx.notify();
+    }))
 }
 
 /// The file's line ending and a button converting it to the other one, in

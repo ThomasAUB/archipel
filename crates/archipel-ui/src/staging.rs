@@ -32,6 +32,7 @@ use crate::armed::Armed;
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
 use crate::ignore::{self, IgnoreDialog};
+use crate::image_view::compare::ImageDiff;
 use crate::merge_view::MergeEdit;
 use crate::theme::{color, row_height};
 use crate::widgets::{TextTooltip, button, check, icon_button, list_row, primary_button, section};
@@ -101,6 +102,10 @@ pub struct Panel {
     pub(crate) edit: Option<FileEdit>,
     /// The conflicted file being merged in place of its diff.
     pub(crate) merge: Option<MergeEdit>,
+    /// The image diff shown in place of a binary image's diff.
+    pub(crate) image: Option<Entity<ImageDiff>>,
+    /// SVG diffs show the images, not the text.
+    pub(crate) svg_images: bool,
     /// The dialog adding a file to the `.gitignore`, while open.
     pub(crate) ignore: Option<IgnoreDialog>,
     /// The force push armed by Push on a branch behind its upstream
@@ -159,6 +164,8 @@ impl Panel {
             branches: None,
             edit: None,
             merge: None,
+            image: None,
+            svg_images: false,
             ignore: None,
             force_push: Armed::default(),
             push_choice: None,
