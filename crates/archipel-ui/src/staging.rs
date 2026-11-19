@@ -32,6 +32,7 @@ use crate::armed::Armed;
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
 use crate::ignore::{self, IgnoreDialog};
+use crate::merge_view::MergeEdit;
 use crate::theme::{color, row_height};
 use crate::widgets::{TextTooltip, button, check, icon_button, list_row, primary_button, section};
 
@@ -98,6 +99,8 @@ pub struct Panel {
     branches: Option<Vec<String>>,
     /// The working-copy file being edited in place of its diff.
     pub(crate) edit: Option<FileEdit>,
+    /// The conflicted file being merged in place of its diff.
+    pub(crate) merge: Option<MergeEdit>,
     /// The dialog adding a file to the `.gitignore`, while open.
     pub(crate) ignore: Option<IgnoreDialog>,
     /// The force push armed by Push on a branch behind its upstream
@@ -155,6 +158,7 @@ impl Panel {
             branch_input,
             branches: None,
             edit: None,
+            merge: None,
             ignore: None,
             force_push: Armed::default(),
             push_choice: None,

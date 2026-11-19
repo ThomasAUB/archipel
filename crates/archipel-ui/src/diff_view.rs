@@ -25,6 +25,7 @@ use gpui_kit::{
 };
 
 use crate::file_edit::{self, LineEnding};
+use crate::merge_view;
 use crate::staging::{Staging, arm_discard};
 use crate::syntax::{self, LineHighlighter, Spans};
 use crate::theme::{color, mono_font, row_height};
@@ -610,8 +611,14 @@ pub(crate) fn render_open<V: Staging>(
     note: &str,
     side: Option<DiffSide>,
     doc: Option<Arc<DiffDoc>>,
+    window: &gpui_kit::Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
+    // A conflicted working-copy file opens in the merge view instead.
+    if side.is_some() && merge_view::is_conflicted(v, &title) {
+        return merge_view::render(v, &title, window, cx);
+    }
+    merge_view::forget(v, None);
     let id = SharedString::from(format!("open-diff-{note}-{title}"));
     // A working-copy diff is titled with its file.
     let editing = file_edit::current(v, side.map(|_| title.as_str()), cx);

@@ -1,5 +1,6 @@
 //! The `git` CLI adapter: implements every reader and writer trait.
 
+mod conflict;
 mod copy;
 mod files;
 mod forecast;

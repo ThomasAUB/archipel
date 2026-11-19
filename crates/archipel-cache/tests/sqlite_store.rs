@@ -119,6 +119,7 @@ fn journal_entry(repo: u64, batch: Option<u64>, label: &str) -> JournalEntry {
             ],
         },
         worktree_snapshot: Some(oid(3)),
+        snapshot_paths: Vec::new(),
         stash: Some(StashRecord {
             oid: oid(4),
             message: "wip".into(),

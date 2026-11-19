@@ -98,6 +98,8 @@ pub enum OperationKind {
     WorktreeAdd,
     /// A linked worktree removed (spec §10).
     WorktreeRemove,
+    /// A conflicted file marked resolved (the merge view).
+    Resolve,
 }
 
 /// Whether an entry is currently applied or has been undone.
@@ -128,6 +130,10 @@ pub struct JournalEntry {
     pub after: RefSnapshot,
     /// Worktree snapshot (`git stash create`) taken before destructive ops.
     pub worktree_snapshot: Option<Oid>,
+    /// The paths `worktree_snapshot` was taken of, when only some were
+    /// (a discard, a resolve).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_paths: Vec<String>,
     /// Stash commit affected by stash operations.
     pub stash: Option<StashRecord>,
     /// The linked worktree a worktree operation created or removed

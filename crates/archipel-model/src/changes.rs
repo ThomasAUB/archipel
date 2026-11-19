@@ -64,3 +64,15 @@ impl FileChange {
         }
     }
 }
+
+/// The versions of a conflicted file held by the index; `None` where the
+/// file does not exist on that side.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConflictSides {
+    /// The common ancestor (stage 1).
+    pub base: Option<Vec<u8>>,
+    /// The current branch's version (stage 2).
+    pub ours: Option<Vec<u8>>,
+    /// The incoming version (stage 3).
+    pub theirs: Option<Vec<u8>>,
+}

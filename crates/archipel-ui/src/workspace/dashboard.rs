@@ -388,7 +388,7 @@ impl Workspace {
         // A file clicked in the pane shows its diff in place of the rows.
         let diff = pane
             .as_ref()
-            .and_then(|p| p.update(cx, QuickEdit::render_diff));
+            .and_then(|p| p.update(cx, |q, cx| q.render_diff(window, cx)));
         let diff_shown = diff.is_some();
         let main = match diff {
             Some(diff) => diff,

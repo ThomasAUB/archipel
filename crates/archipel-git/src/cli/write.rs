@@ -560,7 +560,7 @@ impl GitCli {
 }
 
 /// The non-empty records of NUL-separated command output.
-fn nul_separated(bytes: &[u8]) -> Vec<String> {
+pub(super) fn nul_separated(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
         .split('\0')
         .filter(|s| !s.is_empty())

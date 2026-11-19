@@ -332,6 +332,82 @@ fn stash_and_discard_undo() {
 }
 
 #[test]
+fn resolve_undo_brings_the_conflict_back() {
+    let e = env();
+    e.repo.git(&["checkout", "-q", "-b", "side"]).unwrap();
+    e.repo
+        .write(
+            "a.txt", "side
+",
+        )
+        .unwrap();
+    e.repo.commit_all("side").unwrap();
+    e.repo.git(&["checkout", "-q", "-"]).unwrap();
+    e.repo
+        .write(
+            "a.txt", "mine
+",
+        )
+        .unwrap();
+    e.repo.commit_all("mine").unwrap();
+    assert!(
+        e.actions
+            .merge(&e.path, "side", MergeMode::NoFastForward)
+            .is_err()
+    );
+    let read = || std::fs::read_to_string(e.repo.path().join("a.txt")).unwrap();
+    let marked = read();
+    assert_eq!(
+        e.actions
+            .conflict_sides(&e.path, "a.txt")
+            .unwrap()
+            .theirs
+            .as_deref(),
+        Some(
+            &b"side
+"[..]
+        )
+    );
+
+    // Refused when the file changed since the merge view read it.
+    assert!(matches!(
+        e.actions.resolve_conflict(
+            &e.path,
+            "a.txt",
+            Some(b"stale"),
+            Some(
+                b"both
+"
+            )
+        ),
+        Err(OpError::Refused(_))
+    ));
+    e.actions
+        .resolve_conflict(
+            &e.path,
+            "a.txt",
+            Some(marked.as_bytes()),
+            Some(
+                b"both
+",
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        read(),
+        "both
+"
+    );
+    assert_eq!(e.cli.summary(&e.path).unwrap().changes.conflicted, 0);
+    assert_eq!(e.last().kind, OperationKind::Resolve);
+
+    e.undo_last().unwrap();
+    assert_eq!(read(), marked);
+    assert_eq!(e.cli.summary(&e.path).unwrap().changes.conflicted, 1);
+    assert!(e.redo_last().is_err());
+}
+
+#[test]
 fn discard_undo_restores_only_the_discarded_files() {
     let e = env();
     e.repo.write("b.txt", "bee\n").unwrap();
