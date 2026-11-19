@@ -17,7 +17,7 @@ use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, ImageFormat, Subscription, SvgRenderer, Task};
 
-use super::stage::{Placed, Zoom};
+use super::stage::{Nav, Navigate, Placed, Zoom};
 use super::{Difference, Picture, decode, difference, image_format, release};
 use crate::diff_view::Revs;
 
@@ -183,7 +183,7 @@ impl Mode {
 pub(crate) const BLINK: Duration = Duration::from_millis(500);
 
 /// The choices kept from one image diff to the next in a view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Prefs {
     pub(crate) mode: Mode,
     pub(crate) zoom: Zoom,
@@ -195,7 +195,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             mode: Mode::SideBySide,
-            zoom: Zoom::Fit,
+            zoom: Zoom::FIT,
             amplify: true,
         }
     }
@@ -216,7 +216,10 @@ pub(crate) struct ImageDiff {
     doc: usize,
     pub(super) old: Loaded,
     pub(super) new: Loaded,
+    /// Its choices; the zoom is `nav`'s.
     pub(super) prefs: Prefs,
+    /// The images' zoom, and the drag panning them.
+    pub(super) nav: Nav,
     /// Swipe split, as a fraction of the canvas width.
     pub(super) split: f32,
     /// The swipe split follows the pointer.
@@ -234,6 +237,17 @@ pub(crate) struct ImageDiff {
     /// The difference, with the `amplify` it was computed for.
     pub(super) difference: Option<(bool, Computed)>,
     _onion_sub: Subscription,
+}
+
+impl Navigate for ImageDiff {
+    fn nav_mut(&mut self) -> &mut Nav {
+        &mut self.nav
+    }
+
+    /// In swipe, a left drag moves the split.
+    fn left_pans(&self) -> bool {
+        self.prefs.mode != Mode::Swipe
+    }
 }
 
 impl ImageDiff {
@@ -263,6 +277,7 @@ impl ImageDiff {
             old: Loaded::Loading,
             new: Loaded::Loading,
             prefs,
+            nav: Nav::new(prefs.zoom),
             split: 0.5,
             dragging: false,
             placed: Placed::default(),
@@ -284,7 +299,10 @@ impl ImageDiff {
 
     /// Its choices, for the next image diff.
     pub(crate) fn prefs(&self) -> Prefs {
-        self.prefs
+        Prefs {
+            zoom: self.nav.zoom,
+            ..self.prefs
+        }
     }
 
     /// Reads the images again for diff `doc` (reloaded), keeping the ones

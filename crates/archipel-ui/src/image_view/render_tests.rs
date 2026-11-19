@@ -14,12 +14,14 @@ use archipel_ops::{GitPorts, Journal, RepoActions};
 use archipel_theme::ColorToken as T;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Context, HeadlessAppContext, ImageFormat, IntoElement,
-    ParentElement as _, Render, Styled as _, Window, WindowBounds, WindowOptions, div, px, size,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    PlatformInput, Render, ScrollDelta, ScrollEvent, Styled as _, Window, WindowBounds,
+    WindowOptions, div, point, px, size,
 };
 use image::RgbaImage;
 
 use super::compare::{ImageDiff, Mode, Prefs, sides};
-use super::stage::{Layer, Zoom, stage};
+use super::stage::{Layer, Nav, Navigate, Zoom, stage};
 use super::viewer::ImageViewer;
 use super::{Picture, decode};
 use crate::diff_view::render_tests::context;
@@ -46,6 +48,12 @@ struct Stage {
     layers: Vec<(Picture, f32)>,
 }
 
+impl Navigate for Stage {
+    fn nav_mut(&mut self) -> &mut Nav {
+        unreachable!("the test stage is not zoomed")
+    }
+}
+
 impl Render for Stage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layers = self
@@ -64,7 +72,7 @@ impl Render for Stage {
                 "test",
                 self.canvas,
                 layers,
-                Zoom::Fit,
+                Nav::default(),
                 None,
                 None,
                 cx,
@@ -87,26 +95,39 @@ fn shoot(cx: &mut HeadlessAppContext, view: Stage) -> (RgbaImage, f32) {
 /// scale factor; saved under `ARCHIPEL_SHOTS` when set.
 fn shoot_with<V: Render>(
     cx: &mut HeadlessAppContext,
-    (w, h): (f32, f32),
+    size: (f32, f32),
     build: impl FnOnce(&mut Context<V>) -> V + 'static,
 ) -> (RgbaImage, f32) {
-    let handle: AnyWindowHandle = cx
-        .update(|cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(gpui_kit::Bounds {
-                        origin: gpui_kit::Point::default(),
-                        size: size(px(w), px(h)),
-                    })),
-                    focus: false,
-                    show: false,
-                    ..Default::default()
-                },
-                |_, cx| cx.new(build),
-            )
-        })
-        .expect("offscreen window")
-        .into();
+    let handle = open_with(cx, size, build);
+    capture(cx, handle)
+}
+
+/// An offscreen window of `w × h` showing the view `build` makes.
+fn open_with<V: Render>(
+    cx: &mut HeadlessAppContext,
+    (w, h): (f32, f32),
+    build: impl FnOnce(&mut Context<V>) -> V + 'static,
+) -> AnyWindowHandle {
+    cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(gpui_kit::Bounds {
+                    origin: gpui_kit::Point::default(),
+                    size: size(px(w), px(h)),
+                })),
+                focus: false,
+                show: false,
+                ..Default::default()
+            },
+            |_, cx| cx.new(build),
+        )
+    })
+    .expect("offscreen window")
+    .into()
+}
+
+/// The frame of `handle`'s window.
+fn capture(cx: &mut HeadlessAppContext, handle: AnyWindowHandle) -> (RgbaImage, f32) {
     let scale = cx
         .update_window(handle, |_, window, _| window.scale_factor())
         .unwrap();
@@ -222,6 +243,82 @@ fn the_viewer_shows_a_transparent_image_over_the_checkerboard() {
         .collect();
     assert!(row.iter().any(|p| *p != row[0]), "a checkerboard shows");
     assert!(near(at(&shot, 100.0, 150.0), RED));
+}
+
+/// Sends `input` to `handle`'s window.
+fn send(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, input: PlatformInput) {
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(input, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[test]
+fn the_wheel_zooms_around_the_pointer_and_a_drag_pans() {
+    let mut cx = context();
+    let p = picture(&mut cx, ImageFormat::Png, &png(64, 32, RED, BLUE));
+    let handle = open_with(&mut cx, (400.0, 300.0), move |cx| ImageViewer::new(p, cx));
+    // Fitted: red left, blue right.
+    let shot = capture(&mut cx, handle);
+    assert!(near(at(&shot, 20.0, 150.0), RED));
+    assert!(near(at(&shot, 380.0, 150.0), BLUE));
+    let pointer = point(px(20.0), px(150.0));
+    send(
+        &mut cx,
+        handle,
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: pointer,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    send(
+        &mut cx,
+        handle,
+        PlatformInput::Scroll(ScrollEvent {
+            position: pointer,
+            delta: ScrollDelta::Lines(point(0.0, 4.0)),
+            ..Default::default()
+        }),
+    );
+    // Zoomed in on the left: red across.
+    let shot = capture(&mut cx, handle);
+    assert!(near(at(&shot, 20.0, 150.0), RED));
+    assert!(near(at(&shot, 380.0, 150.0), RED), "zoomed in");
+    // Dragged to the left: the blue half comes in.
+    let press = point(px(395.0), px(150.0));
+    send(
+        &mut cx,
+        handle,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: press,
+            click_count: 1,
+            ..Default::default()
+        }),
+    );
+    send(
+        &mut cx,
+        handle,
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: point(px(5.0), px(150.0)),
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    send(
+        &mut cx,
+        handle,
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position: point(px(5.0), px(150.0)),
+            click_count: 1,
+            ..Default::default()
+        }),
+    );
+    let shot = capture(&mut cx, handle);
+    assert!(near(at(&shot, 380.0, 150.0), BLUE), "panned");
 }
 
 /// Repo actions on a fake repo holding `index` and `worktree` versions of
@@ -368,7 +465,10 @@ fn the_difference_shows_changed_pixels() {
 #[test]
 fn at_100_percent_an_image_keeps_its_size() {
     let prefs = Prefs {
-        zoom: Zoom::Actual,
+        zoom: Zoom {
+            scale: Some(1.0),
+            center: (0.0, 0.0),
+        },
         ..in_mode(Mode::Blink)
     };
     let shot = diff_shot(
