@@ -426,6 +426,17 @@ pub trait MergeForecaster: Send + Sync {
     ) -> Result<Vec<String>, GitError>;
 }
 
+/// A merge tool `git mergetool --tool` accepts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeToolInfo {
+    /// Its name (`meld`, `kdiff3`, `vscode`…).
+    pub name: String,
+    /// Git's description of it, if any.
+    pub detail: String,
+    /// Whether Git found it installed.
+    pub available: bool,
+}
+
 /// Launches the user's external merge tool.
 pub trait MergeToolLauncher: Send + Sync {
     /// Runs `git mergetool` for one path (all conflicts when `None`).
@@ -435,6 +446,14 @@ pub trait MergeToolLauncher: Send + Sync {
         path: Option<&str>,
         tool: Option<&str>,
     ) -> Result<(), GitError>;
+
+    /// The merge tool Git's configuration names for `repo` (`merge.tool`),
+    /// `None` when unset.
+    fn configured_tool(&self, repo: &RepoPath) -> Result<Option<String>, GitError>;
+
+    /// The merge tools Git knows (`git mergetool --tool-help`), the
+    /// installed ones first.
+    fn tools(&self, repo: &RepoPath) -> Result<Vec<MergeToolInfo>, GitError>;
 }
 
 /// Reads and resolves the conflicted paths of the index (the merge view).

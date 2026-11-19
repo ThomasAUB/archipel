@@ -13,7 +13,7 @@ use archipel_model::ports::{
 };
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
 use archipel_model::requests::{CommitMode, CommitRequest};
-use archipel_model::settings::Settings;
+use archipel_model::settings::{MergeToolChoice, Settings};
 use archipel_model::testing::{
     FakeChangeSource, FakeDiscovery, FakeGit, FakeProjectSource, FakeReleaseFeed, InMemoryStore,
     oid,
@@ -862,4 +862,150 @@ fn create_repo_inits_commits_its_files_and_adds_it() {
         assert!(matches!(err, AppError::InvalidInput(_)), "{err}");
     }
     assert_eq!(e.git.calls().len(), calls);
+}
+
+/// Makes `repo` show `n` conflicted files (`c0.rs`, `c1.rs`…) from now on.
+fn set_conflicted(git: &FakeGit, repo: &RepoPath, n: u32) {
+    git.with_repo(repo, |r| {
+        r.summary.changes.conflicted = n;
+        r.changes = (0..n)
+            .map(|i| FileChange {
+                path: format!("c{i}.rs"),
+                original_path: None,
+                state: archipel_model::changes::FileState::Conflicted,
+            })
+            .collect();
+    });
+}
+
+fn merge_tool_calls(git: &FakeGit) -> usize {
+    git.calls().iter().filter(|c| c.op == "mergetool").count()
+}
+
+/// Runs a write on `repo` that leaves `n` conflicted files there (a pull,
+/// a merge, a stash pop…).
+fn write_leaving_conflicts(e: &Env, repo: &RepoPath, n: u32) {
+    let git = e.git.clone();
+    let path = repo.clone();
+    e.app
+        .submit_repo_job(
+            repo,
+            archipel_ops::OpClass::Write,
+            "Pull",
+            move |_, _, _| {
+                set_conflicted(&git, &path, n);
+                Ok(())
+            },
+        )
+        .wait_blocking()
+        .unwrap();
+}
+
+/// The next event `pick` accepts.
+fn next_event<T>(
+    e: &Env,
+    events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    pick: impl Fn(AppEvent) -> Option<T>,
+) -> T {
+    e.rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(t) = pick(events.recv().await.unwrap()) {
+                    return t;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the event")
+    })
+}
+
+#[test]
+fn new_conflicts_open_the_built_in_merge_view_by_default() {
+    let e = env();
+    let repo = e.repos[0].clone();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "rows fresh", all_fresh);
+    assert_eq!(e.app.merge_tool_choice(), MergeToolChoice::BuiltIn);
+    let mut events = e.app.subscribe();
+
+    write_leaving_conflicts(&e, &repo, 2);
+    let (id, file) = next_event(&e, &mut events, |ev| match ev {
+        AppEvent::ConflictsToResolve { repo, file } => Some((repo, file)),
+        _ => None,
+    });
+    assert_eq!((id, file.as_str()), (repo.id(), "c0.rs"));
+    wait_idle(&mut events);
+    wait_until(&e.app, "conflicts shown", |a| {
+        a.rows()
+            .iter()
+            .find(|r| r.id == repo.id())
+            .and_then(|r| r.summary())
+            .is_some_and(|s| s.changes.conflicted == 2)
+    });
+
+    // A write on a repo already in conflict opens nothing.
+    let mut events = e.app.subscribe();
+    e.app
+        .submit_repo_job(&repo, archipel_ops::OpClass::Write, "Stage", |_, _, _| {
+            Ok(())
+        })
+        .wait_blocking()
+        .unwrap();
+    wait_idle(&mut events);
+    while let Ok(ev) = events.try_recv() {
+        assert!(!matches!(ev, AppEvent::ConflictsToResolve { .. }), "{ev:?}");
+    }
+    assert_eq!(merge_tool_calls(&e.git), 0);
+}
+
+#[test]
+fn new_conflicts_open_git_s_merge_tool_when_picked() {
+    let e = env();
+    let repo = e.repos[0].clone();
+    e.git
+        .with_repo(&repo, |r| r.merge_tool = Some("meld".into()));
+    e.app.set_merge_tool_choice(MergeToolChoice::GitConfig);
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "rows fresh", all_fresh);
+    let mut events = e.app.subscribe();
+
+    write_leaving_conflicts(&e, &repo, 1);
+    wait_until(&e.app, "the merge tool", |_| merge_tool_calls(&e.git) == 1);
+    wait_idle(&mut events);
+    // Closed with conflicts left: not opened again by itself.
+    assert_eq!(merge_tool_calls(&e.git), 1);
+
+    // On demand, it opens whatever the conflicts' age.
+    e.app
+        .dispatch(Command::ResolveConflicts(repo.id()))
+        .unwrap();
+    wait_until(&e.app, "the merge tool again", |_| {
+        merge_tool_calls(&e.git) == 2
+    });
+}
+
+#[test]
+fn without_git_s_merge_tool_conflicts_say_how_to_pick_one() {
+    let e = env();
+    let repo = e.repos[1].clone();
+    e.app.set_merge_tool_choice(MergeToolChoice::GitConfig);
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "rows fresh", all_fresh);
+    let mut events = e.app.subscribe();
+    write_leaving_conflicts(&e, &repo, 1);
+    let notice = next_event(&e, &mut events, |ev| match ev {
+        AppEvent::Notice(n) => Some(n),
+        _ => None,
+    });
+    assert!(notice.contains("Set merge tool"), "{notice}");
+    assert_eq!(merge_tool_calls(&e.git), 0);
+
+    // A tool named in the app needs no Git configuration.
+    e.app
+        .set_merge_tool_choice(MergeToolChoice::External("kdiff3".into()));
+    e.app
+        .dispatch(Command::ResolveConflicts(repo.id()))
+        .unwrap();
+    wait_until(&e.app, "the merge tool", |_| merge_tool_calls(&e.git) == 1);
 }

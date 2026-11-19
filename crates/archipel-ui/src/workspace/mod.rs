@@ -95,6 +95,9 @@ pub struct Workspace {
     core: Arc<Core>,
     focus: FocusHandle,
     repo_views: HashMap<RepoId, Entity<RepoView>>,
+    /// A conflicted file to open in the merge view of its repo tab, once
+    /// that tab is shown (an operation left conflicts).
+    open_conflict: Option<(RepoId, String)>,
     overlay: Option<(Overlay, Subscription)>,
     /// Quick edit pane of the dashboard (a plain click on a row).
     quick_edit: Option<(Entity<QuickEdit>, [Subscription; 3])>,
@@ -172,6 +175,7 @@ impl Workspace {
             core,
             focus,
             repo_views: HashMap::new(),
+            open_conflict: None,
             overlay: None,
             quick_edit: None,
             dash_rows: HashMap::new(),
@@ -256,6 +260,11 @@ impl Workspace {
                 ));
             }
             AppEvent::Notice(text) => self.notice = Some(text),
+            AppEvent::ConflictsToResolve { repo, file } => {
+                self.notice = Some(format!("Conflicts to resolve: {file} is open"));
+                self.open_conflict = Some((repo, file));
+                self.dispatch(Command::OpenRepoTab(repo), cx);
+            }
             AppEvent::DegradedWatching(repos) => {
                 self.notice = Some(format!(
                     "{} repo(s) cannot be watched fully (OS limit): they refresh when the window gets focus",
@@ -352,7 +361,15 @@ impl Render for Workspace {
             self.title = title;
         }
         let context_menu = self.render_context_menu(cx);
-        let content: AnyElement = match self.active_repo_view(window, cx) {
+        let view = self.active_repo_view(window, cx);
+        if let Some(view) = &view
+            && let Some((repo, _)) = &self.open_conflict
+            && self.repo_views.get(repo) == Some(view)
+            && let Some((_, file)) = self.open_conflict.take()
+        {
+            view.update(cx, |v, cx| v.open_conflict(file, window, cx));
+        }
+        let content: AnyElement = match view {
             Some(view) => div()
                 .flex_1()
                 .flex()

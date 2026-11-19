@@ -547,7 +547,12 @@ fn external<V: Staging>(v: &mut V, cx: &mut Context<V>) {
     let Some(file) = v.panel().merge.as_ref().map(|m| m.file.clone()) else {
         return;
     };
-    let tool = v.core().settings().merge_tool.clone();
+    // The tool picked in the app; Git's `merge.tool` otherwise.
+    let tool = v
+        .core()
+        .merge_tool_choice()
+        .external_tool()
+        .map(str::to_owned);
     v.run_job_as(
         OpClass::Write,
         format!("Merge tool on {file}"),

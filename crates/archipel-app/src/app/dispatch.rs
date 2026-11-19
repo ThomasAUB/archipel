@@ -90,6 +90,7 @@ impl App {
                 });
             }
             Command::Undo(repo) => self.spawn_undo(repo, Direction::Undo)?,
+            Command::ResolveConflicts(repo) => self.resolve_conflicts(repo, false),
             Command::Redo(repo) => self.spawn_undo(repo, Direction::Redo)?,
             Command::ToggleFilter(id) => self.update_ui_state(|ui| toggle(&mut ui.filters, id)),
             Command::SortBy(column) => self.update_ui_state(|ui| {

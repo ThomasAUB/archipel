@@ -30,6 +30,46 @@ pub fn load_settings(path: &Path) -> (Settings, Option<String>) {
     }
 }
 
+/// Sets `merge_tool` in the settings file (removes it for `None`: Git's
+/// `merge.tool`), leaving the rest of the file — comments, order, line
+/// endings — as the user wrote it. Creates the file when missing; refuses,
+/// writing nothing, when it is not valid TOML.
+pub fn save_merge_tool(path: &Path, tool: Option<&str>) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let is_key = |line: &str| {
+        line.trim_start()
+            .strip_prefix("merge_tool")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !is_key(l))
+        .map(str::to_owned)
+        .collect();
+    if let Some(tool) = tool {
+        // Top-level keys go before the first table.
+        let value = toml::Value::String(tool.to_owned());
+        lines.insert(0, format!("merge_tool = {value}"));
+    }
+    let mut out = lines.join(eol);
+    if !out.is_empty() {
+        out.push_str(eol);
+    }
+    if let Err(e) = toml::from_str::<Settings>(&out) {
+        return Err(format!("invalid {}: {e}", path.display()));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, out).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
 /// Loads the remembered theme choice (`appearance.toml`). `None` when the
 /// file is missing (silent) or broken (with a warning): the caller then uses
 /// the default theme.
@@ -73,6 +113,43 @@ mod tests {
         std::fs::write(&p, "mode = 3").unwrap();
         let (s, w) = load_theme_selection(&p);
         assert!(s.is_none() && w.is_some());
+    }
+
+    #[test]
+    fn merge_tool_is_saved_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config").join("settings.toml");
+        save_merge_tool(&p, Some("meld")).unwrap();
+        assert_eq!(load_settings(&p).0.merge_tool.as_deref(), Some("meld"));
+
+        std::fs::write(
+            &p,
+            "# mine\r\nnetwork_concurrency = 2\r\nmerge_tool = \"kdiff3\"\r\n",
+        )
+        .unwrap();
+        save_merge_tool(&p, Some("my \"tool\"")).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            text,
+            "merge_tool = 'my \"tool\"'\r\n# mine\r\nnetwork_concurrency = 2\r\n"
+        );
+        let (s, w) = load_settings(&p);
+        assert!(w.is_none());
+        assert_eq!(s.merge_tool.as_deref(), Some("my \"tool\""));
+        assert_eq!(s.network_concurrency, 2);
+
+        save_merge_tool(&p, None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "# mine\r\nnetwork_concurrency = 2\r\n"
+        );
+
+        std::fs::write(&p, "network_concurrency = \"x\"").unwrap();
+        assert!(save_merge_tool(&p, Some("meld")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "network_concurrency = \"x\""
+        );
     }
 
     #[test]

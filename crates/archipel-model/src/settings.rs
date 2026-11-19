@@ -19,6 +19,55 @@ pub enum ReadBackend {
     Cli,
 }
 
+/// What resolves conflicts (setting `merge_tool`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MergeToolChoice {
+    /// The built-in merge view (default).
+    #[default]
+    BuiltIn,
+    /// The external tool Git's configuration names (`merge.tool`).
+    GitConfig,
+    /// This external tool (`git mergetool --tool=<name>`).
+    External(String),
+}
+
+impl MergeToolChoice {
+    /// Setting value of [`Self::BuiltIn`].
+    pub const BUILT_IN: &'static str = "built-in";
+    /// Setting value of [`Self::GitConfig`].
+    pub const GIT_CONFIG: &'static str = "git";
+
+    /// The choice a `merge_tool` setting value names (blank: built-in).
+    #[must_use]
+    pub fn from_setting(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            None | Some("" | Self::BUILT_IN) => Self::BuiltIn,
+            Some(Self::GIT_CONFIG) => Self::GitConfig,
+            Some(name) => Self::External(name.to_owned()),
+        }
+    }
+
+    /// The `merge_tool` setting value naming it (`None`: the default).
+    #[must_use]
+    pub fn setting(&self) -> Option<&str> {
+        match self {
+            Self::BuiltIn => None,
+            Self::GitConfig => Some(Self::GIT_CONFIG),
+            Self::External(name) => Some(name),
+        }
+    }
+
+    /// The tool to pass to `git mergetool --tool` (`None`: Git's
+    /// `merge.tool`).
+    #[must_use]
+    pub fn external_tool(&self) -> Option<&str> {
+        match self {
+            Self::External(name) => Some(name),
+            Self::BuiltIn | Self::GitConfig => None,
+        }
+    }
+}
+
 /// Application settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -53,7 +102,10 @@ pub struct Settings {
     pub recent_projects: usize,
     /// Minimum supported `git` version (major, minor). Default 2.40.
     pub min_git_version: (u32, u32),
-    /// External merge tool name passed to `git mergetool --tool` (Git config when `None`).
+    /// What opens when an operation leaves conflicts, read with
+    /// [`MergeToolChoice::from_setting`]: the built-in merge view when
+    /// absent (or `"built-in"`), Git's `merge.tool` for `"git"`, else the
+    /// tool of that name (`git mergetool --tool`).
     pub merge_tool: Option<String>,
     /// Timeout of one forge API request (GitHub, GitLab, …), in seconds. Default 20.
     pub forge_timeout_secs: u64,
@@ -123,5 +175,21 @@ impl Default for Settings {
             terminal_command: None,
             editor_command: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_tool_tests {
+    use super::MergeToolChoice as C;
+
+    #[test]
+    fn merge_tool_setting_round_trip() {
+        for c in [C::BuiltIn, C::GitConfig, C::External("meld".into())] {
+            assert_eq!(C::from_setting(c.setting()), c);
+        }
+        assert_eq!(C::from_setting(Some(" built-in ")), C::BuiltIn);
+        assert_eq!(C::from_setting(Some("")), C::BuiltIn);
+        assert_eq!(C::External("x".into()).external_tool(), Some("x"));
+        assert_eq!(C::GitConfig.external_tool(), None);
     }
 }
