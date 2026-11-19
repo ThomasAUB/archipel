@@ -1,22 +1,25 @@
 //! The image diff: a one-file diff of an image shows the image before and
-//! after side by side, read and decoded off the UI thread, on canvases of
-//! one size (the larger of the two, images aligned top-left) so both
-//! share one scale. An added or deleted image shows alone.
+//! after, read and decoded off the UI thread, compared side by side, by
+//! swiping, as an onion skin, blinking, or by their pixel difference (see
+//! [`view`]). Both sit top-left on a canvas as large as the larger one, so
+//! they share one scale. An added or deleted image shows alone.
+
+mod view;
+
+use std::time::Duration;
 
 use archipel_model::RepoPath;
 use archipel_model::changes::ChangeKind;
 use archipel_model::diff::FileDiff;
 use archipel_model::ports::DiffSide;
 use archipel_ops::RepoActions;
-use archipel_theme::ColorToken as T;
+use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, ImageFormat, SvgRenderer, Window, div};
+use gpui_kit::{Context, Entity, ImageFormat, Subscription, SvgRenderer, Task};
 
-use super::stage::{Layer, Zoom, stage};
-use super::viewer::{info, zoom_chips};
-use super::{Picture, decode, image_format, release};
+use super::stage::{Placed, Zoom};
+use super::{Difference, Picture, decode, difference, image_format, release};
 use crate::diff_view::Revs;
-use crate::theme::color;
 
 /// Where one version of a file is read from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,7 +94,7 @@ pub(crate) fn sides(
 }
 
 /// One side, as read.
-enum Loaded {
+pub(crate) enum Loaded {
     Loading,
     /// Not on this side.
     Absent,
@@ -100,7 +103,7 @@ enum Loaded {
 }
 
 impl Loaded {
-    fn picture(&self) -> Option<&Picture> {
+    pub(super) fn picture(&self) -> Option<&Picture> {
         match self {
             Self::Ready(p) => Some(p),
             _ => None,
@@ -137,6 +140,73 @@ fn load(
     }
 }
 
+/// How the two images are compared.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// Next to each other.
+    #[default]
+    SideBySide,
+    /// One canvas, before left of a draggable split, after right of it.
+    Swipe,
+    /// After over before, at an opacity set with a slider.
+    Onion,
+    /// One at a time: after, before while a button is held or every
+    /// [`BLINK`] in turn.
+    Blink,
+    /// `|before − after|` per pixel.
+    Difference,
+}
+
+impl Mode {
+    /// Every mode, in the order offered.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::SideBySide,
+        Self::Swipe,
+        Self::Onion,
+        Self::Blink,
+        Self::Difference,
+    ];
+
+    /// Its name on its chip.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SideBySide => "Side by side",
+            Self::Swipe => "Swipe",
+            Self::Onion => "Onion skin",
+            Self::Blink => "Blink",
+            Self::Difference => "Difference",
+        }
+    }
+}
+
+/// Time each image shows while blinking on its own.
+pub(crate) const BLINK: Duration = Duration::from_millis(500);
+
+/// The choices kept from one image diff to the next in a view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Prefs {
+    pub(crate) mode: Mode,
+    pub(crate) zoom: Zoom,
+    /// Differences shown ×4.
+    pub(crate) amplify: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            mode: Mode::SideBySide,
+            zoom: Zoom::Fit,
+            amplify: true,
+        }
+    }
+}
+
+/// The difference image, for one `amplify` setting.
+pub(crate) enum Computed {
+    Pending,
+    Done(Option<Difference>),
+}
+
 /// The image diff's state.
 pub(crate) struct ImageDiff {
     repo: RepoPath,
@@ -144,29 +214,64 @@ pub(crate) struct ImageDiff {
     /// The diff it was read for (its address): a reloaded diff reads the
     /// images again.
     doc: usize,
-    old: Loaded,
-    new: Loaded,
-    zoom: Zoom,
+    pub(super) old: Loaded,
+    pub(super) new: Loaded,
+    pub(super) prefs: Prefs,
+    /// Swipe split, as a fraction of the canvas width.
+    pub(super) split: f32,
+    /// The swipe split follows the pointer.
+    pub(super) dragging: bool,
+    /// Where the swipe canvas was painted.
+    pub(super) placed: Placed,
+    /// Onion skin: the opacity of the image after, 0 – 100.
+    pub(super) onion: Entity<SliderState>,
+    /// Blink: the button showing the image before is held.
+    pub(super) held: bool,
+    /// Blink on its own: the image before shows.
+    pub(super) flipped: bool,
+    /// Blink on its own: the timer, dropped to stop.
+    pub(super) auto: Option<Task<()>>,
+    /// The difference, with the `amplify` it was computed for.
+    pub(super) difference: Option<(bool, Computed)>,
+    _onion_sub: Subscription,
 }
 
 impl ImageDiff {
-    /// The image diff of `sides`, read for diff `doc`; its textures are
-    /// freed with it.
+    /// The image diff of `sides`, read for diff `doc`, with the choices
+    /// `prefs`; its textures are freed with it.
     pub(crate) fn new(
         actions: RepoActions,
         repo: RepoPath,
         sides: Sides,
         doc: usize,
+        prefs: Prefs,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.on_release(|v: &mut Self, cx| v.release(cx)).detach();
+        let onion = cx.new(|_| {
+            SliderState::new()
+                .min(0.0)
+                .max(100.0)
+                .step(1.0)
+                .default_value(50.0)
+        });
+        let onion_sub = cx.subscribe(&onion, |_, _, _: &SliderEvent, cx| cx.notify());
         let mut diff = Self {
             repo,
             sides,
             doc,
             old: Loaded::Loading,
             new: Loaded::Loading,
-            zoom: Zoom::Fit,
+            prefs,
+            split: 0.5,
+            dragging: false,
+            placed: Placed::default(),
+            onion,
+            held: false,
+            flipped: false,
+            auto: None,
+            difference: None,
+            _onion_sub: onion_sub,
         };
         diff.load(actions, cx);
         diff
@@ -175,6 +280,11 @@ impl ImageDiff {
     /// Whether it shows `sides` of `repo`.
     pub(crate) fn shows(&self, repo: &RepoPath, sides: &Sides) -> bool {
         self.repo == *repo && self.sides == *sides
+    }
+
+    /// Its choices, for the next image diff.
+    pub(crate) fn prefs(&self) -> Prefs {
+        self.prefs
     }
 
     /// Reads the images again for diff `doc` (reloaded), keeping the ones
@@ -202,6 +312,8 @@ impl ImageDiff {
                 }
                 v.release(cx);
                 (v.old, v.new) = (old, new);
+                v.difference = None;
+                v.compute_difference(cx);
                 cx.notify();
             });
         })
@@ -210,7 +322,11 @@ impl ImageDiff {
 
     /// Frees the textures shown.
     fn release(&self, cx: &mut gpui_kit::App) {
-        for p in [self.old.picture(), self.new.picture()]
+        let difference = match &self.difference {
+            Some((_, Computed::Done(Some(d)))) => Some(&d.picture),
+            _ => None,
+        };
+        for p in [self.old.picture(), self.new.picture(), difference]
             .into_iter()
             .flatten()
         {
@@ -218,95 +334,80 @@ impl ImageDiff {
         }
     }
 
-    /// The canvas both images are shown on: wide and tall enough for each.
-    fn canvas(&self) -> (u32, u32) {
-        [self.old.picture(), self.new.picture()]
-            .into_iter()
-            .flatten()
-            .fold((1, 1), |(w, h), p| (w.max(p.width), h.max(p.height)))
+    /// Both images, once read; `None` while one is missing.
+    pub(super) fn pair(&self) -> Option<(&Picture, &Picture)> {
+        self.old.picture().zip(self.new.picture())
     }
 
-    /// One side's pane: its label and size, then its image.
-    fn pane(&self, before: bool, cx: &Context<Self>) -> AnyElement {
-        let (loaded, name) = if before {
-            (&self.old, "Before")
-        } else {
-            (&self.new, "After")
-        };
-        let other = if before { &self.new } else { &self.old };
-        let name = match other {
-            Loaded::Absent if before => "Deleted",
-            Loaded::Absent => "Added",
-            _ => name,
-        };
-        let (label, body) = match loaded {
-            Loaded::Ready(p) => (
-                format!("{name} · {}", p.info()),
-                stage(
-                    if before { "image-old" } else { "image-new" },
-                    self.canvas(),
-                    vec![Layer::whole(p)],
-                    self.zoom,
-                    None,
-                    cx,
-                )
-                .into_any_element(),
-            ),
-            Loaded::Loading => (name.to_owned(), note("Loading…", cx)),
-            Loaded::Absent => (name.to_owned(), note("Not in this version", cx)),
-            Loaded::Failed(e) => (name.to_owned(), note(e.clone(), cx)),
-        };
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(info(label, cx).px_2().py_1().truncate())
-            .child(body)
-            .into_any_element()
+    /// Shows the images in `mode`.
+    pub(super) fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.prefs.mode = mode;
+        if mode != Mode::Blink {
+            self.set_auto(false, cx);
+        }
+        self.compute_difference(cx);
+        cx.notify();
     }
-}
 
-/// A muted note in place of an image.
-fn note(text: impl Into<gpui_kit::SharedString>, cx: &Context<ImageDiff>) -> AnyElement {
-    div()
-        .p_3()
-        .text_color(color(cx, T::FgMuted))
-        .child(text.into())
-        .into_any_element()
-}
+    /// Shows the difference ×4 (`amplify`) or as it is.
+    pub(super) fn set_amplify(&mut self, amplify: bool, cx: &mut Context<Self>) {
+        self.prefs.amplify = amplify;
+        self.compute_difference(cx);
+        cx.notify();
+    }
 
-impl Render for ImageDiff {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let bar = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(color(cx, T::BorderSubtle))
-            .child(div().flex_1())
-            .child(zoom_chips(self.zoom, cx, |v: &mut Self, z| v.zoom = z));
-        let both = !matches!(self.old, Loaded::Absent) && !matches!(self.new, Loaded::Absent);
-        let panes = div().flex_1().min_h_0().flex();
-        let panes = if both {
-            panes
-                .child(self.pane(true, cx))
-                .child(div().w(gpui_kit::px(1.0)).bg(color(cx, T::BorderSubtle)))
-                .child(self.pane(false, cx))
-        } else {
-            panes.child(self.pane(matches!(self.new, Loaded::Absent), cx))
+    /// Starts or stops blinking on its own.
+    pub(super) fn set_auto(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.flipped = false;
+        self.auto = on.then(|| {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(BLINK).await;
+                    let flipped = this.update(cx, |v, cx| {
+                        v.flipped = !v.flipped;
+                        cx.notify();
+                    });
+                    if flipped.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+        cx.notify();
+    }
+
+    /// Computes the difference (off the UI thread) when it shows and is
+    /// not computed for the current amplification yet.
+    fn compute_difference(&mut self, cx: &mut Context<Self>) {
+        let amplify = self.prefs.amplify;
+        if self.prefs.mode != Mode::Difference
+            || self.difference.as_ref().is_some_and(|(a, _)| *a == amplify)
+        {
+            return;
+        }
+        let Some((a, b)) = self.pair().map(|(a, b)| (a.clone(), b.clone())) else {
+            return;
         };
-        div()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(bar)
-            .child(panes)
+        if let Some((_, Computed::Done(Some(d)))) = self.difference.take() {
+            release(d.picture.render, cx);
+        }
+        self.difference = Some((amplify, Computed::Pending));
+        let doc = self.doc;
+        let task = cx.background_spawn(async move { difference(&a, &b, amplify) });
+        cx.spawn(async move |this, cx| {
+            let done = task.await;
+            let _ = this.update(cx, |v, cx| {
+                let current = v.doc == doc
+                    && matches!(v.difference, Some((a, Computed::Pending)) if a == amplify);
+                if current {
+                    v.difference = Some((amplify, Computed::Done(done)));
+                    cx.notify();
+                } else if let Some(d) = done {
+                    release(d.picture.render, cx);
+                }
+            });
+        })
+        .detach();
     }
 }
 

@@ -809,8 +809,10 @@ fn image_diff<V: Staging>(
             image.update(cx, |d, cx| d.refresh(actions, read_for, cx));
             Some(image)
         }
-        _ => {
-            let image = cx.new(|cx| ImageDiff::new(actions, repo, sides, read_for, cx));
+        // Another image: it opens in the mode the last one was left in.
+        previous => {
+            let prefs = previous.map(|p| p.read(cx).prefs()).unwrap_or_default();
+            let image = cx.new(|cx| ImageDiff::new(actions, repo, sides, read_for, prefs, cx));
             v.panel().image = Some(image.clone());
             Some(image)
         }

@@ -30,10 +30,22 @@ pub(crate) enum Zoom {
     Actual,
 }
 
+/// The part of an image a layer shows, split at a fraction of the canvas
+/// width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Clip {
+    Whole,
+    /// Left of the split.
+    Before(f32),
+    /// Right of the split.
+    After(f32),
+}
+
 /// One image painted on a stage.
 pub(crate) struct Layer {
     pub(crate) picture: Picture,
     pub(crate) opacity: f32,
+    pub(crate) clip: Clip,
 }
 
 impl Layer {
@@ -42,6 +54,7 @@ impl Layer {
         Self {
             picture: picture.clone(),
             opacity: 1.0,
+            clip: Clip::Whole,
         }
     }
 }
@@ -78,15 +91,24 @@ pub(crate) fn place(bounds: Bounds<Pixels>, canvas_size: (u32, u32), zoom: Zoom)
     )
 }
 
-/// A stage of `canvas_size` showing `layers` (bottom first), filling its
-/// parent; `placed` learns where the canvas is painted. `id` keys the
-/// scroll position at 100 %.
+/// The fraction of the canvas width at window x `x`, given where it was
+/// painted.
+pub(crate) fn fraction_at(placed: &Placed, x: Pixels) -> Option<f32> {
+    let rect = placed.get()?;
+    let width = f32::from(rect.size.width);
+    (width > 0.0).then(|| (f32::from(x - rect.origin.x) / width).clamp(0.0, 1.0))
+}
+
+/// A stage of `canvas_size` showing `layers` (bottom first), then
+/// `marks` over them, filling its parent; `placed` learns where the canvas
+/// is painted. `id` keys the scroll position at 100 %.
 pub(crate) fn stage(
     id: impl Into<SharedString>,
     canvas_size: (u32, u32),
     layers: Vec<Layer>,
     zoom: Zoom,
     placed: Option<Placed>,
+    marks: Option<AnyElement>,
     cx: &App,
 ) -> Stateful<Div> {
     let colors = (color(cx, T::BgPanel), color(cx, T::BgHover));
@@ -107,6 +129,7 @@ pub(crate) fn stage(
             painted
         });
     }
+    let content = content.children(marks);
     let id = id.into();
     match zoom {
         Zoom::Fit => div()
@@ -184,7 +207,8 @@ fn checkerboard(
     .into_any_element()
 }
 
-/// One layer: its image at the canvas's top-left, at the canvas scale.
+/// One layer: its image at the canvas's top-left, at the canvas scale,
+/// clipped to its side of the split.
 fn paint_layer(layer: Layer, canvas_size: (u32, u32), zoom: Zoom) -> AnyElement {
     canvas(
         |_, _, _| {},
@@ -199,7 +223,18 @@ fn paint_layer(layer: Layer, canvas_size: (u32, u32), zoom: Zoom) -> AnyElement 
                     px(side(picture.height) * scale),
                 ),
             );
-            let shown = image;
+            let split = |f: f32| rect.origin.x + rect.size.width * f;
+            let shown = match layer.clip {
+                Clip::Whole => image,
+                Clip::Before(f) => Bounds::from_corners(
+                    image.origin,
+                    point(split(f).min(image.right()), image.bottom()),
+                ),
+                Clip::After(f) => Bounds::from_corners(
+                    point(split(f).max(image.left()), image.top()),
+                    image.bottom_right(),
+                ),
+            };
             if f32::from(shown.size.width) > 0.0 {
                 let _ = window.paint_image(
                     shown,
@@ -210,6 +245,28 @@ fn paint_layer(layer: Layer, canvas_size: (u32, u32), zoom: Zoom) -> AnyElement 
                     false,
                 );
             }
+        },
+    )
+    .absolute()
+    .size_full()
+    .into_any_element()
+}
+
+/// The swipe's split line, at fraction `at` of the canvas width.
+pub(crate) fn split_line(canvas_size: (u32, u32), zoom: Zoom, at: f32, cx: &App) -> AnyElement {
+    let line = color(cx, T::Accent);
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, (), window: &mut Window, _: &mut App| {
+            let rect = place(bounds, canvas_size, zoom);
+            let x = rect.origin.x + rect.size.width * at;
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x - px(1.0), rect.top()),
+                    size(px(2.0), rect.size.height),
+                ),
+                line,
+            ));
         },
     )
     .absolute()
@@ -237,5 +294,14 @@ mod tests {
     fn an_actual_size_canvas_is_not_scaled() {
         let placed = place(bounds(0.0, 0.0, 300.0, 300.0), (100, 50), Zoom::Actual);
         assert_eq!(placed, bounds(100.0, 125.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn the_split_follows_the_pointer_within_the_canvas() {
+        let placed: Placed = Rc::new(Cell::new(Some(bounds(100.0, 0.0, 200.0, 50.0))));
+        assert_eq!(fraction_at(&placed, px(150.0)), Some(0.25));
+        assert_eq!(fraction_at(&placed, px(0.0)), Some(0.0));
+        assert_eq!(fraction_at(&placed, px(900.0)), Some(1.0));
+        assert_eq!(fraction_at(&Rc::new(Cell::new(None)), px(1.0)), None);
     }
 }

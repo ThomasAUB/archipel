@@ -201,7 +201,7 @@ Shown as the Open Diff (Repo View) and as the Quick Edit Diff (Dashboard).
 | **Hunk Buttons** | Stage / Unstage / Discard on each hunk of a working-copy diff. |
 | **Line Selection** | Changed lines picked with click, Ctrl+click, Shift+click; a **Selection Bar** offers Stage / Unstage / Discard lines and Clear. |
 | **File Editor** | Replaces the Diff View to edit the file in place (Edit or double-click a line): Save (`Ctrl+S`), Cancel (`Esc`). ([file_edit.rs](../crates/archipel-ui/src/file_edit.rs)) |
-| **Image Diff** | Replaces the Diff View of a binary image (or of an SVG on **Images**): before and after side by side, each labelled with its size, format and weight, with **Fit** / **100 %**. ([compare.rs](../crates/archipel-ui/src/image_view/compare.rs)) |
+| **Image Diff** | Replaces the Diff View of a binary image (or of an SVG on **Images**): a bar with the **Compare Modes** chips (**Side by side**, **Swipe**, **Onion skin**, **Blink**, **Difference**), the mode's controls (opacity slider; **Hold for before** and **Auto**; **Amplify ×4** and the changed-pixel count) and **Fit** / **100 %**; then the images, each labelled with its size, format and weight. ([compare.rs](../crates/archipel-ui/src/image_view/compare.rs)) |
 | **Merge View** | Replaces the Diff View of a conflicted file: **Ours** / **Theirs** panes (read only) above the editable **Result**, conflicts tinted, the current one framed; a **Conflict Bar** (Conflict n of m, ↑ ↓, Take ours / theirs / both / base, All: Ours / Theirs), **Open in merge tool** and **Mark resolved** (`Ctrl+Enter`); `Ctrl+S` saves. A binary or deleted-side conflict is resolved whole. ([merge_view.rs](../crates/archipel-ui/src/merge_view.rs)) |
 
 ## 7. Overlays
