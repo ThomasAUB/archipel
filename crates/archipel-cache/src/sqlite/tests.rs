@@ -216,6 +216,7 @@ fn json_id_is_overridden_by_the_column() {
         before: snapshot.clone(),
         after: snapshot,
         worktree_snapshot: None,
+        snapshot_paths: Vec::new(),
         stash: None,
         worktree: None,
         time: Timestamp(0),

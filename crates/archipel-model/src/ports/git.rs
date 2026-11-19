@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 
 use crate::cancel::{CancelToken, NoProgress, ProgressSink};
-use crate::changes::FileChange;
+use crate::changes::{ConflictSides, FileChange};
 use crate::diff::{FileDiff, NumStat};
 use crate::error::GitError;
 use crate::forecast::{MergeForecast, MergeStrategy};
@@ -424,6 +424,36 @@ pub trait MergeToolLauncher: Send + Sync {
         repo: &RepoPath,
         path: Option<&str>,
         tool: Option<&str>,
+    ) -> Result<(), GitError>;
+}
+
+/// Reads and resolves the conflicted paths of the index (the merge view).
+/// `path` is relative to the repository root and `/`-separated.
+pub trait ConflictResolver: Send + Sync {
+    /// The three versions of conflicted `path` held by the index: base
+    /// (stage 1), ours (stage 2) and theirs (stage 3). A side where the
+    /// file does not exist (added on one side, deleted on the other) is
+    /// `None`. Refused when `path` is not conflicted.
+    fn conflict_sides(&self, repo: &RepoPath, path: &str) -> Result<ConflictSides, GitError>;
+    /// Marks conflicted `path` resolved: `contents` is written to the
+    /// worktree and staged, or, when `None`, the file is deleted from the
+    /// worktree and the index. Git keeps the conflict in the index's
+    /// resolve-undo record, which [`Self::unresolve_conflicts`] uses.
+    fn resolve_conflict(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        contents: Option<&[u8]>,
+    ) -> Result<(), GitError>;
+    /// Undo of [`Self::resolve_conflict`]: brings back the conflict of
+    /// `paths` in the index, and their worktree content from `snapshot` (a
+    /// [`WorktreeSnapshots::snapshot_paths`] of them taken before
+    /// resolving). Refused when one of them changed since it was resolved.
+    fn unresolve_conflicts(
+        &self,
+        repo: &RepoPath,
+        paths: &[String],
+        snapshot: Oid,
     ) -> Result<(), GitError>;
 }
 

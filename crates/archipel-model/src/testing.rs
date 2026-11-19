@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::cancel::{CancelToken, ProgressSink};
-use crate::changes::FileChange;
+use crate::changes::{ConflictSides, FileChange, FileState};
 use crate::diff::FileDiff;
 use crate::error::{GitError, ProjectError, StoreError, WatchError};
 use crate::forecast::{MergeForecast, MergeStrategy};
@@ -18,13 +18,13 @@ use crate::history::{CommitMeta, CommitText, TopologyNode, WalkOrder};
 use crate::ids::{Oid, ProjectId, RepoId, RepoPath};
 use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefSnapshot};
 use crate::ports::{
-    BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, Coverage, DiffReader,
-    DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink, JournalStore,
-    LocalFilesCopier, MergeForecaster, MergeToolLauncher, ProjectRegistry, ProjectSource,
-    RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RemoteWriter, RepoDiscovery,
-    StashReader, StashWriter, StatsStore, StatusReader, SubmoduleReader, SubmoduleWriter,
-    SummaryStore, TagWriter, TreeReader, UiStateStore, WatchHandle, WorktreeFiles, WorktreeReader,
-    WorktreeSnapshots, WorktreeWriter,
+    BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, ConflictResolver, Coverage,
+    DiffReader, DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink,
+    JournalStore, LocalFilesCopier, MergeForecaster, MergeToolLauncher, ProjectRegistry,
+    ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader, RemoteWriter,
+    RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader, SubmoduleReader,
+    SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore, WatchHandle, WorktreeFiles,
+    WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -102,6 +102,8 @@ pub struct FakeRepo {
     pub incoming: HashMap<(Oid, Oid), Vec<String>>,
     /// Linked worktrees (the main one is derived from the repo itself).
     pub worktrees: Vec<WorktreeInfo>,
+    /// The index versions of conflicted paths, for `ConflictResolver`.
+    pub conflict_sides: BTreeMap<String, ConflictSides>,
 }
 
 impl Default for FakeRepo {
@@ -126,6 +128,7 @@ impl Default for FakeRepo {
             conflicts: HashMap::new(),
             incoming: HashMap::new(),
             worktrees: Vec::new(),
+            conflict_sides: BTreeMap::new(),
         }
     }
 }
@@ -1151,6 +1154,49 @@ impl MergeToolLauncher for FakeGit {
     }
 }
 
+impl ConflictResolver for FakeGit {
+    fn conflict_sides(&self, repo: &RepoPath, path: &str) -> Result<ConflictSides, GitError> {
+        self.read(repo, "conflict_sides", |r| {
+            r.conflict_sides.get(path).cloned()
+        })?
+        .ok_or_else(|| GitError::InvalidRequest(format!("{path} is not conflicted")))
+    }
+    fn resolve_conflict(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        contents: Option<&[u8]>,
+    ) -> Result<(), GitError> {
+        self.record("resolve_conflict", repo, path)?;
+        self.with_repo(repo, |r| {
+            r.conflict_sides.remove(path);
+            match contents {
+                Some(c) => {
+                    r.files.insert(path.to_owned(), c.to_vec());
+                }
+                None => {
+                    r.files.remove(path);
+                }
+            }
+            r.changes
+                .retain(|c| c.path != path || c.state != FileState::Conflicted);
+        });
+        Ok(())
+    }
+    fn unresolve_conflicts(
+        &self,
+        repo: &RepoPath,
+        paths: &[String],
+        snapshot: Oid,
+    ) -> Result<(), GitError> {
+        self.record(
+            "unresolve_conflicts",
+            repo,
+            format!("{}@{}", paths.join(","), snapshot.to_hex()),
+        )
+    }
+}
+
 type RepoStats = (Option<Oid>, Vec<ActivityBucket>, Vec<Hotspot>);
 
 /// Fake of every store trait, kept in memory.
@@ -1497,6 +1543,7 @@ mod tests {
                 refs: vec![],
             },
             worktree_snapshot: None,
+            snapshot_paths: Vec::new(),
             stash: None,
             worktree: None,
             time: Timestamp(0),

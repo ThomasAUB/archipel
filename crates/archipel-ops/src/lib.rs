@@ -21,6 +21,7 @@
 pub mod actions;
 pub mod batch;
 pub mod commit;
+pub mod conflict;
 pub mod error;
 pub mod journal;
 pub mod patch;

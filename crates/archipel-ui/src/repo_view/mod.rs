@@ -610,7 +610,7 @@ impl Render for RepoView {
         let centre = if matches!(self.open_diff, Some(OpenDiff::File(_))) {
             self.render_open_file(window, cx)
         } else if self.open_diff.is_some() {
-            self.render_open_diff(cx)
+            self.render_open_diff(window, cx)
         } else {
             self.render_graph(cx)
         };

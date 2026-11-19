@@ -37,7 +37,7 @@ impl WorktreeFiles for GitCli {
 
 /// `path` under the worktree of `repo`; refused when it is absolute or
 /// climbs out (`..`).
-fn worktree_path(repo: &RepoPath, path: &str) -> Result<PathBuf, GitError> {
+pub(super) fn worktree_path(repo: &RepoPath, path: &str) -> Result<PathBuf, GitError> {
     let relative = Path::new(path);
     let inside = !path.is_empty()
         && relative

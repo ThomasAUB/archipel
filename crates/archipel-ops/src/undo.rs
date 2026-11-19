@@ -71,6 +71,14 @@ pub enum UndoStep {
     AddWorktree(WorktreeAddRequest),
     /// Remove a linked worktree (undo of its creation); it is clean.
     RemoveWorktree(PathBuf),
+    /// Bring back the conflict of resolved paths, and their files from a
+    /// path snapshot taken before resolving.
+    Unresolve {
+        /// The paths resolved.
+        paths: Vec<String>,
+        /// Their snapshot.
+        snapshot: Oid,
+    },
     /// Write back a path snapshot into another worktree than the repo's.
     RestorePathsIn {
         /// The worktree.
@@ -246,6 +254,23 @@ impl UndoService {
                 (Direction::Undo, None) => Ok(UndoPlan::Nothing("nothing was discarded".into())),
                 (Direction::Redo, _) => Err(OpError::Refused(
                     "discard the files again instead of redoing".into(),
+                )),
+            },
+            K::Resolve => match (direction, entry.worktree_snapshot) {
+                (Direction::Undo, Some(snapshot)) if !entry.snapshot_paths.is_empty() => {
+                    Ok(UndoPlan::Steps {
+                        steps: vec![UndoStep::Unresolve {
+                            paths: entry.snapshot_paths.clone(),
+                            snapshot,
+                        }],
+                        note: None,
+                    })
+                }
+                (Direction::Undo, _) => Ok(UndoPlan::Nothing(
+                    "the conflict was not recorded: it cannot come back".into(),
+                )),
+                (Direction::Redo, _) => Err(OpError::Refused(
+                    "resolve the file again instead of redoing".into(),
                 )),
             },
             K::Push => match direction {
@@ -643,6 +668,9 @@ impl UndoService {
                 g.stash_writer.stash_apply(repo, 0, StashApplyMode::Pop)?;
             }
             UndoStep::RestorePaths(oid) => g.snapshots.restore_paths(repo, *oid)?,
+            UndoStep::Unresolve { paths, snapshot } => {
+                g.conflicts.unresolve_conflicts(repo, paths, *snapshot)?;
+            }
             UndoStep::AddWorktree(request) => g.worktree_writer.add_worktree(repo, request)?,
             UndoStep::RemoveWorktree(path) => {
                 g.worktree_writer.remove_worktree(repo, path, false)?;

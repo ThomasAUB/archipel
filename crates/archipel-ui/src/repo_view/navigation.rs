@@ -415,7 +415,11 @@ impl RepoView {
 
     /// The open diff, in place of the graph: a header naming it, then the
     /// diff (hunks stage / unstage on the working copy).
-    pub(super) fn render_open_diff(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_open_diff(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (title, note, side, doc) = match &self.open_diff {
             Some(OpenDiff::Commit(file, doc)) => {
                 let title = match file {
@@ -440,7 +444,7 @@ impl RepoView {
             ),
             Some(OpenDiff::File(_)) | None => return div().into_any_element(),
         };
-        diff_view::render_open(self, title, &note, side, doc, cx)
+        diff_view::render_open(self, title, &note, side, doc, window, cx)
     }
 }
 

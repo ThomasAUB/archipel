@@ -57,6 +57,7 @@ fn entry(n: u64) -> JournalEntry {
         before: snapshot(n),
         after: snapshot(n + 1),
         worktree_snapshot: None,
+        snapshot_paths: Vec::new(),
         stash: None,
         worktree: None,
         time: Timestamp(0),

@@ -201,6 +201,7 @@ impl Journal {
                     before,
                     after,
                     worktree_snapshot,
+                    snapshot_paths: rec.snapshot_paths,
                     stash: rec.stash,
                     worktree: rec.worktree.map(|(w, _)| w),
                     time: Timestamp::now(),

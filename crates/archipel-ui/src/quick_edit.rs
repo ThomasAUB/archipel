@@ -107,7 +107,7 @@ impl QuickEdit {
     }
 
     /// The open diff, drawn by the workspace in place of the dashboard rows.
-    pub fn render_diff(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub fn render_diff(&mut self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let WorktreeDiff { file, side, doc } = self.open_diff.clone()?;
         Some(diff_view::render_open(
             self,
@@ -115,6 +115,7 @@ impl QuickEdit {
             diff_view::side_note(side),
             Some(side),
             doc,
+            window,
             cx,
         ))
     }

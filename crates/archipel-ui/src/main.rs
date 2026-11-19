@@ -36,6 +36,7 @@ mod instance;
 mod keys;
 mod latest;
 mod menu;
+mod merge_view;
 mod palette;
 mod quick_edit;
 mod repo_view;

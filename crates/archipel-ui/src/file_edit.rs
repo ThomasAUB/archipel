@@ -107,7 +107,7 @@ pub(crate) fn open<V: Staging>(
 
 /// The text of `bytes` for the editor, with whether its lines end with
 /// CRLF; refused for files the editor would mangle.
-fn editable_text(file: &str, bytes: Vec<u8>) -> Result<(Vec<u8>, String, bool), String> {
+pub(crate) fn editable_text(file: &str, bytes: Vec<u8>) -> Result<(Vec<u8>, String, bool), String> {
     if bytes.len() > MAX_EDIT_BYTES {
         return Err(format!("{file} is too large to edit here"));
     }
@@ -129,7 +129,7 @@ fn editable_text(file: &str, bytes: Vec<u8>) -> Result<(Vec<u8>, String, bool), 
 }
 
 /// The bytes to write for the editor's `text`.
-fn file_bytes(text: &str, crlf: bool) -> Vec<u8> {
+pub(crate) fn file_bytes(text: &str, crlf: bool) -> Vec<u8> {
     if crlf {
         text.replace('\n', "\r\n").into_bytes()
     } else {

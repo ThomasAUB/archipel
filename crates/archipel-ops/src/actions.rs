@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
-use archipel_model::changes::FileState;
+use archipel_model::changes::{ConflictSides, FileState};
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
-    BranchWriter, CommitWriter, HistoryReader, HistoryRewriter, IndexWriter, LocalFilesCopier,
-    MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps, RemoteReader,
-    RemoteWriter, StashReader, StashWriter, StatusReader, SubmoduleReader, SubmoduleWriter,
-    TagWriter, TreeReader, WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
+    BranchWriter, CommitWriter, ConflictResolver, HistoryReader, HistoryRewriter, IndexWriter,
+    LocalFilesCopier, MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps,
+    RemoteReader, RemoteWriter, StashReader, StashWriter, StatusReader, SubmoduleReader,
+    SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles, WorktreeReader, WorktreeSnapshots,
+    WorktreeWriter,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -55,6 +56,8 @@ pub struct GitPorts {
     pub rewriter: Arc<dyn HistoryRewriter>,
     /// External merge tool.
     pub merge_tool: Arc<dyn MergeToolLauncher>,
+    /// Conflicted files: their versions, resolving them (the merge view).
+    pub conflicts: Arc<dyn ConflictResolver>,
     /// Submodule list (dependency tree).
     pub submodules: Arc<dyn SubmoduleReader>,
     /// Submodule init / update.
@@ -95,6 +98,7 @@ impl GitPorts {
             + RemoteOps
             + HistoryRewriter
             + MergeToolLauncher
+            + ConflictResolver
             + SubmoduleReader
             + SubmoduleWriter
             + RemoteReader
@@ -122,6 +126,7 @@ impl GitPorts {
             remote: backend.clone(),
             rewriter: backend.clone(),
             merge_tool: backend.clone(),
+            conflicts: backend.clone(),
             submodules: backend.clone(),
             submodule_writer: backend.clone(),
             remotes: backend.clone(),
@@ -980,6 +985,41 @@ impl RepoActions {
     /// Continues, aborts or skips the operation in progress.
     pub fn sequence(&self, repo: &RepoPath, action: SequenceAction) -> Result<(), OpError> {
         Ok(self.git.rewriter.sequence(repo, action)?)
+    }
+
+    /// The base, ours and theirs versions of conflicted `path`.
+    pub fn conflict_sides(&self, repo: &RepoPath, path: &str) -> Result<ConflictSides, OpError> {
+        Ok(self.git.conflicts.conflict_sides(repo, path)?)
+    }
+
+    /// Marks conflicted `path` resolved with `contents` (written and
+    /// staged), or deleted when `None`. With `expected`, refused when the
+    /// file no longer holds those bytes (it changed since the merge view
+    /// read it). Undoable: the undo brings the conflict back, with the file
+    /// as it was.
+    pub fn resolve_conflict(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        expected: Option<&[u8]>,
+        contents: Option<&[u8]>,
+    ) -> Result<(), OpError> {
+        if let Some(expected) = expected
+            && self.git.files.read_file(repo, path).ok().as_deref() != Some(expected)
+        {
+            return Err(OpError::Refused(format!(
+                "{path} changed on disk since it was opened: reopen it to resolve"
+            )));
+        }
+        let paths = [path.to_owned()];
+        let label = match contents {
+            Some(_) => format!("Resolve {path}"),
+            None => format!("Resolve {path} (deleted)"),
+        };
+        let rec = Recording::new(OperationKind::Resolve, label).snapshot_paths(&paths);
+        self.journal.record(repo, rec, || {
+            self.git.conflicts.resolve_conflict(repo, path, contents)
+        })
     }
 
     /// Opens the external merge tool.
