@@ -1,8 +1,8 @@
 //! The forge panel (spec §8): accounts (sign in with a personal access
 //! token, sign out), open pull requests of the selected repos (merge them),
-//! new pull requests for the selected repos (one per repo, linked), and
-//! clone: from URLs (no account needed) or from an account / organization /
-//! group.
+//! new pull requests for the selected repos (one per repo, linked), open
+//! issues of the selected repos (close, reopen), a new issue, and clone:
+//! from URLs (no account needed) or from an account / organization / group.
 //!
 //! Every forge call runs on the app runtime (scheduler network pool); the
 //! panel only awaits the results.
@@ -11,16 +11,17 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use archipel_app::dashboard::relative_time;
 use archipel_app::forge::{AUTO_MERGE_MARK, auto_merge_note, ci_label, review_label};
 use archipel_app::{
-    App as Core, AutoMergeOutcome, CloneOutcome, CloneProtocol, PullRequestPlan, RepoPullRequests,
-    clone_dir_name, split_clone_urls,
+    App as Core, AutoMergeOutcome, CloneOutcome, CloneProtocol, IssueTarget, PullRequestPlan,
+    RepoIssues, RepoPullRequests, clone_dir_name, split_clone_urls,
 };
-use archipel_model::RepoId;
 use archipel_model::forge::{
-    ForgeAccount, ForgeKind, ForgeRepo, MergeMethod, MergeState, Namespace, PullRequestStatus,
-    RemoteRepo,
+    CloseReason, ForgeAccount, ForgeKind, ForgeRepo, Issue, IssueDraft, MergeMethod, MergeState,
+    Namespace, PullRequestStatus, RemoteRepo,
 };
+use archipel_model::{RepoId, Timestamp};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -42,6 +43,10 @@ pub enum ForgeTab {
     Open(Vec<RepoId>),
     /// New pull requests for these repos (all when empty).
     Create(Vec<RepoId>),
+    /// Open issues of these repos (all when empty), to close.
+    Issues(Vec<RepoId>),
+    /// A new issue on one of these repos (all when empty).
+    NewIssue(Vec<RepoId>),
     /// Clone from URLs or from an account.
     Clone,
 }
@@ -52,6 +57,20 @@ pub enum ForgePanelEvent {
     Closed,
     /// A one-line result for the status bar.
     Notice(String),
+    /// A one-line result for the status bar, opening `url` when clicked.
+    NoticeLink(String, String),
+}
+
+impl ForgeTab {
+    /// The repos of a pull request or issue tab.
+    fn repos(&self) -> Option<&Vec<RepoId>> {
+        match self {
+            Self::Open(ids) | Self::Create(ids) | Self::Issues(ids) | Self::NewIssue(ids) => {
+                Some(ids)
+            }
+            Self::Accounts | Self::Clone => None,
+        }
+    }
 }
 
 /// Report line: text, link, error.
@@ -83,6 +102,19 @@ pub struct ForgePanel {
     description: Entity<TextareaState>,
     target: Entity<InputState>,
     draft: bool,
+    // Open issues.
+    issues: Vec<RepoIssues>,
+    close_reason: CloseReason,
+    close_comment: Entity<InputState>,
+    /// The Close button clicked once: `(repo, number)`.
+    armed_close: Armed<(RepoId, u64)>,
+    // New issue.
+    issue_targets: Vec<IssueTarget>,
+    issue_repo: Option<RepoId>,
+    issue_title: Entity<InputState>,
+    issue_description: Entity<TextareaState>,
+    issue_labels: Vec<String>,
+    issue_assignees: Vec<String>,
     // Clone.
     /// URLs to clone (one or several).
     url: Entity<InputState>,
@@ -105,6 +137,16 @@ fn kind_label(kind: &ForgeKind) -> String {
         "github" => "GitHub".into(),
         "gitlab" => "GitLab".into(),
         other => other.to_owned(),
+    }
+}
+
+/// Adds `item` to `list`, or removes it when there.
+fn toggle(list: &mut Vec<String>, item: &str) {
+    match list.iter().position(|x| x == item) {
+        Some(i) => {
+            list.remove(i);
+        }
+        None => list.push(item.to_owned()),
     }
 }
 
@@ -157,6 +199,13 @@ impl ForgePanel {
                 .rows(5)
                 .placeholder("Description (Markdown)")
         });
+        let close_comment = input("Closing comment (optional, Markdown)", window, cx);
+        let issue_title = input("Issue title", window, cx);
+        let issue_description = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(6)
+                .placeholder("Description (Markdown)")
+        });
         let mut panel = Self {
             accounts: core.forge_accounts(),
             core,
@@ -175,6 +224,16 @@ impl ForgePanel {
             description,
             target,
             draft: false,
+            issues: Vec::new(),
+            close_reason: CloseReason::default(),
+            close_comment,
+            armed_close: Armed::default(),
+            issue_targets: Vec::new(),
+            issue_repo: None,
+            issue_title,
+            issue_description,
+            issue_labels: Vec::new(),
+            issue_assignees: Vec::new(),
             url,
             account: None,
             namespaces: Vec::new(),
@@ -206,6 +265,8 @@ impl ForgePanel {
             }
             ForgeTab::Open(ids) => self.list_open(ids.clone(), window, cx),
             ForgeTab::Create(ids) => self.prepare(ids.clone(), window, cx),
+            ForgeTab::Issues(ids) => self.list_issues(ids.clone(), window, cx),
+            ForgeTab::NewIssue(ids) => self.prepare_issue(ids.clone(), window, cx),
             ForgeTab::Clone => {
                 if self.folder.is_none() {
                     self.folder = self.core.default_clone_folder();
@@ -600,6 +661,218 @@ impl ForgePanel {
         );
     }
 
+    // ----- issues -----------------------------------------------------------
+
+    fn list_issues(&mut self, ids: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
+        self.armed_close.disarm();
+        let core = self.core.clone();
+        self.run(
+            async move { core.open_issues(&ids).await },
+            window,
+            cx,
+            |p, result, _, _| match result {
+                Ok(issues) => p.issues = issues,
+                Err(e) => p.error = Some(e.to_string()),
+            },
+        );
+    }
+
+    /// The Close button: the first click arms it, a second one before
+    /// [`ARM_TIME`](crate::armed::ARM_TIME) closes with the chosen reason
+    /// and comment.
+    fn click_close(
+        &mut self,
+        repo: RepoId,
+        number: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .armed_close
+            .click((repo, number), cx, |p| &mut p.armed_close)
+        {
+            return;
+        }
+        let found = self.issues.iter().find(|r| r.repo == repo).and_then(|r| {
+            let issue = r
+                .result
+                .as_ref()
+                .ok()?
+                .iter()
+                .find(|i| i.number == number)?;
+            Some((r.forge.clone()?, issue.clone()))
+        });
+        let Some((forge, issue)) = found else { return };
+        let label = format!("{} #{number}", forge.path);
+        let url = issue.url.clone();
+        let comment = self.close_comment.read(cx).value().to_string();
+        let reason = self.close_reason;
+        let core = self.core.clone();
+        self.run(
+            async move {
+                core.close_issue(repo, &forge, &issue, reason, Some(comment))
+                    .await
+            },
+            window,
+            cx,
+            move |p, result, window, cx| match result {
+                Ok(()) => {
+                    for r in p.issues.iter_mut().filter(|r| r.repo == repo) {
+                        if let Ok(issues) = &mut r.result {
+                            issues.retain(|i| i.number != number);
+                        }
+                    }
+                    p.close_comment
+                        .update(cx, |c, cx| c.set_value("", window, cx));
+                    let text = format!("{label} closed");
+                    p.report = vec![(text.clone(), Some(url), false)];
+                    cx.emit(ForgePanelEvent::Notice(text));
+                }
+                Err(e) => p.error = Some(format!("{label}: {e}")),
+            },
+        );
+    }
+
+    /// Reopens an issue closed from Archipel in this session.
+    fn reopen(
+        &mut self,
+        repo: RepoId,
+        forge: ForgeRepo,
+        issue: Issue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let label = format!("{} #{}", forge.path, issue.number);
+        let core = self.core.clone();
+        let target = forge.clone();
+        let number = issue.number;
+        self.run(
+            async move { core.reopen_issue(repo, &target, number).await },
+            window,
+            cx,
+            move |p, result, _, cx| match result {
+                Ok(()) => {
+                    for r in p
+                        .issues
+                        .iter_mut()
+                        .filter(|r| r.forge.as_ref() == Some(&forge))
+                    {
+                        if let Ok(issues) = &mut r.result {
+                            issues.push(issue.clone());
+                            issues.sort_by_key(|i| i.number);
+                        }
+                    }
+                    let text = format!("{label} reopened");
+                    p.report = vec![(text.clone(), Some(issue.url.clone()), false)];
+                    cx.emit(ForgePanelEvent::Notice(text));
+                }
+                Err(e) => p.error = Some(format!("{label}: {e}")),
+            },
+        );
+    }
+
+    /// Reads the repos a new issue can go to; the first of `ids` (the
+    /// repo whose menu was opened) is picked when it takes issues.
+    fn prepare_issue(&mut self, ids: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
+        self.issue_targets.clear();
+        let preferred = ids.first().copied();
+        let core = self.core.clone();
+        self.run(
+            async move { core.issue_targets(&ids).await },
+            window,
+            cx,
+            move |p, result, window, cx| match result {
+                Ok(targets) => {
+                    // The preferred repo, else the one picked before, else
+                    // the first that takes issues.
+                    let usable = |id: &RepoId| {
+                        targets
+                            .iter()
+                            .any(|t| t.repo == *id && t.choices.is_ok() && t.forge.is_some())
+                    };
+                    p.issue_repo = preferred
+                        .filter(usable)
+                        .or(p.issue_repo.filter(usable))
+                        .or_else(|| {
+                            targets
+                                .iter()
+                                .find(|t| t.choices.is_ok() && t.forge.is_some())
+                                .map(|t| t.repo)
+                        });
+                    p.issue_targets = targets;
+                    p.keep_issue_choices();
+                    p.issue_title.update(cx, |t, cx| t.focus(window, cx));
+                }
+                Err(e) => p.error = Some(e.to_string()),
+            },
+        );
+    }
+
+    /// The repo picked for the new issue, when it can take one.
+    fn issue_target(&self) -> Option<&IssueTarget> {
+        let id = self.issue_repo?;
+        self.issue_targets
+            .iter()
+            .find(|t| t.repo == id && t.forge.is_some() && t.choices.is_ok())
+    }
+
+    /// Drops the picked labels and assignees the picked repo does not have.
+    fn keep_issue_choices(&mut self) {
+        let choices = self
+            .issue_target()
+            .and_then(|t| t.choices.as_ref().ok())
+            .cloned()
+            .unwrap_or_default();
+        self.issue_labels.retain(|l| choices.labels.contains(l));
+        self.issue_assignees
+            .retain(|a| choices.assignees.contains(a));
+    }
+
+    fn create_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.issue_target() else {
+            self.error = Some("Pick a repository that takes issues".into());
+            cx.notify();
+            return;
+        };
+        let (repo, Some(forge)) = (target.repo, target.forge.clone()) else {
+            return;
+        };
+        let draft = IssueDraft {
+            title: self.issue_title.read(cx).value().to_string(),
+            description: self.issue_description.read(cx).value().to_string(),
+            labels: self.issue_labels.clone(),
+            assignees: self.issue_assignees.clone(),
+        };
+        let core = self.core.clone();
+        let path = forge.path.clone();
+        self.run(
+            async move { core.create_issue(repo, &forge, draft).await },
+            window,
+            cx,
+            move |p, result, window, cx| match result {
+                Ok(created) => {
+                    p.issue_title
+                        .update(cx, |t, cx| t.set_value("", window, cx));
+                    p.issue_description
+                        .update(cx, |t, cx| t.set_value("", window, cx));
+                    p.issue_labels.clear();
+                    p.issue_assignees.clear();
+                    let text = format!("Created {path} #{}", created.number);
+                    p.report = vec![(
+                        format!("{text}: {}", created.url),
+                        Some(created.url.clone()),
+                        false,
+                    )];
+                    cx.emit(ForgePanelEvent::NoticeLink(
+                        format!("{text} — click to open it on the forge"),
+                        created.url,
+                    ));
+                }
+                Err(e) => p.error = Some(format!("{path}: {e}")),
+            },
+        );
+    }
+
     // ----- clone ----------------------------------------------------------
 
     fn pick_account(&mut self, account: ForgeAccount, window: &mut Window, cx: &mut Context<Self>) {
@@ -822,8 +1095,8 @@ impl ForgePanel {
             .child(Input::new(&self.token))
             .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
                 "GitHub: classic token with the repo and read:org scopes (or a fine-grained \
-                         token with pull requests, checks and contents, and administration to \
-                         publish new repositories). GitLab: api scope. The token goes to the OS \
+                         token with pull requests, checks, contents and issues, and \
+                         administration to publish new repositories). GitLab: api scope. The token goes to the OS \
                          keychain, never to archipel.toml.",
             ))
             .child(
@@ -1166,6 +1439,305 @@ impl ForgePanel {
             .into_any_element()
     }
 
+    fn render_issues(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let ids = match &self.tab {
+            ForgeTab::Issues(ids) => ids.clone(),
+            _ => Vec::new(),
+        };
+        let reasons = [
+            (CloseReason::Completed, "Completed"),
+            (CloseReason::NotPlanned, "Not planned"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (r, label))| {
+            chip(
+                SharedString::from(format!("f-reason-{i}")),
+                label,
+                self.close_reason == r,
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, _, cx| {
+                p.close_reason = r;
+                cx.notify();
+            }))
+        });
+        let options = div()
+            .flex()
+            .gap_1()
+            .items_center()
+            .child("Close as:")
+            .children(reasons)
+            .child(div().flex_1())
+            .child(button("f-issues-refresh", "Refresh", cx).on_click(
+                cx.listener(move |p, _, window, cx| p.list_issues(ids.clone(), window, cx)),
+            ));
+        let closed = self.core.closed_issues();
+        let now = Timestamp::now();
+        let mut list = div().flex().flex_col().gap_1();
+        for (ri, r) in self.issues.iter().enumerate() {
+            list = list.child(section(r.name.clone(), cx));
+            match &r.result {
+                Err(e) => {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child(e.clone()),
+                    );
+                }
+                Ok(issues) if issues.is_empty() => {
+                    list = list.child(
+                        div()
+                            .px_2()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child("No open issue"),
+                    );
+                }
+                Ok(issues) => {
+                    for issue in issues {
+                        list = list.child(self.issue_row(ri, r.repo, issue, now, cx));
+                    }
+                }
+            }
+            let reopenable = closed
+                .iter()
+                .filter(|c| r.forge.as_ref() == Some(&c.forge))
+                .filter(|c| {
+                    // Not listed as open again (reopened on the forge).
+                    !r.result
+                        .as_ref()
+                        .is_ok_and(|open| open.iter().any(|i| i.number == c.issue.number))
+                });
+            for c in reopenable {
+                list = list.child(Self::closed_row(ri, c.repo, &c.forge, &c.issue, cx));
+            }
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(options)
+            .child(Input::new(&self.close_comment))
+            .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
+                "Click a title to open it on the forge. Close asks for a second click; the \
+                 comment, when given, is posted first. GitLab has no close reason. An issue \
+                 closed here can be reopened for the rest of the session.",
+            ))
+            .child(list)
+            .into_any_element()
+    }
+
+    /// One open issue: title (opens it), author, labels, assignees, age,
+    /// and the Close button.
+    fn issue_row(
+        &self,
+        ri: usize,
+        repo: RepoId,
+        issue: &Issue,
+        now: Timestamp,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (number, url) = (issue.number, issue.url.clone());
+        let mut detail = vec![issue.author.clone()];
+        if !issue.labels.is_empty() {
+            detail.push(issue.labels.join(", "));
+        }
+        if !issue.assignees.is_empty() {
+            detail.push(format!("→ {}", issue.assignees.join(", ")));
+        }
+        if let Some(at) = issue.created_at {
+            detail.push(relative_time(at, now));
+        }
+        let id = format!("f-issue-{ri}-{number}");
+        let close = if self.armed_close.is(&(repo, number)) {
+            primary_button(
+                SharedString::from(format!("{id}-close")),
+                "Confirm close",
+                cx,
+            )
+        } else {
+            button(SharedString::from(format!("{id}-close")), "Close", cx)
+        }
+        .on_click(cx.listener(move |p, _, window, cx| {
+            p.click_close(repo, number, window, cx);
+        }));
+        let open_url = url.clone();
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id(SharedString::from(id.clone()))
+                            .truncate()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                            .child(format!("#{number} {}", issue.title)),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(color(cx, T::FgMuted))
+                            .child(detail.join(" · ")),
+                    ),
+            )
+            .child(
+                button(
+                    SharedString::from(format!("{id}-open")),
+                    "Open on forge",
+                    cx,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&open_url))),
+            )
+            .child(close)
+    }
+
+    /// An issue closed from here in this session, with Reopen.
+    fn closed_row(
+        ri: usize,
+        repo: RepoId,
+        forge: &ForgeRepo,
+        issue: &Issue,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = format!("f-closed-{ri}-{}", issue.number);
+        let (forge, reopened) = (forge.clone(), issue.clone());
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(color(cx, T::FgSubtle))
+                    .child(format!("#{} {} · closed", issue.number, issue.title)),
+            )
+            .child(
+                button(SharedString::from(format!("{id}-reopen")), "Reopen", cx).on_click(
+                    cx.listener(move |p, _, window, cx| {
+                        p.reopen(repo, forge.clone(), reopened.clone(), window, cx);
+                    }),
+                ),
+            )
+    }
+
+    #[allow(clippy::too_many_lines)] // declarative element tree
+    fn render_new_issue(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        if self.issue_targets.is_empty() {
+            return div().into_any_element();
+        }
+        let picked = self.issue_repo;
+        let repos = self.issue_targets.iter().enumerate().map(|(i, t)| {
+            let id = t.repo;
+            let usable = t.forge.is_some() && t.choices.is_ok();
+            let (detail, tone) = match (&t.forge, &t.choices) {
+                (Some(f), Ok(_)) => (f.path.clone(), T::FgMuted),
+                (_, Err(e)) => (e.clone(), T::FgSubtle),
+                (None, Ok(_)) => ("no forge repository".to_owned(), T::FgSubtle),
+            };
+            div()
+                .id(SharedString::from(format!("f-issue-repo-{i}")))
+                .flex()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded(radius(cx))
+                .cursor_pointer()
+                .on_click_if(
+                    usable,
+                    cx.listener(move |p, _, _, cx| {
+                        p.issue_repo = Some(id);
+                        p.keep_issue_choices();
+                        cx.notify();
+                    }),
+                )
+                .child(check_box(usable && picked == Some(id), cx))
+                .child(t.name.clone())
+                .child(div().text_xs().text_color(color(cx, tone)).child(detail))
+        });
+        let choices = self
+            .issue_target()
+            .and_then(|t| t.choices.as_ref().ok())
+            .cloned()
+            .unwrap_or_default();
+        let labels = choices.labels.into_iter().enumerate().map(|(i, label)| {
+            let on = self.issue_labels.contains(&label);
+            chip(
+                SharedString::from(format!("f-label-{i}")),
+                label.clone(),
+                on,
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, _, cx| {
+                toggle(&mut p.issue_labels, &label);
+                cx.notify();
+            }))
+        });
+        let assignees = choices.assignees.into_iter().enumerate().map(|(i, login)| {
+            let on = self.issue_assignees.contains(&login);
+            chip(
+                SharedString::from(format!("f-assignee-{i}")),
+                login.clone(),
+                on,
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, _, cx| {
+                toggle(&mut p.issue_assignees, &login);
+                cx.notify();
+            }))
+        });
+        let (labels, assignees): (Vec<_>, Vec<_>) = (labels.collect(), assignees.collect());
+        let usable = self.issue_target().is_some();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(section("REPOSITORY (click to pick)", cx))
+            .children(repos)
+            .when(!usable, |d| {
+                d.child(
+                    div()
+                        .px_2()
+                        .text_color(color(cx, T::StatusWarning))
+                        .child("None of these repositories takes issues here"),
+                )
+            })
+            .when(usable, |d| {
+                d.child(Input::new(&self.issue_title))
+                    .child(Textarea::new(&self.issue_description))
+                    .when(!labels.is_empty(), |d| {
+                        d.child(section("LABELS", cx))
+                            .child(div().flex().flex_wrap().gap_1().children(labels))
+                    })
+                    .when(!assignees.is_empty(), |d| {
+                        d.child(section("ASSIGNEES", cx))
+                            .child(div().flex().flex_wrap().gap_1().children(assignees))
+                    })
+                    .child(
+                        div().flex().justify_end().child(
+                            primary_button("f-create-issue", "Create issue", cx).on_click(
+                                cx.listener(|p, _, window, cx| p.create_issue(window, cx)),
+                            ),
+                        ),
+                    )
+            })
+            .into_any_element()
+    }
+
     /// Clone tab: the destination folder, then the two sources (URLs, which
     /// need no account, and an account's repositories).
     fn render_clone(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -1390,21 +1962,27 @@ impl Render for ForgePanel {
                 "New pull request",
                 ForgeTab::Create(Vec::new()),
             ),
+            ("f-tab-issues", "Issues", ForgeTab::Issues(Vec::new())),
+            (
+                "f-tab-new-issue",
+                "New issue",
+                ForgeTab::NewIssue(Vec::new()),
+            ),
             ("f-tab-clone", "Clone", ForgeTab::Clone),
         ]
         .into_iter()
         .map(|(id, label, tab)| {
             let active = std::mem::discriminant(&tab) == std::mem::discriminant(&self.tab);
             chip(id, label, active, cx).on_click(cx.listener(move |p, _, window, cx| {
-                // The pull request tabs keep the repos the panel was opened for.
-                let tab = match (&tab, &p.tab) {
-                    (ForgeTab::Open(_), ForgeTab::Open(ids) | ForgeTab::Create(ids)) => {
-                        ForgeTab::Open(ids.clone())
-                    }
-                    (ForgeTab::Create(_), ForgeTab::Open(ids) | ForgeTab::Create(ids)) => {
-                        ForgeTab::Create(ids.clone())
-                    }
-                    _ => tab.clone(),
+                // The pull request and issue tabs keep the repos the panel
+                // was opened for.
+                let ids = p.tab.repos().cloned().unwrap_or_default();
+                let tab = match &tab {
+                    ForgeTab::Open(_) => ForgeTab::Open(ids),
+                    ForgeTab::Create(_) => ForgeTab::Create(ids),
+                    ForgeTab::Issues(_) => ForgeTab::Issues(ids),
+                    ForgeTab::NewIssue(_) => ForgeTab::NewIssue(ids),
+                    ForgeTab::Accounts | ForgeTab::Clone => tab.clone(),
                 };
                 p.show(tab, window, cx);
             }))
@@ -1414,6 +1992,8 @@ impl Render for ForgePanel {
             ForgeTab::Accounts => self.render_accounts(cx),
             ForgeTab::Open(_) => self.render_open(cx),
             ForgeTab::Create(_) => self.render_create(cx),
+            ForgeTab::Issues(_) => self.render_issues(cx),
+            ForgeTab::NewIssue(_) => self.render_new_issue(cx),
             ForgeTab::Clone => self.render_clone(cx),
         };
         let report = self
@@ -1462,7 +2042,7 @@ impl Render for ForgePanel {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().flex().gap_1().children(tabs))
+                    .child(div().flex().flex_wrap().gap_1().children(tabs))
                     .child(
                         button("f-close", "Close", cx)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ForgePanelEvent::Closed))),

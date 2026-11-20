@@ -135,6 +135,8 @@ pub fn forge_ports(settings: &Settings, dirs: &AppDirs) -> ForgePorts {
         ci: client.clone(),
         ci_writer: client.clone(),
         pull_request_writer: client.clone(),
+        issues: client.clone(),
+        issue_writer: client.clone(),
         directory: client.clone(),
         sign_in: client,
         credentials,

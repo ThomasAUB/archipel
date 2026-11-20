@@ -98,6 +98,12 @@ impl Workspace {
             .border_color(color(cx, T::BorderSubtle))
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
+                // A notice with a link (a created issue) opens it.
+                if let Some((text, url)) = this.notice_link.take()
+                    && this.notice.as_ref() == Some(&text)
+                {
+                    cx.open_url(&url);
+                }
                 this.notice = None;
                 cx.notify();
             }))

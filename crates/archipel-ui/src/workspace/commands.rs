@@ -130,6 +130,14 @@ impl Workspace {
                 let ids = self.selection();
                 self.open_forge(ForgeTab::Create(ids), window, cx);
             }
+            "forge.issues" => {
+                let ids = self.selection();
+                self.open_forge(ForgeTab::Issues(ids), window, cx);
+            }
+            "forge.new_issue" => {
+                let ids = self.selection();
+                self.open_forge(ForgeTab::NewIssue(ids), window, cx);
+            }
             "forge.open_pull_request" => self.open_pull_request(cx),
             "forge.open_ci" => self.open_ci(cx),
             worktree if worktree.starts_with("worktree.") || worktree == "palette.worktrees" => {

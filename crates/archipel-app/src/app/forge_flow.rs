@@ -121,6 +121,18 @@ pub struct RepoPullRequests {
     pub result: Result<Vec<PullRequestStatus>, String>,
 }
 
+/// What [`App::per_forge_repo`] read from one repo.
+pub(super) struct PerForgeRepo<T> {
+    /// Repository.
+    pub repo: RepoId,
+    /// Display name.
+    pub name: String,
+    /// Forge repository, when found.
+    pub forge: Option<ForgeRepo>,
+    /// What was read, or why it could not be.
+    pub result: Result<T, String>,
+}
+
 /// What a forge read is for: a repo's branch.
 struct ForgeTarget {
     path: RepoPath,
@@ -1017,6 +1029,31 @@ impl App {
         &self,
         ids: &[RepoId],
     ) -> Result<Vec<RepoPullRequests>, AppError> {
+        Ok(self
+            .per_forge_repo(ids, "List pull requests", |forge, repo| {
+                forge.pull_requests.open_pull_requests(repo)
+            })
+            .await?
+            .into_iter()
+            .map(|r| RepoPullRequests {
+                repo: r.repo,
+                name: r.name,
+                forge: r.forge,
+                result: r.result,
+            })
+            .collect())
+    }
+
+    /// Runs `read` on the forge repository of each of `ids` (all when
+    /// empty, see [`App::resolve_targets`]): the repo of the remote its
+    /// forge status uses. One network job per repo, in parallel; in
+    /// project order. `what` names the jobs in the drawer.
+    pub(super) async fn per_forge_repo<T: Send + 'static>(
+        &self,
+        ids: &[RepoId],
+        what: &str,
+        read: fn(&ForgePorts, &ForgeRepo) -> Result<T, ForgeError>,
+    ) -> Result<Vec<PerForgeRepo<T>>, AppError> {
         let rows = self.target_rows(ids);
         if rows.is_empty() {
             return Err(AppError::InvalidInput("no repository to list".into()));
@@ -1030,7 +1067,7 @@ impl App {
             let spec = OpSpec::new(
                 Some(row.id),
                 OpClass::Network,
-                format!("List pull requests of {}", row.name),
+                format!("{what} of {}", row.name),
             );
             let handle = self.scheduler.submit(spec, move |_| {
                 let remotes = git.remotes.remotes(&path)?;
@@ -1038,8 +1075,8 @@ impl App {
                 Ok(
                     match locate(&remotes, preferred.as_deref(), &accounts, &links) {
                         Located::Repo { repo, .. } => {
-                            let open = forge.pull_requests.open_pull_requests(&repo);
-                            (Some(repo), open.map_err(|e| e.to_string()))
+                            let result = read(&forge, &repo);
+                            (Some(repo), result.map_err(|e| e.to_string()))
                         }
                         Located::SignedOut { host } => {
                             (None, Err(format!("not signed in to {host}")))
@@ -1056,7 +1093,7 @@ impl App {
                 .wait()
                 .await
                 .unwrap_or_else(|e| (None, Err(e.to_string())));
-            out.push(RepoPullRequests {
+            out.push(PerForgeRepo {
                 repo,
                 name,
                 forge,

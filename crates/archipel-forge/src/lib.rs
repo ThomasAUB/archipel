@@ -5,7 +5,8 @@
 //! `archipel-model`.
 //!
 //! * [`ForgeClient`] implements `PullRequestReader`, `PullRequestWriter`,
-//!   `CiReader`, `CiWriter`, `ForgeDirectory` and `ForgeSignIn` by dispatching to the registered
+//!   `CiReader`, `CiWriter`, `IssueReader`, `IssueWriter`, `ForgeDirectory`
+//!   and `ForgeSignIn` by dispatching to the registered
 //!   [`provider::Provider`] of each account's kind. A fork adds a forge
 //!   (Gitea, Bitbucket…) with [`ForgeClient::register`].
 //! * Providers only build HTTP requests and parse answers through the

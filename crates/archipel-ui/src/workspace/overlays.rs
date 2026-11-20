@@ -662,6 +662,10 @@ impl Workspace {
                 match event {
                     ForgePanelEvent::Closed => this.close_overlay(window, cx),
                     ForgePanelEvent::Notice(text) => this.notice = Some(text.clone()),
+                    ForgePanelEvent::NoticeLink(text, url) => {
+                        this.notice = Some(text.clone());
+                        this.notice_link = Some((text.clone(), url.clone()));
+                    }
                 }
                 cx.notify();
             },

@@ -75,6 +75,9 @@ pub(super) struct Session {
     /// Auto-merges Archipel watches itself (the forge refused its own), by
     /// repo row and pull request number.
     pub(super) auto_merges: HashMap<(RepoId, u64), super::auto_merge::LocalAutoMerge>,
+    /// Issues closed from Archipel in this session, oldest first, to
+    /// reopen one closed by mistake.
+    pub(super) closed_issues: Vec<super::ClosedIssue>,
     /// Worktrees of each repo (main first), by repo row (spec §10).
     pub(super) worktrees: HashMap<RepoId, Vec<archipel_model::worktree::WorktreeInfo>>,
     /// Repos whose worktree list is being read.
@@ -194,6 +197,7 @@ impl App {
             forecast_running: None,
             ci_logs: HashMap::new(),
             auto_merges: HashMap::new(),
+            closed_issues: Vec::new(),
             worktrees: HashMap::new(),
             worktrees_pending: HashSet::new(),
             worktrees_reread: HashSet::new(),

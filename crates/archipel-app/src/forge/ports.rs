@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
-    MergeOptions, MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, CloseReason, ForgeAccount, ForgeKind, ForgeRepo,
+    ForgeToken, Issue, IssueChoices, IssueDraft, IssueRef, MergeOptions, MergeReport, Namespace,
+    NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 use archipel_model::ports::{
     CiReader, CiWriter, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn,
-    PullRequestReader, PullRequestWriter,
+    IssueReader, IssueWriter, PullRequestReader, PullRequestWriter,
 };
 
 /// Forge access, each a narrow trait object (spec §8).
@@ -24,6 +24,10 @@ pub struct ForgePorts {
     pub ci_writer: Arc<dyn CiWriter>,
     /// Pull request creation, linking and merge.
     pub pull_request_writer: Arc<dyn PullRequestWriter>,
+    /// Open issues, labels and assignees of a repo.
+    pub issues: Arc<dyn IssueReader>,
+    /// Issue creation, closing and reopening.
+    pub issue_writer: Arc<dyn IssueWriter>,
     /// Namespaces and repositories of an account (clone from an account).
     pub directory: Arc<dyn ForgeDirectory>,
     /// Token verification and provider detection.
@@ -42,6 +46,8 @@ impl ForgePorts {
             + CiReader
             + CiWriter
             + PullRequestWriter
+            + IssueReader
+            + IssueWriter
             + ForgeDirectory
             + ForgeSignIn
             + 'static,
@@ -52,6 +58,8 @@ impl ForgePorts {
             ci: forge.clone(),
             ci_writer: forge.clone(),
             pull_request_writer: forge.clone(),
+            issues: forge.clone(),
+            issue_writer: forge.clone(),
             directory: forge.clone(),
             sign_in: forge,
             credentials: credentials.clone(),
@@ -136,6 +144,33 @@ impl PullRequestWriter for NoForge {
         Err(refused(&repo.account.host))
     }
     fn disable_auto_merge(&self, repo: &ForgeRepo, _number: u64) -> Result<(), ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+}
+
+impl IssueReader for NoForge {
+    fn open_issues(&self, repo: &ForgeRepo) -> Result<Vec<Issue>, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+    fn issue_choices(&self, repo: &ForgeRepo) -> Result<IssueChoices, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+}
+
+impl IssueWriter for NoForge {
+    fn create_issue(&self, repo: &ForgeRepo, _draft: &IssueDraft) -> Result<IssueRef, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+    fn close_issue(
+        &self,
+        repo: &ForgeRepo,
+        _number: u64,
+        _reason: CloseReason,
+        _comment: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+    fn reopen_issue(&self, repo: &ForgeRepo, _number: u64) -> Result<(), ForgeError> {
         Err(refused(&repo.account.host))
     }
 }

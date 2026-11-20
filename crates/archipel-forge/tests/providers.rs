@@ -10,13 +10,13 @@ use archipel_forge::ForgeClient;
 use archipel_forge::http::{HttpRequest, HttpResponse, HttpTransport, Method};
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, CiState, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeMethod,
-    MergeOptions, MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft,
-    ReviewState,
+    CiJob, CiJobState, CiRun, CiState, CloseReason, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
+    IssueDraft, MergeMethod, MergeOptions, MergeState, Namespace, NamespaceKind, NewRemoteRepo,
+    PullRequestDraft, ReviewState,
 };
 use archipel_model::ports::{
-    CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
-    PullRequestWriter,
+    CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, IssueReader, IssueWriter,
+    PullRequestReader, PullRequestWriter,
 };
 use archipel_model::testing::InMemoryCredentials;
 use serde_json::json;
@@ -1486,4 +1486,253 @@ fn gitlab_merge_request_reads_its_auto_merge() {
     let c = client(&http, &["git.corp.example"]);
     let prs = c.open_pull_requests(&gitlab_repo()).unwrap();
     assert!(prs[0].auto_merge);
+}
+
+fn issue_draft() -> IssueDraft {
+    IssueDraft {
+        title: "Crash on start".into(),
+        description: "Steps…".into(),
+        labels: vec!["bug".into(), "ui".into()],
+        assignees: vec!["ann".into()],
+    }
+}
+
+#[test]
+fn github_lists_open_issues_without_pull_requests() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/repos/octo/app/issues?state=open",
+        200,
+        json!([
+            {"number": 3, "title": "Bug", "html_url": "https://github.com/octo/app/issues/3",
+             "user": {"login": "ann"}, "labels": [{"name": "bug"}],
+             "assignees": [{"login": "bob"}], "created_at": "1970-01-02T00:00:00Z"},
+            {"number": 4, "title": "A PR", "html_url": "https://github.com/octo/app/pull/4",
+             "pull_request": {"url": "x"}}
+        ]),
+    );
+    let c = client(&http, &["github.com"]);
+    let issues = c.open_issues(&github_repo()).unwrap();
+    assert_eq!(issues.len(), 1);
+    let i = &issues[0];
+    assert_eq!(
+        (i.number, i.title.as_str(), i.author.as_str()),
+        (3, "Bug", "ann")
+    );
+    assert_eq!(i.labels, vec!["bug".to_owned()]);
+    assert_eq!(i.assignees, vec!["bob".to_owned()]);
+    assert_eq!(i.created_at, Some(archipel_model::Timestamp(86_400)));
+}
+
+#[test]
+fn github_issue_choices_and_disabled_issues() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/repos/octo/app/labels",
+        200,
+        json!([{"name": "ui"}, {"name": "Bug"}]),
+    );
+    // A token without push access cannot list assignees: none then.
+    http.on(Method::Get, "/repos/octo/app/assignees", 403, json!({}));
+    http.on(
+        Method::Get,
+        "/repos/octo/app",
+        200,
+        json!({"has_issues": true}),
+    );
+    http.on(
+        Method::Get,
+        "/repos/octo/off",
+        200,
+        json!({"has_issues": false}),
+    );
+    let c = client(&http, &["github.com"]);
+    let choices = c.issue_choices(&github_repo()).unwrap();
+    assert_eq!(choices.labels, vec!["Bug".to_owned(), "ui".to_owned()]);
+    assert!(choices.assignees.is_empty());
+    let off = ForgeRepo {
+        path: "octo/off".into(),
+        ..github_repo()
+    };
+    let e = c.issue_choices(&off).unwrap_err();
+    assert!(matches!(e, ForgeError::Unsupported(_)), "{e:?}");
+    assert!(
+        e.to_string().contains("issues are disabled on octo/off"),
+        "{e}"
+    );
+}
+
+#[test]
+fn github_creates_closes_and_reopens_issues() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Post,
+        "/repos/octo/app/issues/7/comments",
+        201,
+        json!({}),
+    );
+    http.on(
+        Method::Post,
+        "/repos/octo/app/issues",
+        201,
+        json!({"number": 7, "html_url": "https://github.com/octo/app/issues/7"}),
+    );
+    http.on(Method::Patch, "/repos/octo/app/issues/7", 200, json!({}));
+    let c = client(&http, &["github.com"]);
+    let created = c.create_issue(&github_repo(), &issue_draft()).unwrap();
+    assert_eq!(created.number, 7);
+    assert_eq!(created.url, "https://github.com/octo/app/issues/7");
+    c.close_issue(
+        &github_repo(),
+        7,
+        CloseReason::NotPlanned,
+        Some("Duplicate of #2"),
+    )
+    .unwrap();
+    c.reopen_issue(&github_repo(), 7).unwrap();
+    let seen = http.seen();
+    let sent: Vec<_> = seen.iter().filter(|r| r.method != Method::Get).collect();
+    assert_eq!(sent.len(), 4);
+    assert_eq!(
+        body(sent[0]),
+        json!({"title": "Crash on start", "body": "Steps…", "labels": ["bug", "ui"],
+               "assignees": ["ann"]})
+    );
+    // The comment goes first, then the state change.
+    assert!(sent[1].url.ends_with("/issues/7/comments"));
+    assert_eq!(body(sent[1]), json!({"body": "Duplicate of #2"}));
+    assert_eq!(
+        body(sent[2]),
+        json!({"state": "closed", "state_reason": "not_planned"})
+    );
+    assert_eq!(
+        body(sent[3]),
+        json!({"state": "open", "state_reason": "reopened"})
+    );
+}
+
+#[test]
+fn github_issue_failures_name_the_scope_or_the_disabled_issues() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Patch,
+        "/repos/octo/app/issues/7",
+        403,
+        json!({"message": "Resource not accessible by personal access token"}),
+    );
+    http.on(
+        Method::Post,
+        "/repos/octo/app/issues",
+        410,
+        json!({"message": "Issues are disabled for this repo"}),
+    );
+    let c = client(&http, &["github.com"]);
+    let e = c
+        .close_issue(&github_repo(), 7, CloseReason::Completed, None)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("not allowed to close the issue"), "{e}");
+    assert!(e.contains("Issues: read and write"), "{e}");
+    // No comment, no comment request.
+    assert!(http.seen().iter().all(|r| !r.url.contains("/comments")));
+    let e = c.create_issue(&github_repo(), &issue_draft()).unwrap_err();
+    assert!(matches!(e, ForgeError::Unsupported(_)), "{e:?}");
+}
+
+#[test]
+fn gitlab_issues_list_create_close_reopen() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/projects/team%2Fsub%2Fapp";
+    http.on(
+        Method::Get,
+        &format!("{base}/issues?state=opened"),
+        200,
+        json!([{"iid": 5, "title": "Slow", "web_url": "https://git.corp.example/team/sub/app/-/issues/5",
+                "author": {"username": "ann"}, "labels": ["perf"],
+                "assignees": [{"username": "bob"}], "created_at": "1970-01-01T01:00:00.000Z"}]),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/labels"),
+        200,
+        json!([{"name": "perf"}]),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/members/all"),
+        200,
+        json!([{"id": 9, "username": "bob"}, {"id": 4, "username": "ann"}]),
+    );
+    http.on(
+        Method::Get,
+        "/users?username=ann",
+        200,
+        json!([{"id": 4, "username": "ann"}]),
+    );
+    http.on(
+        Method::Get,
+        base,
+        200,
+        json!({"issues_access_level": "enabled"}),
+    );
+    http.on(
+        Method::Post,
+        &format!("{base}/issues/6/notes"),
+        201,
+        json!({}),
+    );
+    http.on(
+        Method::Post,
+        &format!("{base}/issues"),
+        201,
+        json!({"iid": 6, "web_url": "https://git.corp.example/team/sub/app/-/issues/6"}),
+    );
+    http.on(Method::Put, &format!("{base}/issues/6"), 200, json!({}));
+    let c = client(&http, &["git.corp.example"]);
+    let repo = gitlab_repo();
+    let issues = c.open_issues(&repo).unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].number, 5);
+    assert_eq!(issues[0].assignees, vec!["bob".to_owned()]);
+    assert_eq!(issues[0].created_at, Some(archipel_model::Timestamp(3_600)));
+    let choices = c.issue_choices(&repo).unwrap();
+    assert_eq!(choices.labels, vec!["perf".to_owned()]);
+    assert_eq!(choices.assignees, vec!["ann".to_owned(), "bob".to_owned()]);
+    let created = c.create_issue(&repo, &issue_draft()).unwrap();
+    assert_eq!(created.number, 6);
+    c.close_issue(&repo, 6, CloseReason::NotPlanned, Some("Fixed in !3"))
+        .unwrap();
+    c.reopen_issue(&repo, 6).unwrap();
+    let seen = http.seen();
+    let sent: Vec<_> = seen.iter().filter(|r| r.method != Method::Get).collect();
+    assert_eq!(
+        body(sent[0]),
+        json!({"title": "Crash on start", "description": "Steps…", "labels": "bug,ui",
+               "assignee_ids": [4]})
+    );
+    assert!(sent[1].url.ends_with("/issues/6/notes"));
+    assert_eq!(body(sent[2]), json!({"state_event": "close"}));
+    assert_eq!(body(sent[3]), json!({"state_event": "reopen"}));
+}
+
+#[test]
+fn gitlab_disabled_issues_say_so() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/projects/team%2Fsub%2Fapp";
+    http.on(Method::Get, &format!("{base}/issues"), 403, json!({}));
+    http.on(
+        Method::Get,
+        base,
+        200,
+        json!({"issues_access_level": "disabled"}),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    for e in [
+        c.open_issues(&gitlab_repo()).unwrap_err(),
+        c.issue_choices(&gitlab_repo()).unwrap_err(),
+    ] {
+        assert!(matches!(e, ForgeError::Unsupported(_)), "{e:?}");
+    }
 }

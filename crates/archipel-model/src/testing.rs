@@ -43,7 +43,8 @@ use crate::worktree::{WorktreeAddRequest, WorktreeInfo, WorktreeTarget};
 
 mod forge;
 pub use forge::{
-    CreatedPullRequest, FakeForge, FakeReleaseFeed, InMemoryCredentials, MergedPullRequest,
+    CreatedPullRequest, FakeForge, FakeIssue, FakeReleaseFeed, InMemoryCredentials,
+    MergedPullRequest,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
