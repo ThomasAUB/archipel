@@ -461,6 +461,7 @@ dependencies = [
  "image",
  "memory-stats",
  "serde_json",
+ "smallvec",
  "syntect",
  "tempfile",
  "tokio",

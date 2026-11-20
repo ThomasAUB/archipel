@@ -73,6 +73,7 @@ An `archipel.toml` written on any OS opens unchanged on Windows, Linux and macOS
 - Opening a directory / project that is already open focuses its window instead of creating a duplicate.
 - **Going to another window from the keyboard:** the project switcher (`Ctrl+P`) lists the projects of the other windows first, most recently active first, so `Ctrl+P`, `Enter` goes back to the previous window. ``Ctrl+` `` / `Ctrl+F6` activate the next window in opening order (with `Shift`, the previous one), wrapping around; the `F6` pair works on keyboard layouts where the backquote is a dead key.
 - Shared state (settings, recent projects, on-disk caches) stays consistent when several windows write to it concurrently.
+- **Recent projects on the app icon:** right-clicking the taskbar button (Windows jump list, "Recent Folders") or the Dock icon (macOS, recent items) lists the folders of the most recently opened projects (as many as the switcher's recent list); picking one opens that project as `archipel <dir>` does, in the running process. The Windows jump list also has a "New Window" task. An entry removed from the Windows jump list stays out of it until Archipel restarts. macOS shows the list only for an app bundle declaring folders as documents (macOS packaging is not done yet); Linux has no such list.
 
 **Recognizing a window at a glance — P1**
 > Implemented except the taskbar badge (it needs a native Windows API call, i.e. an `unsafe` exception and an ADR).

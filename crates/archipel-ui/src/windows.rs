@@ -79,6 +79,12 @@ impl Windows {
     }
 }
 
+/// The core session the others are cloned from: a way into the shared
+/// registry and settings whichever windows are open.
+pub fn base_core(cx: &App) -> Arc<Core> {
+    cx.global::<Windows>().base.clone()
+}
+
 /// Opens a window on `dir` (a project directory) or an empty one; focuses
 /// the window already showing that project instead of duplicating it.
 pub fn open(cx: &mut App, dir: Option<&Path>) {
