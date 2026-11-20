@@ -26,6 +26,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("archipel-project", &["archipel-model"]),
     ("archipel-ops", &["archipel-model"]),
     ("archipel-forge", &["archipel-model"]),
+    ("archipel-term", &["archipel-model"]),
     ("archipel-stats", &["archipel-model"]),
     // The graph uses the pure LRU of archipel-cache (no SQLite types).
     ("archipel-graph", &["archipel-model", "archipel-cache"]),
@@ -67,6 +68,7 @@ const WRAPPED: &[(&str, &[&str])] = &[
     ("notify", &["archipel-watch"]),
     ("ureq", &["archipel-forge"]),
     ("keyring", &["archipel-forge"]),
+    ("alacritty_terminal", &["archipel-term"]),
     ("gpui-kit", &["archipel-ui"]),
 ];
 

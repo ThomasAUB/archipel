@@ -16,6 +16,7 @@ archipel-cache.workspace = true
 archipel-forge.workspace = true
 archipel-project.workspace = true
 archipel-watch.workspace = true
+archipel-term.workspace = true
 directories.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

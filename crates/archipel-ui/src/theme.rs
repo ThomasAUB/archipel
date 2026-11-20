@@ -386,6 +386,83 @@ pub fn tone(cx: &App, tone: Tone) -> Hsla {
     )
 }
 
+/// The integrated terminal's colors, from the theme: the 16 ANSI colors
+/// come from its status and syntax colors, so programs' colors match it;
+/// the rest of the 256-color palette is xterm's.
+pub struct TerminalColors {
+    /// Default text.
+    pub fg: Hsla,
+    /// Default background.
+    pub bg: Hsla,
+    /// The cursor.
+    pub cursor: Hsla,
+    /// Selected cells' background.
+    pub selection: Hsla,
+    ansi: [Hsla; 16],
+}
+
+impl TerminalColors {
+    /// The colors of the active theme.
+    pub fn of(cx: &App) -> Self {
+        let theme = &cx.global::<UiTheme>().theme;
+        let c = |t: ColorToken| theme.color(t);
+        let (fg, bg) = (c(ColorToken::FgDefault), c(ColorToken::BgApp));
+        // Black is the dark end and white the light end, whichever the
+        // background is.
+        let (dark, light) = if bg.relative_luminance() < fg.relative_luminance() {
+            (bg, fg)
+        } else {
+            (fg, bg)
+        };
+        let hues = [
+            c(ColorToken::StatusError),
+            c(ColorToken::StatusSuccess),
+            c(ColorToken::StatusWarning),
+            c(ColorToken::SyntaxFunction),
+            c(ColorToken::SyntaxKeyword),
+            c(ColorToken::SyntaxType),
+        ];
+        let mut ansi = [to_hsla(fg); 16];
+        ansi[0] = to_hsla(dark.mix(light, 0.18));
+        ansi[7] = to_hsla(light.mix(dark, 0.18));
+        ansi[8] = to_hsla(dark.mix(light, 0.45));
+        ansi[15] = to_hsla(light);
+        for (i, hue) in hues.into_iter().enumerate() {
+            ansi[i + 1] = to_hsla(hue);
+            ansi[i + 9] = to_hsla(hue.mix(fg, 0.25));
+        }
+        Self {
+            fg: to_hsla(fg),
+            bg: to_hsla(bg),
+            cursor: to_hsla(fg),
+            selection: to_hsla(c(ColorToken::BgSelected)),
+            ansi,
+        }
+    }
+
+    /// The color of a cell color.
+    pub fn get(&self, c: archipel_model::terminal::TermColor) -> Hsla {
+        use archipel_model::terminal::TermColor as C;
+        match c {
+            C::Foreground => self.fg,
+            C::Background => self.bg,
+            C::Rgb(r, g, b) => to_hsla(Color::rgb(r, g, b)),
+            C::Indexed(i) if i < 16 => self.ansi[usize::from(i)],
+            C::Indexed(i) if i < 232 => {
+                // The 6 × 6 × 6 cube.
+                let level = |v: u8| if v == 0 { 0 } else { 55 + 40 * v };
+                let i = i - 16;
+                to_hsla(Color::rgb(level(i / 36), level(i / 6 % 6), level(i % 6)))
+            }
+            C::Indexed(i) => {
+                // The gray ramp.
+                let v = 8 + 10 * (i - 232);
+                to_hsla(Color::rgb(v, v, v))
+            }
+        }
+    }
+}
+
 /// Row height from the theme density.
 pub fn row_height(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.spacing().row_height)

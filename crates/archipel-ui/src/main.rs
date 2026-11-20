@@ -48,6 +48,7 @@ mod staging;
 mod startup;
 mod stats_panel;
 mod syntax;
+mod terminal;
 mod theme;
 mod widgets;
 mod windows;
@@ -327,10 +328,15 @@ fn serve_other_launches(cx: &mut App, listener: instance::Listener) {
 /// Installs the keymap (from `archipel-app`, rebindable) as GPUI bindings,
 /// each running its action of the registry as the palette does. Returns a
 /// warning per binding that cannot work, for the status bar.
+///
+/// The shortcuts a shell needs (Ctrl + a letter…, [`keys::goes_to_terminal`])
+/// are left to the focused integrated terminal: bound to nothing in its
+/// context, after the keymap, so they outrank it there.
 fn bind_keys(cx: &mut App, app: &archipel_app::App) -> Vec<String> {
     let extensions = app.extensions();
     let mut warnings = Vec::new();
     let mut bindings = Vec::new();
+    let mut to_terminal = Vec::new();
     for (stroke, id) in extensions.keymap.iter() {
         if extensions.actions.get(id).is_none() {
             warnings.push(format!(
@@ -339,9 +345,24 @@ fn bind_keys(cx: &mut App, app: &archipel_app::App) -> Vec<String> {
             continue;
         }
         let action = Box::new(workspace::RunAction(id.to_owned()));
-        match KeyBinding::load(&keys::gpui_keystroke(stroke), action, None, false, None, cx) {
-            Ok(b) => bindings.push(b),
+        let gpui = keys::gpui_keystroke(stroke);
+        match KeyBinding::load(&gpui, action, None, false, None, cx) {
+            Ok(b) => {
+                bindings.push(b);
+                if keys::goes_to_terminal(&gpui) {
+                    to_terminal.push(gpui);
+                }
+            }
             Err(e) => warnings.push(format!("keymap: {stroke} cannot be bound: {e:?}")),
+        }
+    }
+    let terminal = gpui_kit::KeyBindingContextPredicate::parse("Terminal")
+        .ok()
+        .map(std::rc::Rc::new);
+    for stroke in to_terminal {
+        let none = Box::new(gpui_kit::NoAction);
+        if let Ok(b) = KeyBinding::load(&stroke, none, terminal.clone(), false, None, cx) {
+            bindings.push(b);
         }
     }
     cx.bind_keys(bindings);

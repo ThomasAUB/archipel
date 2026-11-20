@@ -102,9 +102,68 @@ fn key_name(key: &str) -> String {
     }
 }
 
+/// Whether a shortcut (in its GPUI form, [`gpui_keystroke`]) goes to the
+/// focused integrated terminal rather than to the app: shells need Ctrl +
+/// a letter (Ctrl+K, Ctrl+Z…), Alt + anything and keys without a modifier.
+/// Command keys (macOS), Ctrl+Shift keys and Ctrl + other keys
+/// (`` Ctrl+` ``, Ctrl+Tab) stay the app's.
+pub fn goes_to_terminal(gpui_stroke: &str) -> bool {
+    let (mut ctrl, mut alt, mut shift, mut other) = (false, false, false, false);
+    let mut rest = gpui_stroke;
+    while let Some((modifier, tail)) = rest.split_once('-').filter(|(_, t)| !t.is_empty()) {
+        match modifier {
+            "ctrl" => ctrl = true,
+            "alt" => alt = true,
+            "shift" => shift = true,
+            _ => other = true,
+        }
+        rest = tail;
+    }
+    let key = rest;
+    if other {
+        return false;
+    }
+    if ctrl {
+        let c0 = key.len() == 1
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || "[]\\/@^_".contains(c));
+        return !shift && (c0 || key == "space");
+    }
+    alt || !shift
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_keys_go_to_the_terminal() {
+        for k in [
+            "ctrl-k",
+            "ctrl-z",
+            "ctrl-h",
+            "ctrl-[",
+            "alt-b",
+            "alt-shift-f",
+            "f5",
+            "ctrl-space",
+        ] {
+            assert!(goes_to_terminal(k), "{k}");
+        }
+        for k in [
+            "ctrl-shift-p",
+            "ctrl-`",
+            "ctrl-'",
+            "ctrl-tab",
+            "ctrl-enter",
+            "cmd-k",
+            "ctrl-f6",
+            "shift-f5",
+        ] {
+            assert!(!goes_to_terminal(k), "{k}");
+        }
+    }
 
     fn on(text: &str, mac: bool) -> String {
         for_os(&Keystroke::parse(text).unwrap(), mac)

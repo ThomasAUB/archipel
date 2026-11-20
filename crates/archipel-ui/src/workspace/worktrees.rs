@@ -320,7 +320,7 @@ impl Workspace {
         ));
         out.push(item(
             "wm-term",
-            "Open in terminal".into(),
+            "Open in external terminal".into(),
             false,
             cx,
             Box::new(move |this, _, cx| {

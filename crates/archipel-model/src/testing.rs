@@ -42,10 +42,12 @@ use crate::ui_state::UiState;
 use crate::worktree::{WorktreeAddRequest, WorktreeInfo, WorktreeTarget};
 
 mod forge;
+mod terminal;
 pub use forge::{
     CreatedPullRequest, FakeForge, FakeIssue, FakeReleaseFeed, InMemoryCredentials,
     MergedPullRequest,
 };
+pub use terminal::{FakeTerminal, FakeTerminals};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)

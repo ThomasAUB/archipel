@@ -31,8 +31,8 @@ Dependencies only point **inward**, toward the pure layers. No cycles, no shortc
                   /    |     |     \
      archipel-ops  archipel-graph  archipel-stats  archipel-project   ← features
             |         |      \         /
-      archipel-git  archipel-watch  archipel-cache  archipel-forge   ← adapters (I/O: git, FS, SQLite, HTTP + keychain)
-                  \       |       /       /
+      archipel-git  archipel-watch  archipel-cache  archipel-forge  archipel-term   ← adapters (I/O: git, FS, SQLite, HTTP + keychain, PTY)
+                  \       |       /       /       /
                     archipel-model                    ← pure types + port traits (no I/O)
 ```
 
@@ -45,7 +45,7 @@ Rules:
 
 - `archipel-model` depends on nothing in the workspace and does no I/O. It holds the shared data types **and the port traits** (the interfaces other crates implement or consume).
 - Feature crates (`ops`, `graph`, `stats`, `project`) depend on **traits** from `archipel-model`, not on concrete adapters. They never name `gix`, `rusqlite` or `notify` types.
-- Adapter crates (`git`, `watch`, `cache`, `forge`) implement the traits. They never depend on feature crates. `archipel-forge` (GitHub / GitLab REST clients, OS keychain, ADR 0003) is reached by `archipel-app` only through the forge ports, and only from scheduler jobs (network pool), never from the UI thread.
+- Adapter crates (`git`, `watch`, `cache`, `forge`, `term`) implement the traits. They never depend on feature crates. `archipel-forge` (GitHub / GitLab REST clients, OS keychain, ADR 0003) is reached by `archipel-app` only through the forge ports, and only from scheduler jobs (network pool), never from the UI thread. `archipel-term` (integrated terminal: `alacritty_terminal`'s PTY / ConPTY and VT emulator, ADR 0005) is reached only through the terminal ports (`TerminalLauncher`, `TerminalSession`); the UI draws the `TerminalScreen` they return.
 - `archipel-app` knows use cases, not toolkits. `archipel-ui` is the only crate that depends on the UI toolkit, and it never depends on adapter crates directly.
 - Only the **composition roots** (`archipel-ui`'s `main`, `archipel-cli`) know which concrete implementation goes behind which trait. Both get their wiring from `archipel-compose`, the single shared `compose` module; the UI library code itself never names an adapter.
 - `archipel-theme` is a pure leaf crate (tokens, derivation, theme files) with no workspace dependency; `archipel-app` and `archipel-ui` use it.
@@ -55,7 +55,7 @@ A CI check (`cargo xtask check-deps`) fails the build if a crate depends on a cr
 
 ### 2.3 Third-party types stay inside their adapter
 
-`gix`, `rusqlite`, `notify`, `ureq`, `keyring`, `gpui` and similar types never appear in a public signature outside the crate that wraps them. Adapters convert to `archipel-model` types at the boundary. This is what makes a backend, a store or the UI toolkit replaceable.
+`gix`, `rusqlite`, `notify`, `ureq`, `keyring`, `alacritty_terminal`, `gpui` and similar types never appear in a public signature outside the crate that wraps them. Adapters convert to `archipel-model` types at the boundary. This is what makes a backend, a store or the UI toolkit replaceable.
 
 ---
 
@@ -98,7 +98,8 @@ The same principle applies everywhere else, for example:
 - storage: `SummaryStore`, `UiStateStore`, `JournalStore`, `StatsStore` rather than one `Database`;
 - forges: `PullRequestReader` (dashboard column), `CiReader` (CI column, job logs), `CiWriter` (CI reruns), `PullRequestWriter` (create, link), `ForgeDirectory` (clone from an account), `ForgeSignIn` (verify a token, detect the provider), `CredentialStore` (OS keychain), `ForgeAccountStore` (signed-in hosts) rather than one `ForgeClient`;
 - project: `ProjectSource` (load/save a project definition) separate from `RepoDiscovery` (scan a folder);
-- watching: `ChangeSource` (emits invalidations) separate from the debouncing policy.
+- watching: `ChangeSource` (emits invalidations) separate from the debouncing policy;
+- terminals: `TerminalLauncher` (starts one), `TerminalInput` (keys, resize) and `TerminalScreenReader` (screen, scroll, selection) rather than one `Terminal`.
 
 ### 3.2 Trait design rules
 
@@ -136,6 +137,7 @@ Extension is done through **registries** of trait objects, not through `match` s
 | Repo dependency tree (submodules; later `repo` manifests, package managers) | `DependencySource` trait | `Extensions::dependencies` |
 | Statistics | `StatProvider` trait (incremental compute + view model) | `StatsRegistry` (built by the CLI; the desktop app has no statistics view yet) |
 | Persistence | the store traits of §3.1 | composition root |
+| Integrated terminal (another emulator, a remote shell) | `TerminalLauncher` / `TerminalSession` | composition root (`Services::terminals`) |
 
 Rules:
 

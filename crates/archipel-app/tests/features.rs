@@ -114,6 +114,7 @@ fn env_with(extra: &[&str], projects: Arc<dyn ProjectSource>) -> Env {
         cache_dir: dir.path().join("cache"),
         forge: archipel_app::forge::ForgePorts::disabled(),
         updates: None,
+        terminals: Arc::new(archipel_model::testing::FakeTerminals::default()),
     };
     let app = App::new(
         services,

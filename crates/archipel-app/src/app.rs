@@ -47,6 +47,7 @@ mod scan;
 mod session;
 mod tabs;
 mod targets;
+mod terminals;
 mod tree;
 mod undo;
 mod update_check;
@@ -93,6 +94,9 @@ pub enum AppError {
     /// A forge (GitHub, GitLab…) call failed.
     #[error(transparent)]
     Forge(#[from] archipel_model::ForgeError),
+    /// A terminal could not be started.
+    #[error(transparent)]
+    Terminal(#[from] archipel_model::TerminalError),
 }
 
 /// Something the UI should react to.
@@ -181,6 +185,8 @@ pub struct Services {
     /// Where Archipel's releases are published; `None` disables the update
     /// check (builds updated by a package manager, tests).
     pub updates: Option<Arc<dyn archipel_model::ports::ReleaseFeed>>,
+    /// Starts the integrated terminals (issue #98).
+    pub terminals: Arc<dyn archipel_model::ports::TerminalLauncher>,
 }
 
 /// Registries a fork may extend before building the app.

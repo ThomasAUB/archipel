@@ -25,6 +25,7 @@ use archipel_model::ports::{HistoryReader, RefReader, ReleaseFeed, StashReader, 
 use archipel_model::settings::{ReadBackend, Settings};
 use archipel_ops::GitPorts;
 use archipel_project::{FileProjectSource, FsRepoDiscovery};
+use archipel_term::PtyTerminals;
 use archipel_watch::NotifyChangeSource;
 
 /// Errors while starting the application.
@@ -303,6 +304,7 @@ pub fn compose_with(dirs: AppDirs, options: ComposeOptions) -> Result<Compositio
         cache_dir: dirs.cache.clone(),
         forge: forge_ports(&settings, &dirs),
         updates: release_feed(&settings),
+        terminals: Arc::new(PtyTerminals::new()),
     };
     steps.done("adapters");
 

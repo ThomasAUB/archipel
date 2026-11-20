@@ -140,6 +140,9 @@ impl Workspace {
             }
             "forge.open_pull_request" => self.open_pull_request(cx),
             "forge.open_ci" => self.open_ci(cx),
+            terminal if terminal.starts_with("terminal.") => {
+                self.run_terminal_command(terminal, window, cx);
+            }
             worktree if worktree.starts_with("worktree.") || worktree == "palette.worktrees" => {
                 self.run_worktree_command(worktree, window, cx);
             }

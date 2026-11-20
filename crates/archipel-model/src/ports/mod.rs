@@ -7,10 +7,12 @@ pub mod forge;
 pub mod git;
 pub mod project;
 pub mod store;
+pub mod terminal;
 pub mod watch;
 
 pub use forge::*;
 pub use git::*;
 pub use project::*;
 pub use store::*;
+pub use terminal::*;
 pub use watch::*;

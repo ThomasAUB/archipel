@@ -128,6 +128,14 @@ pub enum WatchError {
     Backend(String),
 }
 
+/// Errors from terminals.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TerminalError {
+    /// The pseudo-terminal or the program could not be started.
+    #[error("cannot start the terminal: {0}")]
+    Spawn(String),
+}
+
 /// Errors from forge (GitHub, GitLab, …) adapters. Messages never contain
 /// the token.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

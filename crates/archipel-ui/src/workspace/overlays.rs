@@ -54,6 +54,9 @@ pub(super) enum PaletteKind {
         /// Its URL now (empty: the remote does not exist yet).
         current: String,
     },
+    /// A command to run in a terminal of its own on each of these repos
+    /// (the selected ones, all when empty).
+    RunCommand(Vec<RepoId>),
 }
 
 /// The overlay shown over the window, its view kept while it is open.
@@ -248,6 +251,17 @@ impl Workspace {
                 Vec::new(),
                 true,
             ),
+            PaletteKind::RunCommand(ids) => {
+                let n = self.core.resolve_targets(ids).len();
+                return self.show_palette(
+                    kind,
+                    format!("Run in {n} repo(s), one terminal each: command"),
+                    Vec::new(),
+                    true,
+                    window,
+                    cx,
+                );
+            }
             PaletteKind::RenameSet => {
                 let old = self.core.active_set().map(|s| s.name).unwrap_or_default();
                 return self.show_palette(
@@ -469,6 +483,7 @@ impl Workspace {
             PaletteKind::LockReason(id) => {
                 self.dispatch(Command::LockWorktree(id, Some(value.trim().to_owned())), cx);
             }
+            PaletteKind::RunCommand(ids) => self.run_in_repos(&value, &ids, window, cx),
             PaletteKind::RenameSet => {
                 if let Some(set) = self.core.active_set() {
                     self.dispatch(Command::RenameWorktreeSet(set.name, value), cx);

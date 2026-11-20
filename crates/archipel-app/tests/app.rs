@@ -37,6 +37,7 @@ struct Env {
     watcher: Arc<FakeChangeSource>,
     app: Arc<App>,
     releases: Arc<FakeReleaseFeed>,
+    terminals: Arc<archipel_model::testing::FakeTerminals>,
     repos: Vec<RepoPath>,
     dir: tempfile::TempDir,
 }
@@ -58,6 +59,7 @@ fn env_with(adjust: impl FnOnce(&mut GitPorts, &Arc<FakeGit>)) -> Env {
     let watcher = Arc::new(FakeChangeSource::default());
     let projects = Arc::new(FakeProjectSource::default());
     let releases = Arc::new(FakeReleaseFeed::default());
+    let terminals = Arc::new(archipel_model::testing::FakeTerminals::default());
     let repos: Vec<RepoPath> = (0..3)
         .map(|i| {
             let p = dir.path().join(format!("r{i}"));
@@ -88,6 +90,7 @@ fn env_with(adjust: impl FnOnce(&mut GitPorts, &Arc<FakeGit>)) -> Env {
         cache_dir: dir.path().join("cache"),
         forge: archipel_app::forge::ForgePorts::disabled(),
         updates: Some(releases.clone()),
+        terminals: terminals.clone(),
     };
     let app = App::new(
         services,
@@ -122,9 +125,49 @@ fn env_with(adjust: impl FnOnce(&mut GitPorts, &Arc<FakeGit>)) -> Env {
         watcher,
         app,
         releases,
+        terminals,
         repos,
         dir,
     }
+}
+
+#[test]
+fn terminals_start_in_the_repo_named_after_its_branch() {
+    use archipel_model::terminal::{TerminalEvent, TerminalSize};
+
+    let e = env();
+    e.app.open_project(&p1_id()).unwrap();
+    wait_until(&e.app, "refresh", all_fresh);
+    let repo = e.repos[0].clone();
+    assert_eq!(
+        e.app.terminal_title(repo.id()).as_deref(),
+        Some(format!("{} · main", e.app.row(repo.id()).unwrap().name).as_str())
+    );
+
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink = Arc::new(move |ev: TerminalEvent| {
+        let _ = tx.lock().unwrap().send(ev);
+    });
+    let size = TerminalSize::default();
+    let spec = e
+        .app
+        .terminal_spec(repo.as_path().to_path_buf(), None, size);
+    // No shell set: the adapter starts the login shell.
+    assert_eq!(spec.command, None);
+    assert_eq!(spec.scrollback, Settings::default().terminal_scrollback);
+    let session = e.app.launch_terminal(spec.clone(), sink.clone()).unwrap();
+    session.write(b"ls");
+    assert_eq!(rx.recv().unwrap(), TerminalEvent::Changed);
+    assert_eq!(session.screen().row_text(0).trim_end(), "ls");
+
+    let run = e
+        .app
+        .terminal_spec(repo.as_path().to_path_buf(), Some("git status"), size);
+    let command = run.command.unwrap();
+    assert_eq!(command.args.last().map(String::as_str), Some("git status"));
+    assert_eq!(e.terminals.specs()[0], spec);
+    drop(e.dir);
 }
 
 fn wait_until(app: &App, what: &str, cond: impl Fn(&App) -> bool) {

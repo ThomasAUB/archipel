@@ -139,6 +139,12 @@ pub struct Settings {
     /// Command opening a terminal in a folder (the folder is appended; the
     /// platform's terminal when `None`).
     pub terminal_command: Option<String>,
+    /// Shell of the integrated terminal, with its arguments
+    /// (`"pwsh -NoLogo"`, `"bash"`); the login shell (`$SHELL`, PowerShell
+    /// on Windows) when `None`.
+    pub terminal_shell: Option<String>,
+    /// Lines of scrollback kept by each integrated terminal. Default 2000.
+    pub terminal_scrollback: usize,
     /// Command opening a folder in an external editor (the folder is
     /// appended; `code` when `None`).
     pub editor_command: Option<String>,
@@ -173,6 +179,8 @@ impl Default for Settings {
             worktree_set_location: crate::worktree::DEFAULT_SET_LOCATION.to_owned(),
             worktree_auto_expand: true,
             terminal_command: None,
+            terminal_shell: None,
+            terminal_scrollback: 2000,
             editor_command: None,
         }
     }

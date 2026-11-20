@@ -4,7 +4,8 @@
 //! The view is split by area: [`sidebar`], [`tabs`], [`dashboard`] and its
 //! dependency [`tree`], [`menus`] (right-click menus), [`status_bar`] (and
 //! the operations drawer), [`overlays`] (palettes, commit and forge
-//! panels) and [`commands`] (actions run from the keymap or the palette).
+//! panels), [`terminals`] (the integrated terminal panel) and [`commands`]
+//! (actions run from the keymap or the palette).
 
 mod commands;
 mod dashboard;
@@ -13,6 +14,7 @@ mod overlays;
 mod sidebar;
 mod status_bar;
 mod tabs;
+mod terminals;
 mod tree;
 mod worktrees;
 
@@ -135,6 +137,10 @@ pub struct Workspace {
     dismissed_update: Option<String>,
     /// Repo tab last given the keyboard: a tab shown again gets it back.
     focused_tab: Option<RepoId>,
+    /// The integrated terminal panel, once a terminal was opened.
+    terminal: Option<(Entity<crate::terminal::TerminalPanel>, Subscription)>,
+    /// Whether the terminal panel is shown.
+    terminal_open: bool,
 }
 
 impl Workspace {
@@ -198,6 +204,8 @@ impl Workspace {
             title: String::new(),
             dismissed_update: None,
             focused_tab: None,
+            terminal: None,
+            terminal_open: false,
         }
     }
 
@@ -435,7 +443,8 @@ impl Render for Workspace {
                             .flex_col()
                             .overflow_hidden()
                             .child(self.render_tabs(cx))
-                            .child(content),
+                            .child(content)
+                            .children(self.shown_terminal()),
                     ),
             )
             .when(drawer_open, |d| d.child(self.render_drawer(cx)))

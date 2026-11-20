@@ -432,7 +432,29 @@ impl ActionRegistry {
             |c| c.target_repo().map(Command::OpenRepoTab),
         )));
         r.register_merge_tool_actions();
+        r.register_terminal_actions();
         r
+    }
+
+    /// The integrated terminal (issue #98). The panel is a frontend one.
+    fn register_terminal_actions(&mut self) {
+        let ui = |id: &'static str, label: &'static str, available: fn(&ActionContext) -> bool| {
+            Arc::new(SimpleAction::new(id, label, available, move |_| {
+                Some(Command::Ui(id.to_owned()))
+            }))
+        };
+        self.register(ui("terminal.toggle", "Toggle terminal panel", always));
+        self.register(ui("terminal.new", "New terminal", always));
+        self.register(ui(
+            "terminal.open_here",
+            "Open terminal here (repo or worktree)",
+            with_repo,
+        ));
+        self.register(ui(
+            "terminal.run_in_repos",
+            "Run command in selected repos (all when none)…",
+            with_project,
+        ));
     }
 
     /// Conflicts: pick what resolves them, open it on a repo's.
@@ -537,7 +559,7 @@ impl ActionRegistry {
         r.register(ui("worktree.copy_path", "Copy worktree path", with_repo));
         r.register(ui(
             "worktree.terminal",
-            "Open worktree in terminal",
+            "Open worktree in external terminal",
             with_repo,
         ));
         r.register(ui(

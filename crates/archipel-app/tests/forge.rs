@@ -128,6 +128,7 @@ fn env_with(settings: Settings) -> Env {
         cache_dir: dir.path().join("cache"),
         forge: ForgePorts::from_backend(forge.clone(), creds.clone()),
         updates: None,
+        terminals: Arc::new(archipel_model::testing::FakeTerminals::default()),
     };
     let app = App::new(
         services,
