@@ -7,9 +7,9 @@ use std::sync::{Condvar, Mutex};
 use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
-    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
-    MergeReport, MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, Release, RemoteRepo, ReviewState,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
+    MergeOptions, MergeReport, MergeState, Namespace, NamespaceKind, NewRemoteRepo,
+    PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo, ReviewState,
 };
 use crate::ports::{
     CiReader, CiWriter, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn,
@@ -56,6 +56,10 @@ struct ForgeState {
     reruns: Vec<(String, String)>,
     created: Vec<CreatedPullRequest>,
     merged: Vec<MergedPullRequest>,
+    /// `(repo path, number)` → options of an armed forge auto-merge.
+    auto_merges: HashMap<(String, u64), MergeOptions>,
+    /// Repo paths whose forge auto-merge is refused, with the error.
+    auto_merge_refused: HashMap<String, ForgeError>,
     repos: HashMap<String, Vec<RemoteRepo>>,
     hosts: HashMap<String, FakeHost>,
     /// Repo paths whose calls fail.
@@ -105,6 +109,27 @@ impl FakeForge {
     /// Declares the log of job `job` of repo `path`.
     pub fn with_ci_log(&self, path: &str, job: u64, log: CiJobLog) {
         lock(&self.state).logs.insert((path.into(), job), log);
+    }
+
+    /// Refuses to arm the forge's auto-merge on repo `path` with `error`
+    /// (the repository setting is off, a token scope is missing).
+    pub fn refuse_auto_merge(&self, path: &str, error: ForgeError) {
+        lock(&self.state)
+            .auto_merge_refused
+            .insert(path.into(), error);
+    }
+
+    /// The pull requests whose forge auto-merge is armed, as
+    /// `(repo path, number, options)`, sorted.
+    #[must_use]
+    pub fn auto_merges(&self) -> Vec<(String, u64, MergeOptions)> {
+        let mut out: Vec<_> = lock(&self.state)
+            .auto_merges
+            .iter()
+            .map(|((path, number), options)| (path.clone(), *number, options.clone()))
+            .collect();
+        out.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        out
     }
 
     /// Number of job logs served.
@@ -294,6 +319,7 @@ impl PullRequestWriter for FakeForge {
                 review: ReviewState::Pending,
                 merge: MergeState::Unknown,
                 from_fork: false,
+                auto_merge: false,
             },
         );
         Ok(PullRequestRef { number, url })
@@ -356,12 +382,62 @@ impl PullRequestWriter for FakeForge {
             return Err(refuse("head branch was modified"));
         }
         s.open.remove(&key);
+        s.auto_merges.remove(&(repo.path.clone(), number));
         s.merged.push(MergedPullRequest {
             repo: repo.path.clone(),
             number,
             options: options.clone(),
         });
         Ok(MergeReport::default())
+    }
+
+    /// Marks the pull request armed (read back as `auto_merge`); refused
+    /// for a draft or a repo made to [`FakeForge::refuse_auto_merge`].
+    fn enable_auto_merge(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<AutoMergeReport, ForgeError> {
+        self.check(repo)?;
+        let mut s = lock(&self.state);
+        if let Some(e) = s.auto_merge_refused.get(&repo.path) {
+            return Err(e.clone());
+        }
+        let Some(pr) = s
+            .open
+            .iter_mut()
+            .find(|((path, _), pr)| *path == repo.path && pr.number == number)
+            .map(|(_, pr)| pr)
+        else {
+            return Err(ForgeError::NotFound {
+                host: repo.account.host.clone(),
+                what: format!("pull request {number}"),
+            });
+        };
+        if pr.draft {
+            return Err(ForgeError::Http {
+                host: repo.account.host.clone(),
+                status: 422,
+                message: "draft".into(),
+            });
+        }
+        pr.auto_merge = true;
+        s.auto_merges
+            .insert((repo.path.clone(), number), options.clone());
+        Ok(AutoMergeReport::default())
+    }
+
+    fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError> {
+        self.check(repo)?;
+        let mut s = lock(&self.state);
+        for ((path, _), pr) in &mut s.open {
+            if *path == repo.path && pr.number == number {
+                pr.auto_merge = false;
+            }
+        }
+        s.auto_merges.remove(&(repo.path.clone(), number));
+        Ok(())
     }
 }
 

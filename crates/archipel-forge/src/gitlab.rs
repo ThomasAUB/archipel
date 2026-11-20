@@ -3,9 +3,9 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeOptions, MergeReport,
-    MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo, ReviewState,
+    AutoMergeReport, CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeOptions,
+    MergeReport, MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -56,6 +56,12 @@ struct MergeRequest {
     source_project_id: Option<u64>,
     #[serde(default)]
     target_project_id: Option<u64>,
+    /// Auto-merge armed ("merge when pipeline succeeds").
+    #[serde(default)]
+    merge_when_pipeline_succeeds: bool,
+    /// `opened`, `merged`…
+    #[serde(default)]
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -228,7 +234,31 @@ fn status(api: &Api<'_>, base: &str, iid: u64) -> Result<PullRequestStatus, Forg
             (mr.source_project_id, mr.target_project_id),
             (Some(s), Some(t)) if s != t
         ),
+        auto_merge: mr.merge_when_pipeline_succeeds,
     })
+}
+
+/// The body of the merge endpoint for `options`. GitLab rebases according
+/// to the project's merge method: it cannot be asked per merge request.
+fn merge_body(options: &MergeOptions) -> Result<serde_json::Value, ForgeError> {
+    let squash = match options.method {
+        MergeMethod::Merge => false,
+        MergeMethod::Squash => true,
+        MergeMethod::Rebase => {
+            return Err(ForgeError::Unsupported(
+                "GitLab rebases according to the project's merge method: choose Merge or Squash"
+                    .into(),
+            ));
+        }
+    };
+    let mut body = json!({
+        "squash": squash,
+        "should_remove_source_branch": options.delete_source_branch,
+    });
+    if let Some(sha) = &options.expected_head {
+        body["sha"] = json!(sha);
+    }
+    Ok(body)
 }
 
 impl ForgeApi for GitLab {
@@ -339,24 +369,7 @@ impl PullRequestApi for GitLab {
         number: u64,
         options: &MergeOptions,
     ) -> Result<MergeReport, ForgeError> {
-        let squash = match options.method {
-            MergeMethod::Merge => false,
-            MergeMethod::Squash => true,
-            MergeMethod::Rebase => {
-                return Err(ForgeError::Unsupported(
-                    "GitLab rebases according to the project's merge method: choose Merge \
-                     or Squash"
-                        .into(),
-                ));
-            }
-        };
-        let mut body = json!({
-            "squash": squash,
-            "should_remove_source_branch": options.delete_source_branch,
-        });
-        if let Some(sha) = &options.expected_head {
-            body["sha"] = json!(sha);
-        }
+        let body = merge_body(options)?;
         let what = format!("merge request !{number}");
         permission(
             api(at).write::<serde_json::Value>(
@@ -368,6 +381,52 @@ impl PullRequestApi for GitLab {
             &format!("merge {what}"),
         )?;
         Ok(MergeReport::default())
+    }
+
+    /// The merge endpoint with auto-merge asked: GitLab merges at once when
+    /// the pipeline already passed (or there is none to wait for).
+    fn enable_auto_merge(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<AutoMergeReport, ForgeError> {
+        let mut body = merge_body(options)?;
+        // `auto_merge` since GitLab 17.11, `merge_when_pipeline_succeeds`
+        // before (still accepted).
+        body["merge_when_pipeline_succeeds"] = json!(true);
+        body["auto_merge"] = json!(true);
+        let what = format!("merge request !{number}");
+        let mr: MergeRequest = permission(
+            api(at).write(
+                Method::Put,
+                &format!("{}/merge_requests/{number}/merge", project(repo)),
+                body,
+                &what,
+            ),
+            &format!("merge {what}"),
+        )?;
+        Ok(AutoMergeReport {
+            merged_now: mr.state == "merged",
+            warning: None,
+        })
+    }
+
+    fn disable_auto_merge(&self, at: &Endpoint, repo: &str, number: u64) -> Result<(), ForgeError> {
+        let what = format!("merge request !{number}");
+        permission(
+            api(at).write_unit(
+                Method::Post,
+                &format!(
+                    "{}/merge_requests/{number}/cancel_merge_when_pipeline_succeeds",
+                    project(repo)
+                ),
+                json!({}),
+                &what,
+            ),
+            &format!("cancel the auto-merge of {what}"),
+        )
     }
 }
 

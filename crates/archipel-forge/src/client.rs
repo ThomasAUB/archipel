@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
-    MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
-    RemoteRepo, normalize_host,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
+    MergeOptions, MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef,
+    PullRequestStatus, RemoteRepo, normalize_host,
 };
 use archipel_model::ports::{
     CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
@@ -160,6 +160,23 @@ impl PullRequestWriter for ForgeClient {
     ) -> Result<MergeReport, ForgeError> {
         self.with(&repo.account, |p, at| {
             p.merge(at, &repo.path, number, options)
+        })
+    }
+
+    fn enable_auto_merge(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<AutoMergeReport, ForgeError> {
+        self.with(&repo.account, |p, at| {
+            p.enable_auto_merge(at, &repo.path, number, options)
+        })
+    }
+
+    fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError> {
+        self.with(&repo.account, |p, at| {
+            p.disable_auto_merge(at, &repo.path, number)
         })
     }
 }

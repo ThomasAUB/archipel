@@ -15,7 +15,7 @@ use archipel_model::{
 
 use crate::forecast::{ConflictForecast, WillConflictFilter};
 use crate::forge::{
-    BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeLimit, ForgeStatus,
+    AutoMergeWatch, BranchCi, CiColumn, CiFailingFilter, ForgeColumn, ForgeLimit, ForgeStatus,
     PullRequestOpenFilter,
 };
 
@@ -53,6 +53,9 @@ pub struct DashboardRow {
     pub ci: BranchCi,
     /// Set when `forge` and `ci` may be out of date (rate limited).
     pub forge_limit: Option<ForgeLimit>,
+    /// An auto-merge Archipel watches itself for the current branch's pull
+    /// request (the forge's own was refused).
+    pub auto_merge: Option<AutoMergeWatch>,
     /// Whether the current branch would conflict with its upstream or its
     /// pull request target (spec §3); empty until computed.
     pub forecast: ConflictForecast,
@@ -988,6 +991,7 @@ mod tests {
             forge: ForgeStatus::Unknown,
             ci: BranchCi::Unknown,
             forge_limit: None,
+            auto_merge: None,
             forecast: ConflictForecast::default(),
             worktree: None,
             linked_worktrees: 0,

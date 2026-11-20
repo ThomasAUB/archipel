@@ -11,10 +11,10 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use archipel_app::forge::{ci_label, review_label};
+use archipel_app::forge::{AUTO_MERGE_MARK, auto_merge_note, ci_label, review_label};
 use archipel_app::{
-    App as Core, CloneOutcome, CloneProtocol, PullRequestPlan, RepoPullRequests, clone_dir_name,
-    split_clone_urls,
+    App as Core, AutoMergeOutcome, CloneOutcome, CloneProtocol, PullRequestPlan, RepoPullRequests,
+    clone_dir_name, split_clone_urls,
 };
 use archipel_model::RepoId;
 use archipel_model::forge::{
@@ -370,6 +370,156 @@ impl ForgePanel {
                 Err(e) => p.error = Some(format!("{label}: {e}")),
             },
         );
+    }
+
+    /// The listed pull request `number` of `repo`, with its forge repo.
+    fn listed(&self, repo: RepoId, number: u64) -> Option<(ForgeRepo, PullRequestStatus)> {
+        let r = self.open.iter().find(|r| r.repo == repo)?;
+        let pr = r
+            .result
+            .as_ref()
+            .ok()?
+            .iter()
+            .find(|p| p.number == number)?;
+        Some((r.forge.clone()?, pr.clone()))
+    }
+
+    /// Whether the listed pull request has an auto-merge armed (on the
+    /// forge or watched by Archipel).
+    fn auto_merge_armed(&self, repo: RepoId, pr: &PullRequestStatus) -> bool {
+        pr.auto_merge || self.core.auto_merge_watch(repo, pr.number).is_some()
+    }
+
+    /// The listed pull requests from branch `source`, one per repo, that
+    /// can be armed: the linked pull requests of a multi-repo change.
+    fn linked(&self, source: &str) -> Vec<(RepoId, u64)> {
+        self.open
+            .iter()
+            .filter_map(|r| {
+                let pr = r.result.as_ref().ok()?.iter().find(|p| {
+                    p.source == source
+                        && !p.draft
+                        && !p.from_fork
+                        && !self.auto_merge_armed(r.repo, p)
+                })?;
+                r.forge.as_ref()?;
+                Some((r.repo, pr.number))
+            })
+            .collect()
+    }
+
+    /// "When CI passes": arms the auto-merge of each of `prs` with the
+    /// chosen method and branch deletion.
+    fn arm_auto_merge(
+        &mut self,
+        prs: Vec<(RepoId, u64)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let found: Vec<_> = prs
+            .into_iter()
+            .filter_map(|(repo, number)| {
+                let (forge, pr) = self.listed(repo, number)?;
+                Some((repo, forge, pr))
+            })
+            .collect();
+        if found.is_empty() {
+            return;
+        }
+        let (method, delete) = (self.method, self.delete_branch);
+        let core = self.core.clone();
+        self.run(
+            async move {
+                let mut out = Vec::new();
+                for (repo, forge, pr) in found {
+                    let label = format!("{} {}", forge.path, pr_ref(Some(&forge), pr.number));
+                    let result = core.arm_auto_merge(repo, &forge, &pr, method, delete).await;
+                    out.push((repo, pr.number, pr.url, label, result));
+                }
+                out
+            },
+            window,
+            cx,
+            |p, results, _, cx| {
+                p.report.clear();
+                for (repo, number, url, label, result) in results {
+                    let (text, error) = match result {
+                        Ok(AutoMergeOutcome::Forge { warning }) => {
+                            p.set_auto_merge(repo, number, true);
+                            match warning {
+                                Some(w) => (format!("{label}: auto-merge armed ({w})"), false),
+                                None => (format!("{label}: auto-merge armed on the forge"), false),
+                            }
+                        }
+                        Ok(AutoMergeOutcome::Merged) => {
+                            p.drop_listed(repo, number);
+                            (format!("{label} merged: nothing left to wait for"), false)
+                        }
+                        Ok(AutoMergeOutcome::Watched { refusal }) => (
+                            format!(
+                                "{label}: the forge refused its auto-merge ({refusal}); Archipel \
+                                 merges it once its CI passes, only while it runs"
+                            ),
+                            false,
+                        ),
+                        Err(e) => (format!("{label}: {e}"), true),
+                    };
+                    p.report.push((text, Some(url), error));
+                }
+                if let [(text, _, false)] = p.report.as_slice() {
+                    cx.emit(ForgePanelEvent::Notice(text.clone()));
+                }
+            },
+        );
+    }
+
+    /// "Cancel auto-merge".
+    fn cancel_auto_merge(
+        &mut self,
+        repo: RepoId,
+        number: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((forge, pr)) = self.listed(repo, number) else {
+            return;
+        };
+        let label = format!("{} {}", forge.path, pr_ref(Some(&forge), number));
+        let core = self.core.clone();
+        self.run(
+            async move { core.cancel_auto_merge(repo, &forge, &pr).await },
+            window,
+            cx,
+            move |p, result, _, cx| match result {
+                Ok(()) => {
+                    p.set_auto_merge(repo, number, false);
+                    let text = format!("{label}: auto-merge cancelled");
+                    p.report = vec![(text.clone(), None, false)];
+                    cx.emit(ForgePanelEvent::Notice(text));
+                }
+                Err(e) => p.error = Some(format!("{label}: {e}")),
+            },
+        );
+    }
+
+    /// Notes the forge's auto-merge state of a listed pull request.
+    fn set_auto_merge(&mut self, repo: RepoId, number: u64, armed: bool) {
+        for r in self.open.iter_mut().filter(|r| r.repo == repo) {
+            if let Ok(prs) = &mut r.result {
+                for pr in prs.iter_mut().filter(|pr| pr.number == number) {
+                    pr.auto_merge = armed;
+                }
+            }
+        }
+    }
+
+    /// Removes a merged pull request from the list.
+    fn drop_listed(&mut self, repo: RepoId, number: u64) {
+        for r in self.open.iter_mut().filter(|r| r.repo == repo) {
+            if let Ok(prs) = &mut r.result {
+                prs.retain(|pr| pr.number != number);
+            }
+        }
     }
 
     // ----- new pull requests ----------------------------------------------
@@ -762,10 +912,70 @@ impl ForgePanel {
             .child(options)
             .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
                 "Click a title to open it on the forge. Merge asks for a second click, and is \
-                 refused if the branch moved since this list was read.",
+                 refused if the branch moved since this list was read. When CI passes arms the \
+                 forge's auto-merge with the same choices (merged even with Archipel closed); \
+                 when the forge refuses it, Archipel merges once the CI passes, only while it \
+                 runs.",
             ))
             .child(list)
             .into_any_element()
+    }
+
+    /// "When CI passes" (and "… in all N repos" for linked pull requests),
+    /// or "Cancel auto-merge" once armed.
+    fn auto_merge_controls(
+        &self,
+        id: &str,
+        repo: RepoId,
+        pr: &PullRequestStatus,
+        armed: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let number = pr.number;
+        if armed {
+            button(
+                SharedString::from(format!("{id}-auto-cancel")),
+                "Cancel auto-merge",
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, window, cx| {
+                p.cancel_auto_merge(repo, number, window, cx);
+            }))
+            .into_any_element()
+        } else {
+            let linked = if pr.from_fork {
+                Vec::new()
+            } else {
+                self.linked(&pr.source)
+            };
+            div()
+                .flex()
+                .gap_1()
+                .child(
+                    button(
+                        SharedString::from(format!("{id}-auto")),
+                        "When CI passes",
+                        cx,
+                    )
+                    .on_click(cx.listener(move |p, _, window, cx| {
+                        p.arm_auto_merge(vec![(repo, number)], window, cx);
+                    })),
+                )
+                .when(linked.len() > 1, |d| {
+                    let n = linked.len();
+                    d.child(
+                        button(
+                            SharedString::from(format!("{id}-auto-linked")),
+                            format!("… in all {n} repos"),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |p, _, window, cx| {
+                            p.arm_auto_merge(linked.clone(), window, cx);
+                        })),
+                    )
+                })
+                .into_any_element()
+        }
     }
 
     /// One open pull request: title (opens it), details, merge state and
@@ -796,6 +1006,17 @@ impl ForgePanel {
             MergeState::Blocked(why) => (why.clone(), T::StatusWarning),
         };
         let id = format!("f-open-{ri}-{number}");
+        let watch = self.core.auto_merge_watch(repo, number);
+        let note = auto_merge_note(pr, watch.as_ref());
+        let (state, tone) = match (&note, &watch) {
+            (Some(_), Some(w)) if w.waiting.is_some() => {
+                (format!("{AUTO_MERGE_MARK} (Archipel)"), T::StatusWarning)
+            }
+            (Some(_), Some(_)) => (format!("{AUTO_MERGE_MARK} (Archipel)"), T::Accent),
+            (Some(_), None) => (AUTO_MERGE_MARK.to_owned(), T::Accent),
+            (None, _) => (state, tone),
+        };
+        let auto = self.auto_merge_controls(&id, repo, pr, note.is_some(), cx);
         let merge = if self.armed.is(&(repo, number)) {
             primary_button(
                 SharedString::from(format!("{id}-merge")),
@@ -834,7 +1055,14 @@ impl ForgePanel {
                             .text_xs()
                             .text_color(color(cx, T::FgMuted))
                             .child(detail),
-                    ),
+                    )
+                    .children(note.map(|note| {
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(color(cx, T::FgSubtle))
+                            .child(note)
+                    })),
             )
             .child(
                 div()
@@ -843,7 +1071,7 @@ impl ForgePanel {
                     .text_color(color(cx, tone))
                     .child(state),
             )
-            .when(!pr.draft, |d| d.child(merge))
+            .when(!pr.draft, |d| d.child(auto).child(merge))
     }
 
     fn render_create(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {

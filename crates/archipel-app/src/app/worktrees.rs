@@ -96,6 +96,7 @@ fn worktree_row(wt: &WorktreeInfo, parent: &DashboardRow, info: WorktreeRowInfo)
         forge: ForgeStatus::Unknown,
         ci: BranchCi::Unknown,
         forge_limit: None,
+        auto_merge: None,
         forecast: ConflictForecast::default(),
         worktree: Some(info),
         linked_worktrees: 0,

@@ -61,6 +61,7 @@ impl App {
             }
             Command::RefreshForge => self.refresh_forge_all(),
             Command::RerunFailedCi(ids) => self.rerun_failed_ci(&ids),
+            Command::CancelAutoMerge(ids) => self.cancel_auto_merges(&ids),
             Command::RefreshRepo(r) => self.refresh_repo(r),
             Command::Fetch(ids) => self.fetch(&ids, false),
             Command::Pull(ids) => {

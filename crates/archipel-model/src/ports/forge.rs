@@ -10,9 +10,9 @@
 
 use crate::error::ForgeError;
 use crate::forge::{
-    CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken, MergeOptions,
-    MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
-    Release, RemoteRepo,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
+    MergeOptions, MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef,
+    PullRequestStatus, Release, RemoteRepo,
 };
 
 /// Reads open pull / merge requests (dashboard column, review list).
@@ -70,6 +70,19 @@ pub trait PullRequestWriter: Send + Sync {
         number: u64,
         options: &MergeOptions,
     ) -> Result<MergeReport, ForgeError>;
+    /// Arms the forge's auto-merge: the forge merges the pull request
+    /// itself once its required checks pass, even with Archipel closed.
+    /// [`ForgeError::Unsupported`] when the forge or the repository does not
+    /// allow it (setting off, nothing left to wait for); the caller may then
+    /// watch the CI itself.
+    fn enable_auto_merge(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<AutoMergeReport, ForgeError>;
+    /// Disarms the forge's auto-merge of a pull request.
+    fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError>;
 }
 
 /// Lists what an account can see (clone from an account / org / group),

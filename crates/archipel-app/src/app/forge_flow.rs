@@ -185,7 +185,7 @@ const CI_WATCH_SECS: u64 = 180;
 const MAX_CACHED_LOGS: usize = 256;
 
 /// The forge repository of a repo (blocking), or why there is none.
-fn forge_repo(
+pub(super) fn forge_repo(
     git: &GitPorts,
     forge: &ForgePorts,
     links: &ForgeRegistry,
@@ -645,6 +645,7 @@ impl App {
         });
     }
 
+    #[allow(clippy::too_many_lines)] // one locked update of the row and its bookkeeping
     fn apply_forge(&self, repo: RepoId, key: ForgeKey, read: ForgeRead) {
         let branch = key.branch.as_str();
         let (changed, reread, poll) = {
@@ -733,6 +734,8 @@ impl App {
                 }
                 _ => false,
             };
+            // The pull request read may be another one than the watched one.
+            let changed = (current && super::auto_merge::sync_auto_merge_row(s, repo)) || changed;
             if current {
                 if failed {
                     s.forge_failed.entry(repo).or_insert_with(Instant::now);

@@ -28,6 +28,7 @@ use crate::forge::{ForgePorts, ForgeRegistry};
 use crate::keymap::Keymap;
 
 mod auto_fetch;
+mod auto_merge;
 mod categories;
 mod clone;
 mod create;
@@ -53,6 +54,7 @@ mod worktree_ops;
 mod worktree_sets;
 mod worktrees;
 
+pub use auto_merge::AutoMergeOutcome;
 pub use clone::{CloneOutcome, CloneProtocol, clone_dir_name, split_clone_urls};
 pub use create::{CreateRepoRequest, INITIAL_COMMIT_MESSAGE};
 pub use forge_flow::{PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoPullRequests};

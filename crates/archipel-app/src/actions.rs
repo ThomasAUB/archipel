@@ -21,6 +21,9 @@ pub enum Command {
     /// Rerun the failed CI jobs of the current branch of the given repos
     /// (all when empty).
     RerunFailedCi(Vec<RepoId>),
+    /// Cancel the auto-merge armed on the current branch's pull request of
+    /// the given repos (all when empty).
+    CancelAutoMerge(Vec<RepoId>),
     /// Fetch the given repos (all when empty).
     Fetch(Vec<RepoId>),
     /// Pull the given repos (all when empty).

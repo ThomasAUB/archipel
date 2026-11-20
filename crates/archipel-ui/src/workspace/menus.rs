@@ -145,6 +145,50 @@ impl Workspace {
         }
     }
 
+    /// Row menu entry for a repo whose current branch has an open pull
+    /// request: cancel its armed auto-merge (and those of the other
+    /// targeted repos), or open the pull request list to arm it with the
+    /// merge choices.
+    fn auto_merge_menu_item(
+        &self,
+        id: RepoId,
+        targets: &[RepoId],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let row = self.core.row(id)?;
+        let pr = row.forge.pull_request()?;
+        let number = pr.number;
+        let armed = pr.auto_merge || row.auto_merge.as_ref().is_some_and(|w| w.number == number);
+        let targets = targets.to_vec();
+        Some(if armed {
+            menu_item(
+                "menu-auto-merge",
+                format!("Cancel auto-merge of #{number}"),
+                false,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.menu = None;
+                this.dispatch(Command::CancelAutoMerge(targets.clone()), cx);
+            }))
+            .into_any_element()
+        } else if pr.draft {
+            return None;
+        } else {
+            menu_item(
+                "menu-auto-merge",
+                format!("Merge #{number} when CI passes…"),
+                false,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.menu = None;
+                this.open_forge(ForgeTab::Open(targets.clone()), window, cx);
+            }))
+            .into_any_element()
+        })
+    }
+
     /// Row menu entry: open the CI run of the repo's branch, when it has one.
     fn ci_menu_item(&self, id: RepoId, cx: &mut Context<Self>) -> Option<AnyElement> {
         let url = self
@@ -368,6 +412,7 @@ impl Workspace {
             })
             .children(self.ci_menu_item(id, cx))
             .children(self.ci_rerun_menu_item(&targets, cx))
+            .children(self.auto_merge_menu_item(id, &targets, cx))
             .child(self.forge_menu_item(id, targets, cx))
             .children(self.worktree_menu_items(id, cx))
             .when(!is_worktree, |d| d.child(menu_separator(cx)))

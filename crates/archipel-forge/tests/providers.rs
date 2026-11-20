@@ -177,6 +177,7 @@ fn github_pull_request_with_ci_and_reviews() {
     assert_eq!(pr.target, "main");
     assert_eq!(pr.ci, Some(CiState::Pending), "one check still running");
     assert_eq!(pr.review, ReviewState::Approved, "ann's latest review wins");
+    assert!(!pr.auto_merge);
     let first = &http.seen()[0];
     assert!(
         first
@@ -1271,4 +1272,218 @@ fn gitlab_creates_projects_in_the_user_namespace_or_a_group() {
     let created = body(&sent[2]);
     assert_eq!(created["namespace_id"], json!(42));
     assert_eq!(created["visibility"], json!("public"));
+}
+
+#[test]
+fn github_arms_and_disarms_auto_merge_through_graphql() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls/42",
+        200,
+        json!({
+            "number": 42, "title": "t", "html_url": "u", "node_id": "PR_42",
+            "base": {"ref": "main", "sha": "b"},
+            "head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "octo/app"}},
+            "auto_merge": {"merge_method": "squash"}
+        }),
+    );
+    http.on(
+        Method::Get,
+        "/repos/octo/app",
+        200,
+        json!({"delete_branch_on_merge": false}),
+    );
+    http.on(Method::Post, "/graphql", 200, json!({"data": {}}));
+    let c = client(&http, &["github.com"]);
+    let options = MergeOptions {
+        method: MergeMethod::Squash,
+        delete_source_branch: true,
+        expected_head: Some("abc".into()),
+    };
+    let report = c.enable_auto_merge(&github_repo(), 42, &options).unwrap();
+    assert!(!report.merged_now);
+    // The repository does not delete merged branches: said, not hidden.
+    assert!(
+        report
+            .warning
+            .as_deref()
+            .is_some_and(|w| w.contains("feat/x")),
+        "{report:?}"
+    );
+    let seen = http.seen();
+    let arm = seen.iter().find(|r| r.method == Method::Post).unwrap();
+    assert_eq!(arm.url, "https://api.github.com/graphql");
+    let sent = body(arm);
+    assert!(
+        sent["query"]
+            .as_str()
+            .unwrap()
+            .contains("enablePullRequestAutoMerge")
+    );
+    assert_eq!(
+        sent["variables"],
+        json!({"id": "PR_42", "method": "SQUASH", "head": "abc"})
+    );
+
+    c.disable_auto_merge(&github_repo(), 42).unwrap();
+    let disarm = http
+        .seen()
+        .into_iter()
+        .filter(|r| r.method == Method::Post)
+        .nth(1)
+        .unwrap();
+    assert!(
+        body(&disarm)["query"]
+            .as_str()
+            .unwrap()
+            .contains("disablePullRequestAutoMerge")
+    );
+}
+
+#[test]
+fn github_pull_request_reads_its_auto_merge() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls?state=open",
+        200,
+        json!([{
+            "number": 42, "title": "t", "html_url": "u",
+            "base": {"ref": "main", "sha": "b"}, "head": {"ref": "feat/x", "sha": "abc"},
+            "auto_merge": {"merge_method": "merge", "enabled_by": {"login": "me"}}
+        }]),
+    );
+    let c = client(&http, &["github.com"]);
+    let pr = c
+        .pull_request_for_branch(&github_repo(), "feat/x")
+        .unwrap()
+        .unwrap();
+    assert!(pr.auto_merge);
+}
+
+#[test]
+fn github_auto_merge_refusals_are_unsupported() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/pulls/42",
+        200,
+        json!({
+            "number": 42, "title": "t", "html_url": "u", "node_id": "PR_42",
+            "base": {"ref": "main", "sha": "b"},
+            "head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "octo/app"}}
+        }),
+    );
+    http.on(
+        Method::Post,
+        "/api/graphql",
+        200,
+        json!({"errors": [{"type": "UNPROCESSABLE",
+                           "message": "Auto merge is not allowed for this repository"}]}),
+    );
+    let c = client(&http, &["ghe.corp.example"]);
+    let repo = ForgeRepo {
+        account: account(
+            "ghe.corp.example",
+            ForgeKind::github(),
+            "https://ghe.corp.example/api/v3",
+        ),
+        path: "octo/app".into(),
+    };
+    let err = c
+        .enable_auto_merge(&repo, 42, &MergeOptions::default())
+        .unwrap_err();
+    assert_eq!(
+        err,
+        ForgeError::Unsupported("Auto merge is not allowed for this repository".into())
+    );
+    // GitHub Enterprise's GraphQL endpoint is next to its REST API.
+    assert!(
+        http.seen()
+            .iter()
+            .any(|r| r.url == "https://ghe.corp.example/api/graphql")
+    );
+}
+
+#[test]
+fn gitlab_arms_and_cancels_merge_when_pipeline_succeeds() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/api/v4/projects/team%2Fsub%2Fapp/merge_requests";
+    http.on(
+        Method::Put,
+        &format!("{base}/3/merge"),
+        200,
+        json!({"iid": 3, "title": "MR", "web_url": "w", "target_branch": "main",
+               "state": "opened", "merge_when_pipeline_succeeds": true}),
+    );
+    http.on(
+        Method::Post,
+        &format!("{base}/3/cancel_merge_when_pipeline_succeeds"),
+        200,
+        json!({"iid": 3}),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let options = MergeOptions {
+        method: MergeMethod::Merge,
+        delete_source_branch: true,
+        expected_head: Some("abc".into()),
+    };
+    let report = c.enable_auto_merge(&gitlab_repo(), 3, &options).unwrap();
+    assert!(!report.merged_now);
+    let arm = http
+        .seen()
+        .into_iter()
+        .find(|r| r.method == Method::Put)
+        .unwrap();
+    assert_eq!(
+        body(&arm),
+        json!({"squash": false, "should_remove_source_branch": true, "sha": "abc",
+               "merge_when_pipeline_succeeds": true, "auto_merge": true})
+    );
+    c.disable_auto_merge(&gitlab_repo(), 3).unwrap();
+    assert!(http.seen().iter().any(|r| {
+        r.method == Method::Post
+            && r.url
+                .ends_with("/merge_requests/3/cancel_merge_when_pipeline_succeeds")
+    }));
+}
+
+#[test]
+fn gitlab_auto_merge_with_a_passed_pipeline_merges_at_once() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Put,
+        "/merge_requests/3/merge",
+        200,
+        json!({"iid": 3, "title": "MR", "web_url": "w", "target_branch": "main",
+               "state": "merged"}),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let report = c
+        .enable_auto_merge(&gitlab_repo(), 3, &MergeOptions::default())
+        .unwrap();
+    assert!(report.merged_now);
+}
+
+#[test]
+fn gitlab_merge_request_reads_its_auto_merge() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/api/v4/projects/team%2Fsub%2Fapp/merge_requests";
+    http.on(
+        Method::Get,
+        &format!("{base}?state=opened"),
+        200,
+        json!([{"iid": 3, "title": "MR", "web_url": "w", "target_branch": "main"}]),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/3"),
+        200,
+        json!({"iid": 3, "title": "MR", "web_url": "w", "source_branch": "feat/x",
+               "target_branch": "main", "merge_when_pipeline_succeeds": true}),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let prs = c.open_pull_requests(&gitlab_repo()).unwrap();
+    assert!(prs[0].auto_merge);
 }

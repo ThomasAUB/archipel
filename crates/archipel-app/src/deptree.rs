@@ -396,6 +396,7 @@ mod tests {
             forge: crate::forge::ForgeStatus::Unknown,
             ci: crate::forge::BranchCi::Unknown,
             forge_limit: None,
+            auto_merge: None,
             forecast: crate::forecast::ConflictForecast::default(),
             worktree: None,
             linked_worktrees: 0,
