@@ -761,7 +761,7 @@ fn records_and_storage_for_statistics() {
     assert_eq!(storage.largest_blobs[0].bytes, 50_000);
     assert!(storage.largest_blobs[0].reachable);
     assert!(!storage.shallow);
-    let root = records.last().unwrap().oid;
+    let root = records.iter().find(|r| r.parents.is_empty()).unwrap().oid;
     assert_eq!(cli.count_commits(&path, "HEAD", root).unwrap(), Some(2));
 }
 
