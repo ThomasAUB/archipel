@@ -65,6 +65,7 @@ impl Workspace {
             ("palette.actions", "actions"),
             ("commit.open", "commit"),
             ("history.undo", "undo"),
+            ("terminal.toggle", "terminal"),
             ("repos.toggle_hidden", "hide"),
             ("window.new", "new window"),
         ]
