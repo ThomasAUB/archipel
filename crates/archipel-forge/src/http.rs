@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{Read as _, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,6 +80,20 @@ pub trait HttpTransport: Send + Sync {
     /// Sends `request`. HTTP error statuses are responses, not errors; `Err`
     /// is a transport failure (DNS, TLS, timeout), as a message.
     fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String>;
+
+    /// Downloads `url` (redirects followed) into `out`, calling `progress`
+    /// with the bytes received so far and the total when known. Meant for
+    /// large files (release archives): a long timeout instead of the API
+    /// one. Any status but 200 is an error.
+    fn download(
+        &self,
+        url: &str,
+        out: &mut dyn Write,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<(), String> {
+        let _ = (url, out, progress);
+        Err("this transport cannot download files".into())
+    }
 }
 
 /// The real transport: `ureq` with rustls and the OS trust store (so
@@ -162,10 +177,53 @@ impl HttpTransport for UreqTransport {
             body,
         })
     }
+
+    fn download(
+        &self,
+        url: &str,
+        out: &mut dyn Write,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<(), String> {
+        let mut response = self
+            .agent
+            .get(url)
+            .config()
+            .timeout_global(Some(DOWNLOAD_TIMEOUT))
+            .build()
+            .call()
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(format!("HTTP {status}"));
+        }
+        let total = response.body().content_length();
+        let mut reader = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_DOWNLOAD_BYTES)
+            .reader();
+        let mut buffer = vec![0; 64 * 1024];
+        let mut received = 0_u64;
+        loop {
+            let read = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+            if read == 0 {
+                return Ok(());
+            }
+            out.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
+            received += u64::try_from(read).unwrap_or(u64::MAX);
+            progress(received, total);
+        }
+    }
 }
 
 /// Largest answer body read (a CI log).
 const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Largest file downloaded (a release archive is ~30 MB).
+const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Bound of a whole download.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Entries kept at most by [`CachingTransport`]; the cache is emptied when
 /// full.
@@ -250,6 +308,15 @@ impl HttpTransport for CachingTransport {
         }
         self.keep(key, &response);
         Ok(response)
+    }
+
+    fn download(
+        &self,
+        url: &str,
+        out: &mut dyn Write,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<(), String> {
+        self.inner.download(url, out, progress)
     }
 }
 

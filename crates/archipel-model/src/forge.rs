@@ -350,6 +350,20 @@ pub struct Release {
     pub version: String,
     /// Release page.
     pub url: String,
+    /// The files attached to the release (one archive per platform, the
+    /// checksums), for the in-app install.
+    pub assets: Vec<ReleaseAsset>,
+}
+
+/// A file attached to a [`Release`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseAsset {
+    /// File name (`archipel-v0.2.0-x86_64-pc-windows-msvc.zip`).
+    pub name: String,
+    /// Direct download URL.
+    pub url: String,
+    /// Size in bytes.
+    pub size: u64,
 }
 
 /// Kind of an account namespace.

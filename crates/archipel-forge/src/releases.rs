@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use archipel_model::ForgeError;
-use archipel_model::forge::Release;
+use archipel_model::forge::{Release, ReleaseAsset};
 use archipel_model::ports::ReleaseFeed;
 use serde::Deserialize;
 
@@ -45,6 +45,16 @@ impl GitHubReleases {
 struct Latest {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+#[derive(Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    size: u64,
 }
 
 impl ReleaseFeed for GitHubReleases {
@@ -85,7 +95,28 @@ impl ReleaseFeed for GitHubReleases {
         Ok(Some(Release {
             version: latest.tag_name.trim_start_matches('v').to_owned(),
             url: latest.html_url,
+            assets: latest
+                .assets
+                .into_iter()
+                .map(|a| ReleaseAsset {
+                    name: a.name,
+                    url: a.browser_download_url,
+                    size: a.size,
+                })
+                .collect(),
         }))
+    }
+
+    fn install(
+        &self,
+        release: &Release,
+        progress: &dyn Fn(u8),
+    ) -> Result<std::path::PathBuf, ForgeError> {
+        crate::self_update::install(self.http.as_ref(), release, progress)
+    }
+
+    fn clean_up_install(&self) {
+        crate::self_update::clean_up();
     }
 }
 
@@ -120,13 +151,19 @@ mod tests {
 
     #[test]
     fn latest_release_and_none_published() {
-        let body =
-            r#"{"tag_name":"v1.2.0","html_url":"https://github.com/o/r/releases/tag/v1.2.0"}"#;
+        let body = r#"{"tag_name":"v1.2.0","html_url":"https://github.com/o/r/releases/tag/v1.2.0",
+            "assets":[{"name":"SHA256SUMS.txt","size":120,
+            "browser_download_url":"https://github.com/o/r/releases/download/v1.2.0/SHA256SUMS.txt"}]}"#;
         assert_eq!(
             feed(200, body).latest_release().unwrap(),
             Some(Release {
                 version: "1.2.0".into(),
                 url: "https://github.com/o/r/releases/tag/v1.2.0".into(),
+                assets: vec![ReleaseAsset {
+                    name: "SHA256SUMS.txt".into(),
+                    url: "https://github.com/o/r/releases/download/v1.2.0/SHA256SUMS.txt".into(),
+                    size: 120,
+                }],
             })
         );
         assert_eq!(feed(404, "").latest_release().unwrap(), None);

@@ -33,6 +33,7 @@ pub mod gitlab;
 pub mod http;
 pub mod provider;
 pub mod releases;
+pub mod self_update;
 
 pub use client::ForgeClient;
 pub use credentials::{FileAccountStore, KeychainCredentials};

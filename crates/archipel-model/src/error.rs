@@ -193,6 +193,10 @@ pub enum ForgeError {
     /// only sets per project).
     #[error("{0}")]
     Unsupported(String),
+    /// An update could not be installed (no archive for this platform, bad
+    /// checksum, binary not writable…).
+    #[error("update: {0}")]
+    Update(String),
     /// The forge's API rate limit is used up; the token is fine.
     #[error("{host}: API rate limit reached, try again later")]
     RateLimited {

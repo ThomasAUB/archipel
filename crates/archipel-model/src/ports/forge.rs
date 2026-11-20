@@ -131,4 +131,22 @@ pub trait ForgeAccountStore: Send + Sync {
 pub trait ReleaseFeed: Send + Sync {
     /// The latest stable release; `None` when nothing is published yet.
     fn latest_release(&self) -> Result<Option<Release>, ForgeError>;
+
+    /// Installs `release` in place of the running binary: downloads its
+    /// archive for this platform, checks it against the release's
+    /// checksums, then swaps the binary. The running process is untouched;
+    /// the new version runs from the next launch. `progress` gets the
+    /// downloaded share, 0 to 100. Returns the installed binary's path.
+    ///
+    /// Blocking and long (a download): callers run it off the UI thread.
+    fn install(
+        &self,
+        release: &Release,
+        progress: &dyn Fn(u8),
+    ) -> Result<std::path::PathBuf, ForgeError>;
+
+    /// Removes what an earlier [`install`](Self::install) left behind (the
+    /// replaced binary, which Windows cannot delete while it runs). Best
+    /// effort, called once at start.
+    fn clean_up_install(&self) {}
 }

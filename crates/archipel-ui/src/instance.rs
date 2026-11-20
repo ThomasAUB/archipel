@@ -27,6 +27,9 @@ use std::time::Duration;
 
 /// File holding the primary's port and token.
 const INSTANCE_FILE: &str = "instance";
+/// Option of the launch that restarts Archipel after an update: it becomes
+/// the primary without asking the running one, which is quitting.
+pub const AFTER_UPDATE: &str = "--after-update";
 /// First line of every request.
 const MAGIC: &str = "ARCHIPEL1";
 /// Command opening a window.
@@ -75,6 +78,19 @@ pub fn forward_or_listen(data_dir: &Path, request: &Request) -> Option<Startup> 
         }
     }
     match listen(&file) {
+        Ok(listener) => Some(Startup::Primary(listener)),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for other launches; running standalone");
+            None
+        }
+    }
+}
+
+/// Becomes the primary without asking a running one (the launch after an
+/// update: the process it replaces is still quitting and would take the
+/// request). The instance file then points to this process.
+pub fn take_over(data_dir: &Path) -> Option<Startup> {
+    match listen(&data_dir.join(INSTANCE_FILE)) {
         Ok(listener) => Some(Startup::Primary(listener)),
         Err(e) => {
             tracing::warn!(error = %e, "cannot listen for other launches; running standalone");

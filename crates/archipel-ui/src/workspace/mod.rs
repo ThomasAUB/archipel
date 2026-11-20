@@ -318,7 +318,8 @@ impl Workspace {
             AppEvent::ProjectsChanged
             | AppEvent::TreeChanged
             | AppEvent::ForgeAccountsChanged
-            | AppEvent::UpdateAvailable(_) => {}
+            | AppEvent::UpdateAvailable(_)
+            | AppEvent::UpdateInstallChanged(_) => {}
         }
         cx.notify();
     }

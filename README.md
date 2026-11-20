@@ -49,7 +49,8 @@ unpack it, and run `archipel`. You also need **git** 2.40 or newer on your
 | macOS (Apple silicon) | `…-aarch64-apple-darwin.tar.gz` | The build is not notarized yet: run `xattr -d com.apple.quarantine archipel` once, then `./archipel`. |
 
 Then [open a project](#3-open-a-project). Archipel tells you when a newer
-release is out (an "↑ Update" badge in the status bar).
+release is out (an "↑ Update" badge in the status bar): click it to install the
+update in the background, then "Restart to update" (or just relaunch later).
 
 ### Build from source
 
