@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use archipel_app::forge::{BranchCi, ForgePorts, ForgeStatus};
-use archipel_app::{App, AppError, CloneProtocol, Command, Extensions, PublishTarget, Services};
+use archipel_app::{
+    App, AppError, AutoMergeOutcome, CloneProtocol, Command, Extensions, PublishTarget, Services,
+};
 use archipel_model::forge::{
     CiJob, CiJobLog, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, Namespace,
     NamespaceKind, NewRemoteRepo, PullRequestStatus, RemoteRepo, ReviewState,
@@ -80,6 +82,7 @@ fn env_with(settings: Settings) -> Env {
             review: ReviewState::Approved,
             merge: MergeState::Mergeable,
             from_fork: false,
+            auto_merge: false,
         },
     );
     forge.with_ci(
@@ -1176,4 +1179,170 @@ fn failed_ci_log_is_read_once_and_failing_ci_reruns() {
     e.app.dispatch(Command::RerunFailedCi(Vec::new())).unwrap();
     wait_until("rerun", || !e.forge.reruns().is_empty());
     assert_eq!(e.forge.reruns(), [("acme/r0".to_owned(), "f00".to_owned())]);
+}
+
+/// The listed pull request #7 of `r0`, with its forge repository.
+fn listed_pr(
+    e: &Env,
+) -> (
+    archipel_model::RepoId,
+    archipel_model::forge::ForgeRepo,
+    PullRequestStatus,
+) {
+    let app = e.app.clone();
+    let listed =
+        e.rt.block_on(async move { app.open_pull_requests(&[]).await })
+            .unwrap();
+    let r0 = listed[0].clone();
+    (r0.repo, r0.forge.unwrap(), r0.result.unwrap()[0].clone())
+}
+
+fn row_of(e: &Env, i: usize) -> archipel_app::dashboard::DashboardRow {
+    e.app.row(e.repos[i].id()).unwrap()
+}
+
+/// `r0`'s pull request #7 as the forge now serves it, with `ci`.
+fn reopen_r0(e: &Env, ci: CiState, auto_merge: bool) {
+    e.forge.with_open(
+        "acme/r0",
+        "feat/x",
+        PullRequestStatus {
+            number: 7,
+            title: "Add x".into(),
+            url: "https://github.com/acme/r0/pull/7".into(),
+            draft: false,
+            source: "feat/x".into(),
+            target: "main".into(),
+            head_sha: "h7".into(),
+            author: "ann".into(),
+            ci: Some(ci),
+            review: ReviewState::Approved,
+            merge: MergeState::Mergeable,
+            from_fork: false,
+            auto_merge,
+        },
+    );
+}
+
+#[test]
+fn auto_merge_is_armed_on_the_forge_and_cancelled() {
+    let e = env();
+    sign_in(&e);
+    wait_until("status", || matches!(forge_of(&e, 0), ForgeStatus::Open(_)));
+    let (repo, forge_repo, pr) = listed_pr(&e);
+    let app = e.app.clone();
+    let fr = forge_repo.clone();
+    let outcome =
+        e.rt.block_on(async move {
+            app.arm_auto_merge(repo, &fr, &pr, MergeMethod::Squash, true)
+                .await
+        })
+        .unwrap();
+    assert_eq!(outcome, AutoMergeOutcome::Forge { warning: None });
+    let armed = e.forge.auto_merges();
+    assert_eq!(armed.len(), 1);
+    assert_eq!((armed[0].0.as_str(), armed[0].1), ("acme/r0", 7));
+    assert_eq!(armed[0].2.method, MergeMethod::Squash);
+    assert_eq!(armed[0].2.expected_head.as_deref(), Some("h7"));
+    // Read back from the forge, and marked in the "Pull request" column.
+    wait_until(
+        "armed state read back",
+        || matches!(forge_of(&e, 0), ForgeStatus::Open(p) if p.auto_merge),
+    );
+    let column = archipel_app::forge::ForgeColumn;
+    let cell =
+        archipel_app::dashboard::DashboardColumn::cell(&column, &row_of(&e, 0), Timestamp(0));
+    assert!(cell.text.ends_with('⏲'), "{}", cell.text);
+    assert!(
+        cell.detail
+            .as_deref()
+            .is_some_and(|d| d.contains("auto-merge on the forge")),
+        "{:?}",
+        cell.detail
+    );
+
+    // Nothing was merged by Archipel: the forge does it.
+    assert!(e.forge.merged().is_empty());
+    e.app
+        .dispatch(Command::CancelAutoMerge(vec![repo]))
+        .unwrap();
+    wait_until("auto-merge cancelled", || e.forge.auto_merges().is_empty());
+    wait_until(
+        "cancelled state read back",
+        || matches!(forge_of(&e, 0), ForgeStatus::Open(p) if !p.auto_merge),
+    );
+}
+
+#[test]
+fn refused_auto_merge_is_watched_and_merged_once_ci_passes() {
+    let e = env_with(Settings {
+        ci_poll_secs: 1,
+        ..Settings::default()
+    });
+    sign_in(&e);
+    e.forge.refuse_auto_merge(
+        "acme/r0",
+        ForgeError::Unsupported("Auto merge is not allowed for this repository".into()),
+    );
+    wait_until("status", || matches!(forge_of(&e, 0), ForgeStatus::Open(_)));
+    let (repo, forge_repo, pr) = listed_pr(&e);
+    let app = e.app.clone();
+    let outcome =
+        e.rt.block_on(async move {
+            app.arm_auto_merge(repo, &forge_repo, &pr, MergeMethod::Merge, false)
+                .await
+        })
+        .unwrap();
+    assert!(
+        matches!(&outcome, AutoMergeOutcome::Watched { refusal } if refusal.contains("not allowed")),
+        "{outcome:?}"
+    );
+    // The CI of #7 fails: it stays armed, saying why it waits.
+    wait_until("waiting on the failed CI", || {
+        row_of(&e, 0)
+            .auto_merge
+            .and_then(|w| w.waiting)
+            .is_some_and(|w| w.contains("CI failed"))
+    });
+    assert!(e.forge.merged().is_empty());
+
+    reopen_r0(&e, CiState::Success, false);
+    wait_until("merged once the CI passed", || !e.forge.merged().is_empty());
+    let merged = e.forge.merged();
+    assert_eq!(merged[0].number, 7);
+    assert_eq!(merged[0].options.method, MergeMethod::Merge);
+    assert_eq!(merged[0].options.expected_head.as_deref(), Some("h7"));
+    wait_until("watch dropped", || {
+        e.app.auto_merge_watch(repo, 7).is_none() && row_of(&e, 0).auto_merge.is_none()
+    });
+}
+
+#[test]
+fn cancelled_watch_does_not_merge() {
+    let e = env_with(Settings {
+        ci_poll_secs: 1,
+        ..Settings::default()
+    });
+    sign_in(&e);
+    e.forge.refuse_auto_merge(
+        "acme/r0",
+        ForgeError::Unsupported("Auto merge is not allowed for this repository".into()),
+    );
+    wait_until("status", || matches!(forge_of(&e, 0), ForgeStatus::Open(_)));
+    let (repo, forge_repo, pr) = listed_pr(&e);
+    let app = e.app.clone();
+    let (fr, p) = (forge_repo.clone(), pr.clone());
+    e.rt.block_on(async move {
+        app.arm_auto_merge(repo, &fr, &p, MergeMethod::Merge, false)
+            .await
+    })
+    .unwrap();
+    assert!(e.app.auto_merge_watch(repo, 7).is_some());
+    let app = e.app.clone();
+    e.rt.block_on(async move { app.cancel_auto_merge(repo, &forge_repo, &pr).await })
+        .unwrap();
+    assert!(e.app.auto_merge_watch(repo, 7).is_none());
+    reopen_r0(&e, CiState::Success, false);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(e.forge.merged().is_empty());
 }

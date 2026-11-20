@@ -72,6 +72,9 @@ pub(super) struct Session {
     /// Error excerpts of CI job logs, by repo and job id (a job's log does
     /// not change once it failed; a rerun is a new job).
     pub(super) ci_logs: HashMap<(RepoId, u64), CiJobLog>,
+    /// Auto-merges Archipel watches itself (the forge refused its own), by
+    /// repo row and pull request number.
+    pub(super) auto_merges: HashMap<(RepoId, u64), super::auto_merge::LocalAutoMerge>,
     /// Worktrees of each repo (main first), by repo row (spec §10).
     pub(super) worktrees: HashMap<RepoId, Vec<archipel_model::worktree::WorktreeInfo>>,
     /// Repos whose worktree list is being read.
@@ -106,6 +109,7 @@ fn new_row(repo: &RepoEntry, status: RepoStatus, stale: bool, ui: &UiState) -> D
         forge: ForgeStatus::Unknown,
         ci: BranchCi::Unknown,
         forge_limit: None,
+        auto_merge: None,
         forecast: ConflictForecast::default(),
         worktree: None,
         linked_worktrees: 0,
@@ -189,6 +193,7 @@ impl App {
             forecast_queue: VecDeque::new(),
             forecast_running: None,
             ci_logs: HashMap::new(),
+            auto_merges: HashMap::new(),
             worktrees: HashMap::new(),
             worktrees_pending: HashSet::new(),
             worktrees_reread: HashSet::new(),

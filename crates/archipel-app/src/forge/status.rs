@@ -218,11 +218,49 @@ pub fn review_label(review: ReviewState) -> &'static str {
     }
 }
 
+/// Mark of a pull request whose auto-merge is armed.
+pub const AUTO_MERGE_MARK: &str = "⏲ auto-merge";
+
+/// An auto-merge Archipel watches itself, the forge having refused its own:
+/// the pull request is merged once its CI passes, only while Archipel runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoMergeWatch {
+    /// The pull request.
+    pub number: u64,
+    /// Why the forge's own auto-merge could not be used.
+    pub refusal: String,
+    /// Why it is not merged yet (CI running or failed, conflicts…), once
+    /// checked.
+    pub waiting: Option<String>,
+}
+
+/// What the auto-merge of `pr` does, if armed: on the forge (`pr`'s own
+/// state) or watched by Archipel (`watch`, when for this pull request).
+#[must_use]
+pub fn auto_merge_note(pr: &PullRequestStatus, watch: Option<&AutoMergeWatch>) -> Option<String> {
+    match watch.filter(|w| w.number == pr.number) {
+        Some(w) => {
+            let mut note = format!(
+                "{AUTO_MERGE_MARK} by Archipel, only while it runs (the forge's own auto-merge \
+                 was refused: {})",
+                w.refusal
+            );
+            if let Some(waiting) = &w.waiting {
+                let _ = write!(note, " · not merged yet: {waiting}");
+            }
+            Some(note)
+        }
+        None => pr.auto_merge.then(|| {
+            format!("{AUTO_MERGE_MARK} on the forge: merged once its required checks pass")
+        }),
+    }
+}
+
 /// The dashboard column "Pull request": number, CI and review state.
 pub struct ForgeColumn;
 
 impl ForgeColumn {
-    fn open_cell(pr: &PullRequestStatus) -> Cell {
+    fn open_cell(pr: &PullRequestStatus, watch: Option<&AutoMergeWatch>) -> Cell {
         let ci = match pr.ci {
             None => "",
             Some(CiState::Pending) => " ●",
@@ -235,6 +273,8 @@ impl ForgeColumn {
             ReviewState::ChangesRequested => " changes",
         };
         let draft = if pr.draft { " draft" } else { "" };
+        let auto_merge = auto_merge_note(pr, watch);
+        let armed = if auto_merge.is_some() { " ⏲" } else { "" };
         let tone = match (pr.ci, pr.review) {
             (Some(CiState::Failure), _) => Tone::Error,
             (_, ReviewState::ChangesRequested) => Tone::Conflict,
@@ -242,20 +282,24 @@ impl ForgeColumn {
             (_, ReviewState::Approved) => Tone::Success,
             _ => Tone::Normal,
         };
+        let mut detail = format!(
+            "{} → {} · {} · {}",
+            pr.title,
+            pr.target,
+            ci_label(pr.ci),
+            review_label(pr.review)
+        );
+        if let Some(note) = auto_merge {
+            let _ = write!(detail, "\n{note}");
+        }
         Cell {
-            text: format!("#{}{ci}{review}{draft}", pr.number),
-            detail: Some(format!(
-                "{} → {} · {} · {}",
-                pr.title,
-                pr.target,
-                ci_label(pr.ci),
-                review_label(pr.review)
-            )),
+            text: format!("#{}{ci}{review}{draft}{armed}", pr.number),
+            detail: Some(detail),
             tone,
         }
     }
 
-    fn status_cell(forge: &ForgeStatus) -> Cell {
+    fn status_cell(forge: &ForgeStatus, watch: Option<&AutoMergeWatch>) -> Cell {
         let muted = |text: &str, detail: Option<String>| Cell {
             text: text.into(),
             detail,
@@ -273,7 +317,7 @@ impl ForgeColumn {
             ForgeStatus::NoPullRequest { branch } => {
                 muted("none", Some(format!("No open pull request for {branch}")))
             }
-            ForgeStatus::Open(pr) => Self::open_cell(pr),
+            ForgeStatus::Open(pr) => Self::open_cell(pr, watch),
             ForgeStatus::Error(e) => Cell {
                 text: "error".into(),
                 detail: Some(e.clone()),
@@ -293,7 +337,7 @@ impl DashboardColumn for ForgeColumn {
     }
 
     fn cell(&self, row: &DashboardRow, now: Timestamp) -> Cell {
-        let cell = Self::status_cell(&row.forge);
+        let cell = Self::status_cell(&row.forge, row.auto_merge.as_ref());
         match (row.forge_limit, &row.forge) {
             (Some(limit), ForgeStatus::Open(_) | ForgeStatus::NoPullRequest { .. }) => {
                 limit.mark(cell, now)
@@ -651,6 +695,7 @@ mod tests {
             forge,
             ci: BranchCi::Unknown,
             forge_limit: None,
+            auto_merge: None,
             forecast: crate::forecast::ConflictForecast::default(),
             worktree: None,
             linked_worktrees: 0,
@@ -672,6 +717,7 @@ mod tests {
             review,
             merge: MergeState::Unknown,
             from_fork: false,
+            auto_merge: false,
         }
     }
 

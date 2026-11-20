@@ -2,9 +2,9 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJob, CiJobState, CiRun, ForgeKind, MergeMethod, MergeOptions, MergeReport, MergeState,
-    Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
-    RemoteRepo, ReviewState, overall_ci_state,
+    AutoMergeReport, CiJob, CiJobState, CiRun, ForgeKind, MergeMethod, MergeOptions, MergeReport,
+    MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef,
+    PullRequestStatus, RemoteRepo, ReviewState, overall_ci_state,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -65,6 +65,32 @@ struct Pull {
     /// Only on the single pull request endpoint.
     #[serde(default)]
     mergeable_state: Option<String>,
+    /// GraphQL id (auto-merge mutations).
+    #[serde(default)]
+    node_id: String,
+    /// The armed auto-merge request, if any.
+    #[serde(default)]
+    auto_merge: Option<serde_json::Value>,
+}
+
+/// The repository settings the auto-merge needs.
+#[derive(Deserialize)]
+struct RepoSettings {
+    /// Only shown to users with push access.
+    #[serde(default)]
+    delete_branch_on_merge: Option<bool>,
+}
+
+/// A GraphQL answer: errors come with status 200.
+#[derive(Deserialize)]
+struct GraphQlAnswer {
+    #[serde(default)]
+    errors: Vec<GraphQlError>,
+}
+
+#[derive(Deserialize)]
+struct GraphQlError {
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -315,8 +341,53 @@ fn status(api: &Api<'_>, base: &str, pull: Pull) -> Result<PullRequestStatus, Fo
         review: review_state(&reviews),
         merge: merge_state(pull.mergeable_state.as_deref()),
         from_fork,
+        auto_merge: pull.auto_merge.is_some(),
     })
 }
+
+/// The GraphQL endpoint next to a REST API base (`https://api.github.com`,
+/// `https://host/api/v3`).
+fn graphql_url(api_url: &str) -> String {
+    match api_url.strip_suffix("/v3") {
+        Some(enterprise) => format!("{enterprise}/graphql"),
+        None => format!("{api_url}/graphql"),
+    }
+}
+
+/// Runs a GraphQL mutation. Its errors (auto-merge not allowed on the
+/// repository, nothing left to wait for, a token without the right) come
+/// back as [`ForgeError::Unsupported`] with GitHub's message.
+fn mutation(
+    at: &Endpoint,
+    query: &str,
+    variables: &serde_json::Value,
+    what: &str,
+) -> Result<(), ForgeError> {
+    let api = api(at);
+    let response = permission(
+        api.send(
+            Method::Post,
+            graphql_url(at.api_url),
+            Some(json!({ "query": query, "variables": variables })),
+            what,
+        ),
+        &format!("change the auto-merge of {what}"),
+    )?;
+    let answer: GraphQlAnswer = api.decode(&response)?;
+    if answer.errors.is_empty() {
+        Ok(())
+    } else {
+        let messages: Vec<String> = answer.errors.into_iter().map(|e| e.message).collect();
+        Err(ForgeError::Unsupported(messages.join("; ")))
+    }
+}
+
+const ENABLE_AUTO_MERGE: &str = "mutation($id: ID!, $method: PullRequestMergeMethod!, \
+     $head: GitObjectID) { enablePullRequestAutoMerge(input: {pullRequestId: $id, \
+     mergeMethod: $method, expectedHeadOid: $head}) { clientMutationId } }";
+
+const DISABLE_AUTO_MERGE: &str = "mutation($id: ID!) { disablePullRequestAutoMerge(input: \
+     {pullRequestId: $id}) { clientMutationId } }";
 
 impl ForgeApi for GitHub {
     fn kind(&self) -> ForgeKind {
@@ -475,6 +546,68 @@ impl PullRequestApi for GitHub {
             }
         }
         Ok(report)
+    }
+
+    fn enable_auto_merge(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<AutoMergeReport, ForgeError> {
+        let api = api(at);
+        let base = format!("/repos/{}", encode_path(repo));
+        let what = format!("pull request #{number}");
+        let pull: Pull = api.get(&format!("{base}/pulls/{number}"), &what)?;
+        let method = match options.method {
+            MergeMethod::Merge => "MERGE",
+            MergeMethod::Squash => "SQUASH",
+            MergeMethod::Rebase => "REBASE",
+        };
+        mutation(
+            at,
+            ENABLE_AUTO_MERGE,
+            &json!({ "id": pull.node_id, "method": method, "head": options.expected_head }),
+            &what,
+        )?;
+        // GitHub's auto-merge has no per-pull-request branch deletion: the
+        // repository setting decides.
+        let same_repo = pull
+            .head
+            .repo
+            .as_ref()
+            .is_some_and(|r| r.full_name.eq_ignore_ascii_case(repo));
+        let warning = if options.delete_source_branch && same_repo {
+            let deletes = optional(api.get::<RepoSettings>(&base, &format!("repository {repo}")))?
+                .and_then(|r| r.delete_branch_on_merge);
+            (deletes != Some(true)).then(|| {
+                format!(
+                    "branch {} stays: GitHub deletes it after an auto-merge only when the \
+                     repository's \"Automatically delete head branches\" setting is on",
+                    pull.head.name
+                )
+            })
+        } else {
+            None
+        };
+        Ok(AutoMergeReport {
+            merged_now: false,
+            warning,
+        })
+    }
+
+    fn disable_auto_merge(&self, at: &Endpoint, repo: &str, number: u64) -> Result<(), ForgeError> {
+        let what = format!("pull request #{number}");
+        let pull: Pull = api(at).get(
+            &format!("/repos/{}/pulls/{number}", encode_path(repo)),
+            &what,
+        )?;
+        mutation(
+            at,
+            DISABLE_AUTO_MERGE,
+            &json!({ "id": pull.node_id }),
+            &what,
+        )
     }
 }
 

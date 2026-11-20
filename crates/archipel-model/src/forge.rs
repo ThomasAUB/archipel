@@ -284,6 +284,10 @@ pub struct PullRequestStatus {
     /// branch of the same name in this one.
     #[serde(default)]
     pub from_fork: bool,
+    /// Auto-merge is armed on the forge: it merges the pull request itself
+    /// once its required checks pass.
+    #[serde(default)]
+    pub auto_merge: bool,
 }
 
 /// How a pull request is merged.
@@ -316,6 +320,17 @@ pub struct MergeOptions {
 pub struct MergeReport {
     /// What failed after the merge itself succeeded (the source branch
     /// could not be deleted).
+    pub warning: Option<String>,
+}
+
+/// What arming a forge's auto-merge did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AutoMergeReport {
+    /// The forge merged at once, nothing being left to wait for (GitLab
+    /// with its pipeline already passed).
+    pub merged_now: bool,
+    /// What will not be done as asked (GitHub deletes the source branch
+    /// only when the repository says so).
     pub warning: Option<String>,
 }
 

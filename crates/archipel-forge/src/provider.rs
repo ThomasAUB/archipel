@@ -4,8 +4,8 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    CiJobLog, CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace, NewRemoteRepo,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    AutoMergeReport, CiJobLog, CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace,
+    NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 
 use crate::http::HttpTransport;
@@ -71,6 +71,28 @@ pub trait PullRequestApi: Send + Sync {
         number: u64,
         options: &MergeOptions,
     ) -> Result<MergeReport, ForgeError>;
+    /// Arms the forge's auto-merge of a pull request. Unsupported by
+    /// default (the app then watches the CI itself).
+    fn enable_auto_merge(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        options: &MergeOptions,
+    ) -> Result<AutoMergeReport, ForgeError> {
+        let _ = (at, repo, number, options);
+        Err(ForgeError::Unsupported(
+            "this forge has no auto-merge".into(),
+        ))
+    }
+    /// Disarms the forge's auto-merge of a pull request. Unsupported by
+    /// default.
+    fn disable_auto_merge(&self, at: &Endpoint, repo: &str, number: u64) -> Result<(), ForgeError> {
+        let _ = (at, repo, number);
+        Err(ForgeError::Unsupported(
+            "this forge has no auto-merge".into(),
+        ))
+    }
 }
 
 /// CI of branches.

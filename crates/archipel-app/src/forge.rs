@@ -19,9 +19,10 @@ mod status;
 pub use locate::{Located, locate, pick_remote};
 pub use ports::ForgePorts;
 pub use status::{
-    BranchCi, BranchCiMark, CiColumn, CiFailingFilter, ForgeColumn, ForgeLimit, ForgeStatus,
-    OUTDATED_MARK, PullRequestOpenFilter, StaleCause, branch_ci_mark, ci_cell, ci_label,
-    ci_tooltip, linked_description, review_label,
+    AUTO_MERGE_MARK, AutoMergeWatch, BranchCi, BranchCiMark, CiColumn, CiFailingFilter,
+    ForgeColumn, ForgeLimit, ForgeStatus, OUTDATED_MARK, PullRequestOpenFilter, StaleCause,
+    auto_merge_note, branch_ci_mark, ci_cell, ci_label, ci_tooltip, linked_description,
+    review_label,
 };
 
 /// A repository on a forge, parsed from a remote URL.
