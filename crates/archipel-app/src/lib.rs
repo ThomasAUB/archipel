@@ -58,4 +58,5 @@ pub mod insights {
         FILE_BUCKETS, HUGE_LINES, Insights, LINE_BUCKETS, MergeLead, OLD_DAYS, RECENT_DAYS,
         RepoWeight, STREAK_MIN, TINY_LINES, TagCadence, TagPoint, TinyStreak, human_bytes,
     };
+    pub use archipel_stats::{LanguageShare, RepoLanguages};
 }

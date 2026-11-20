@@ -1,6 +1,7 @@
 //! Repository insights (issue #93, statistics phase 1): contribution per
 //! author, repository weight, commit size distribution, churn against age,
-//! tag cadence and lead time to merge.
+//! tag cadence and lead time to merge; and the programming language
+//! breakdown (issue #94, phase 2).
 //!
 //! One walk of a repository's history gathers its raw facts into a
 //! [`RepoHistory`]; [`Insights::build`] turns one history (a repository) or
@@ -11,8 +12,10 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 
 use archipel_model::refs::TagInfo;
-use archipel_model::stats::{CommitRecord, RepoStorage};
+use archipel_model::stats::{CommitRecord, RepoStorage, TreeFile};
 use archipel_model::{Oid, Timestamp};
+
+use crate::languages::{self, LanguageShare, RepoLanguages};
 
 const DAY: i64 = 86_400;
 
@@ -296,6 +299,14 @@ pub struct RepoHistory {
     tags: TagCadence,
     merges: Vec<MergeLead>,
     weight: Option<RepoWeight>,
+    languages: Option<RepoLanguages>,
+}
+
+impl RepoHistory {
+    /// Adds the language breakdown of the walked branch's tree.
+    pub fn set_languages(&mut self, files: &[TreeFile]) {
+        self.languages = Some(languages::breakdown(&self.repo, files));
+    }
 }
 
 /// One node of the commit graph kept for lead time and tag reachability.
@@ -780,6 +791,11 @@ pub struct Insights {
     pub merges_lead: Vec<MergeLead>,
     /// Weight per repository, heaviest first.
     pub weights: Vec<RepoWeight>,
+    /// Languages of all the repositories together, most lines first.
+    pub languages: Vec<LanguageShare>,
+    /// Languages per repository, most lines first (repositories whose tree
+    /// could not be read are missing).
+    pub repo_languages: Vec<RepoLanguages>,
 }
 
 impl Insights {
@@ -863,6 +879,7 @@ impl Insights {
             out.tags.push(h.tags.clone());
             out.merges_lead.extend(h.merges.iter().cloned());
             out.weights.extend(h.weight.clone());
+            out.repo_languages.extend(h.languages.clone());
         }
         let top = config.top;
         out.weeks = weeks.into_iter().collect();
@@ -913,6 +930,9 @@ impl Insights {
         out.merges_lead.sort_by_key(|m| m.merged_at);
         out.weights
             .sort_by_key(|w| Reverse(w.storage.git_dir_bytes));
+        out.languages = languages::merge(&out.repo_languages);
+        out.repo_languages
+            .sort_by(|a, b| b.lines().cmp(&a.lines()).then_with(|| a.repo.cmp(&b.repo)));
         out
     }
 
@@ -1051,6 +1071,29 @@ mod tests {
         let i = Insights::build(&[&b.finish(&tags, None, None)], config);
         assert_eq!(i.tags[0].last_tag.as_ref().unwrap().name, "v1");
         assert_eq!(i.tags[0].unreleased, 1);
+    }
+
+    #[test]
+    fn languages_per_repo_and_project() {
+        let file = |path: &str, lines| TreeFile {
+            path: path.to_owned(),
+            lines,
+            ..TreeFile::default()
+        };
+        let mut a = history(1_000);
+        a.set_languages(&[file("src/a.rs", 50), file("x.py", 10)]);
+        let mut b = history(1_000);
+        b.repo = "b".into();
+        b.set_languages(&[file("y.py", 100)]);
+        let config = InsightsConfig::at(Timestamp(1_000 * DAY));
+        let project = Insights::build(&[&a, &b], config);
+        assert_eq!(project.languages[0].name, "Python");
+        assert_eq!(project.languages[0].lines, 110);
+        assert_eq!(project.languages[1].name, "Rust");
+        assert_eq!(project.repo_languages.len(), 2);
+        assert_eq!(project.repo_languages[0].repo, "b");
+        let one = Insights::build(&[&a], config);
+        assert_eq!(one.languages[0].name, "Rust");
     }
 
     #[test]

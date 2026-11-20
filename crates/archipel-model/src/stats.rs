@@ -126,3 +126,19 @@ pub struct RepoStorage {
     /// Whether Git LFS is set up (an `lfs` folder or `filter=lfs`).
     pub lfs: bool,
 }
+
+/// One text file of a tree, with its line count and the `linguist-*`
+/// attributes set on it (language breakdown).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeFile {
+    /// Path in the tree.
+    pub path: String,
+    /// Number of lines.
+    pub lines: u64,
+    /// `linguist-generated`, `linguist-vendored` or `linguist-documentation`
+    /// set (`Some(true)`) or unset (`Some(false)`, which overrides the
+    /// built-in rules); `None` when not specified.
+    pub excluded: Option<bool>,
+    /// `linguist-language`, when set.
+    pub language: Option<String>,
+}

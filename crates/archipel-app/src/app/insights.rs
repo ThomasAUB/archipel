@@ -1,6 +1,6 @@
 //! Repository statistics (issue #93): contribution, weight, commit sizes,
-//! churn against age, tag cadence and lead time to merge, per repository and
-//! across the project.
+//! churn against age, tag cadence, lead time to merge and (issue #94) the
+//! language breakdown, per repository and across the project.
 
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -116,7 +116,7 @@ impl App {
     }
 
     /// Walks the default branch of one repository (`HEAD` when there is
-    /// none) and measures its weight.
+    /// none), measures its weight and counts the languages of its tree.
     fn repo_history(
         &self,
         name: &str,
@@ -159,6 +159,18 @@ impl App {
                 None
             }
         };
-        Ok(builder.finish(&tags, unreleased, storage))
+        let files = match self.services.churn.tree_files(path, &rev, cancel) {
+            Ok(files) => Some(files),
+            Err(GitError::Cancelled) => return Err(GitError::Cancelled),
+            Err(e) => {
+                tracing::debug!("languages of {name}: {e}");
+                None
+            }
+        };
+        let mut history = builder.finish(&tags, unreleased, storage);
+        if let Some(files) = files {
+            history.set_languages(&files);
+        }
+        Ok(history)
     }
 }
