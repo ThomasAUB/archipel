@@ -19,7 +19,7 @@ use crate::widgets::{SHORT_OID, TextTooltip, button};
 use crate::worktree_dialog::WorktreeStart;
 
 use super::Workspace;
-use super::dashboard::{WIDTHS, nested_cell, nesting, row_cells};
+use super::dashboard::{nested_cell, nesting, row_cells};
 use super::worktrees::HandOff;
 
 impl Workspace {
@@ -56,12 +56,14 @@ impl Workspace {
         rows: &[DashboardRow],
         selected: &[RepoId],
         ui: &UiState,
+        widths: &[f32],
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let ext = self.core.extensions().clone();
         let now = Timestamp::now();
         let by_id: HashMap<RepoId, &DashboardRow> = rows.iter().map(|r| (r.id, r)).collect();
-        let rest: f32 = WIDTHS[1..].iter().sum();
+        let first = widths.first().copied().unwrap_or(1.0);
+        let rest: f32 = widths.iter().skip(1).sum();
         let opening = self.opening.as_ref();
         let all_worktrees = ui
             .filters
@@ -84,7 +86,7 @@ impl Workspace {
                 let label = match row {
                     Some(row) if node.worktree => Self::worktree_label(node, row, cx),
                     Some(row) => {
-                        let cell = row_cells(&ext, &self.core, row, now, 0, cx)
+                        let cell = row_cells(&ext, &self.core, row, now, 0, widths, cx)
                             .into_iter()
                             .next()
                             .unwrap_or_else(|| div().into_any_element());
@@ -92,6 +94,7 @@ impl Workspace {
                         let toggle = workspace.clone();
                         nested_cell(
                             cell,
+                            first,
                             nesting(row, None, ui, all_worktrees),
                             id,
                             cx,
@@ -110,7 +113,7 @@ impl Workspace {
                         .into_any_element(),
                 };
                 let name = div()
-                    .flex_grow(WIDTHS[0])
+                    .flex_grow(first)
                     .flex_basis(px(0.0))
                     .min_w_0()
                     .overflow_hidden()
@@ -149,7 +152,7 @@ impl Workspace {
                     });
                 match row {
                     Some(row) => {
-                        let cells = row_cells(&ext, &self.core, row, now, 1, cx);
+                        let cells = row_cells(&ext, &self.core, row, now, 1, widths, cx);
                         let mut actions = Self::row_actions(i, row, cx);
                         actions.extend(Self::node_actions(i, node, true, opening, cx));
                         let group = SharedString::from(format!("tree-row-{i}"));
