@@ -718,6 +718,54 @@ fn diffs_and_churn() {
 }
 
 #[test]
+fn records_and_storage_for_statistics() {
+    let (repo, path, cli) = setup();
+    repo.git(&["checkout", "-b", "feature"]).unwrap();
+    repo.write("big.bin", &"x".repeat(50_000)).unwrap();
+    repo.commit_all("add a big file").unwrap();
+    repo.git(&["checkout", "-"]).unwrap();
+    repo.git(&[
+        "merge",
+        "--no-ff",
+        "-m",
+        "Merge branch 'feature'",
+        "feature",
+    ])
+    .unwrap();
+    let mut records = Vec::new();
+    cli.walk_records(
+        &path,
+        "HEAD",
+        &mut |r| {
+            records.push(r);
+            ControlFlow::Continue(())
+        },
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].parents.len(), 2);
+    assert_eq!(records[0].subject, "Merge branch 'feature'");
+    assert!(records[0].files.is_empty());
+    assert!(
+        records
+            .iter()
+            .any(|r| r.files.iter().any(|f| f.path == "big.bin"))
+    );
+
+    let storage = cli.storage(&path, 2, &CancelToken::new()).unwrap();
+    assert!(storage.git_dir_bytes > 0);
+    assert!(storage.loose_objects > 0);
+    assert_eq!(storage.largest_blobs.len(), 2);
+    assert_eq!(storage.largest_blobs[0].path, "big.bin");
+    assert_eq!(storage.largest_blobs[0].bytes, 50_000);
+    assert!(storage.largest_blobs[0].reachable);
+    assert!(!storage.shallow);
+    let root = records.last().unwrap().oid;
+    assert_eq!(cli.count_commits(&path, "HEAD", root).unwrap(), Some(2));
+}
+
+#[test]
 fn branch_upstream_configuration() {
     let (repo, path, cli) = setup();
     repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"])

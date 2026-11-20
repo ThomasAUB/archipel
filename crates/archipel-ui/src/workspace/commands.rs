@@ -81,6 +81,7 @@ impl Workspace {
             "repos.branch_all" => self.open_palette(PaletteKind::Branch, window, cx),
             "repos.tag_all" => self.open_palette(PaletteKind::Tag, window, cx),
             "repos.branches" => self.open_branches(window, cx),
+            "repos.stats" => self.open_stats(self.selection(), None, window, cx),
             "settings.merge_tool" => self.choose_merge_tool(window, cx),
             "settings.appearance" => {
                 let size = window.viewport_size();

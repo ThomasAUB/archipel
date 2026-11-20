@@ -45,6 +45,7 @@ mod quick_edit;
 mod repo_view;
 mod staging;
 mod startup;
+mod stats_panel;
 mod syntax;
 mod theme;
 mod widgets;

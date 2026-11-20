@@ -273,12 +273,23 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Hover buttons of a project repo or worktree node: a new worktree on
-    /// a repo; open, terminal, lock and remove (or prune) on a worktree.
+    /// Hover buttons of a project repo or worktree node: statistics and a
+    /// new worktree on a repo; open, terminal, lock and remove (or prune) on
+    /// a worktree.
     fn row_actions(i: usize, row: &DashboardRow, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let id = row.id;
         let Some(info) = row.worktree.clone() else {
             return vec![
+                button(
+                    SharedString::from(format!("tree-stats-{i}")),
+                    "Statistics",
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_stats(vec![id], Some(id), window, cx);
+                }))
+                .into_any_element(),
                 button(
                     SharedString::from(format!("tree-new-wt-{i}")),
                     "+ Worktree",

@@ -325,6 +325,7 @@ pub struct ActionRegistry {
 impl ActionRegistry {
     /// The built-in actions.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one registration per action
     pub fn with_builtins() -> Self {
         let mut r = Self::default();
         let ui = |id: &'static str, label: &'static str, available: fn(&ActionContext) -> bool| {
@@ -362,6 +363,11 @@ impl ActionRegistry {
         r.register(ui(
             "repos.branches",
             "Clean up branches: merged and stale, on selected repos…",
+            with_project,
+        ));
+        r.register(ui(
+            "repos.stats",
+            "Statistics: contribution, commit sizes, lead time, releases, weight…",
             with_project,
         ));
         r.register(ui("settings.appearance", "Appearance and themes…", always));

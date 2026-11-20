@@ -1,5 +1,5 @@
 //! Overlays over the whole window: palettes (project switcher, actions,
-//! prompts), the commit, forge and branches panels.
+//! prompts), the commit, forge, branches and statistics panels.
 
 use archipel_app::Command;
 use archipel_app::forge::pick_remote;
@@ -16,6 +16,7 @@ use crate::branches_panel::{BranchesPanel, BranchesPanelEvent};
 use crate::commit_panel::{CommitPanel, CommitPanelEvent};
 use crate::forge_panel::{ForgePanel, ForgePanelEvent, ForgeTab};
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
+use crate::stats_panel::{StatsPanel, StatsPanelEvent};
 
 use super::Workspace;
 
@@ -61,6 +62,7 @@ pub(super) enum Overlay {
     Commit(Entity<CommitPanel>),
     Forge(Entity<ForgePanel>),
     Branches(Entity<BranchesPanel>),
+    Stats(Entity<StatsPanel>),
     NewRepo(Entity<crate::new_repo_dialog::NewRepoDialog>),
     Publish(Entity<crate::publish_dialog::PublishDialog>),
     NewWorktree(Entity<crate::worktree_dialog::NewWorktreeDialog>),
@@ -89,6 +91,7 @@ impl Workspace {
                 Overlay::Commit(c) => c.clone().into_any_element(),
                 Overlay::Forge(f) => f.clone().into_any_element(),
                 Overlay::Branches(b) => b.clone().into_any_element(),
+                Overlay::Stats(s) => centered(s.clone().into_any_element()),
                 Overlay::NewRepo(d) => centered(d.clone().into_any_element()),
                 Overlay::Publish(d) => centered(d.clone().into_any_element()),
                 Overlay::NewWorktree(d) => centered(d.clone().into_any_element()),
@@ -685,5 +688,32 @@ impl Workspace {
             },
         );
         self.show_overlay(Overlay::Branches(panel), sub, cx);
+    }
+
+    /// Opens the statistics panel (issue #93) on `scope` (every shown repo
+    /// when empty), showing `focus` first.
+    pub(super) fn open_stats(
+        &mut self,
+        scope: Vec<RepoId>,
+        focus: Option<RepoId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.core.project().is_none() {
+            return;
+        }
+        let core = self.core.clone();
+        let panel = cx.new(|cx| StatsPanel::new(core, scope, focus, cx));
+        let sub = cx.subscribe_in(
+            &panel,
+            window,
+            |this: &mut Self, _, event: &StatsPanelEvent, window, cx| {
+                match event {
+                    StatsPanelEvent::Closed => this.close_overlay(window, cx),
+                }
+                cx.notify();
+            },
+        );
+        self.show_overlay(Overlay::Stats(panel), sub, cx);
     }
 }
