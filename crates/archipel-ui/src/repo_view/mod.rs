@@ -552,6 +552,10 @@ impl Staging for RepoView {
         }
     }
 
+    fn keys_focus(&self) -> &FocusHandle {
+        &self.focus
+    }
+
     fn click_file(
         &mut self,
         file: String,

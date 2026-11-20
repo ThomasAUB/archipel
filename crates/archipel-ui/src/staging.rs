@@ -24,8 +24,8 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Div, Entity, EventEmitter, SharedString, Stateful, Subscription, Window,
-    div, px,
+    AnyElement, Context, Div, Entity, EventEmitter, FocusHandle, SharedString, Stateful,
+    Subscription, Window, div, px,
 };
 
 use crate::armed::Armed;
@@ -260,6 +260,9 @@ pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {
     fn report(&mut self, text: String, cx: &mut Context<Self>);
     /// The file whose diff is open, highlighted.
     fn open_file(&self) -> Option<(&str, DiffSide)>;
+    /// The focus whose keys the view hears: a press in its diff moves the
+    /// focus there, so Ctrl+C copies the text selected in it.
+    fn keys_focus(&self) -> &FocusHandle;
     /// A click on a file: opens its diff, or closes it when open.
     fn click_file(
         &mut self,

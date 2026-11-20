@@ -84,9 +84,6 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !unmodified(e.keystroke.modifiers) {
-            return false;
-        }
         if self.overlay.is_some() || self.menu.is_some() {
             return false;
         }
@@ -98,7 +95,18 @@ impl Workspace {
             return false;
         };
         let keys_free = self.focus.is_focused(window) || pane.read(cx).is_focused(window);
-        if on_dashboard && keys_free && pane.update(cx, |p, cx| p.on_key(&e.keystroke.key, cx)) {
+        if !on_dashboard || !keys_free {
+            return false;
+        }
+        // Ctrl+C / Esc on the open diff's selected text first.
+        if pane.update(cx, |p, cx| p.on_diff_key(e, cx)) {
+            cx.stop_propagation();
+            return true;
+        }
+        if !unmodified(e.keystroke.modifiers) {
+            return false;
+        }
+        if pane.update(cx, |p, cx| p.on_key(&e.keystroke.key, cx)) {
             cx.stop_propagation();
             return true;
         }

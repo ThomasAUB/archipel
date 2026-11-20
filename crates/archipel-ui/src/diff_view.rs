@@ -8,6 +8,12 @@
 //! it to the other (LF ↔ CRLF). Lines are syntax highlighted after the
 //! file's extension (see [`crate::syntax`]). A one-file diff of an image
 //! shows the images instead (see [`crate::image_view::compare`]).
+//!
+//! Text is selected with the mouse (drag, double-click a word, triple-click
+//! a line, Shift+click extends) and copied with Ctrl+C or the right-click
+//! menu, which also copies as a patch, a line or a hunk (see [`select`]).
+//! On a working-copy diff a click still picks lines and a double-click
+//! still edits: only a drag selects text there.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
@@ -22,8 +28,10 @@ use archipel_ops::patch::selection_patch;
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, Entity, HighlightStyle, ImageFormat, SharedString,
-    Stateful, StyledText, UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, DispatchPhase, Div, Entity,
+    EntityId, HighlightStyle, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Stateful, StyledText, TextLayout,
+    UniformList, UniformListScrollHandle, Window, canvas, div, point, px, uniform_list,
 };
 
 use crate::file_edit::{self, LineEnding};
@@ -33,7 +41,11 @@ use crate::merge_view;
 use crate::staging::{Staging, arm_discard};
 use crate::syntax::{self, LineHighlighter, Spans};
 use crate::theme::{color, mono_font, row_height};
-use crate::widgets::{button, scroll_list};
+use crate::widgets::{button, context_menu, menu_item, popup_at, scroll_list, unmodified};
+
+mod select;
+
+use select::{Caret, TextSelection};
 
 /// One fixed-height row of a flattened diff.
 #[derive(Clone, Copy)]
@@ -82,6 +94,12 @@ pub(crate) struct DiffDoc {
     /// Selected changed lines. A reloaded diff is a new doc, so the
     /// selection never outlives the lines it names.
     selection: Mutex<LineSelection>,
+    /// Selected text, kept like the line selection.
+    text: Mutex<TextSelection>,
+    /// The right-click menu: where it opened, on which row.
+    menu: Mutex<Option<(Point<Pixels>, usize)>>,
+    /// Where the list was last drawn, for drags past its edges.
+    view: Mutex<Option<Bounds<Pixels>>>,
     /// Syntax colors, per `(file, hunk)`, computed as the hunk's lines are
     /// first shown; `None` for a file shown as plain text.
     colors: Mutex<HashMap<(usize, usize), Option<HunkColors>>>,
@@ -236,6 +254,9 @@ impl DiffDoc {
             lineno_width: max_lineno.to_string().len(),
             endings,
             selection: Mutex::default(),
+            text: Mutex::default(),
+            menu: Mutex::default(),
+            view: Mutex::default(),
             colors: Mutex::default(),
         }
     }
@@ -446,6 +467,7 @@ pub(crate) fn diff_list<V: Staging>(
 ) -> AnyElement {
     let count = doc.rows.len();
     let scroll_id = SharedString::from(format!("{id}-scroll"));
+    let rows_doc = doc.clone();
     let list = uniform_list(
         id,
         count,
@@ -457,12 +479,239 @@ pub(crate) fn diff_list<V: Staging>(
                 .collect()
         }),
     );
-    let list = scroll_list(scroll_id, list);
-    match scroll {
-        Some(handle) => list.handle(handle),
-        None => list,
+    SelectableList {
+        scroll_id,
+        list,
+        scroll: scroll.cloned(),
+        doc: rows_doc,
+        view: cx.entity_id(),
     }
     .into_any_element()
+}
+
+/// A diff's list with what selecting its text needs around it: a scroll
+/// handle a drag past the list's top or bottom edge scrolls, the button's
+/// release heard anywhere, and the right-click menu.
+#[derive(IntoElement)]
+struct SelectableList {
+    scroll_id: SharedString,
+    list: UniformList,
+    scroll: Option<UniformListScrollHandle>,
+    doc: Arc<DiffDoc>,
+    /// The view drawing the list, redrawn as the selection changes.
+    view: EntityId,
+}
+
+impl RenderOnce for SelectableList {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let handle = self.scroll.unwrap_or_else(|| {
+            window
+                .use_keyed_state(
+                    SharedString::from(format!("{}-handle", self.scroll_id)),
+                    cx,
+                    |_, _| UniformListScrollHandle::new(),
+                )
+                .read(cx)
+                .clone()
+        });
+        let (doc, view) = (self.doc, self.view);
+        let menu = doc
+            .menu()
+            .map(|(at, row)| render_menu(&doc, at, row, view, cx));
+        let edges = {
+            let (doc, handle) = (doc.clone(), handle.clone());
+            canvas(
+                |_, _, _| (),
+                move |bounds, (), window, cx| {
+                    doc.set_view_bounds(bounds);
+                    if !doc.text_selection().dragging {
+                        return;
+                    }
+                    let row_h = row_height(cx);
+                    let moved = doc.clone();
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        if e.pressed_button != Some(MouseButton::Left) {
+                            moved.release(); // released out of the window
+                            cx.notify(view);
+                        } else if drag_past_edge(&moved, &handle, bounds, row_h, e.position) {
+                            cx.notify(view);
+                        }
+                    });
+                    window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble && e.button == MouseButton::Left {
+                            doc.release();
+                            cx.notify(view);
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full()
+        };
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(scroll_list(self.scroll_id, self.list).handle(&handle))
+            .child(edges)
+            .children(menu)
+    }
+}
+
+/// A drag held above or below the list scrolls it that way, the
+/// selection following to the first or last row shown. Whether it did.
+fn drag_past_edge(
+    doc: &DiffDoc,
+    handle: &UniformListScrollHandle,
+    bounds: Bounds<Pixels>,
+    row_h: Pixels,
+    at: Point<Pixels>,
+) -> bool {
+    let rows = doc.rows.len();
+    if rows == 0 || row_h <= px(0.0) {
+        return false;
+    }
+    let scroll = handle.0.borrow().base_handle.clone();
+    let offset = scroll.offset();
+    let row_at = |y: Pixels| {
+        // Rows are counted from the top; a fraction is the row it is in.
+        let i = (y / row_h).floor().max(0.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let i = i as usize;
+        i.min(rows - 1)
+    };
+    // Faster the further past the edge, up to three rows a move.
+    let (y, caret) = if at.y < bounds.top() {
+        let y = (offset.y + (bounds.top() - at.y).min(row_h * 3.0)).min(px(0.0));
+        (y, Caret::new(row_at(-y), 0))
+    } else if at.y > bounds.bottom() {
+        let step = (at.y - bounds.bottom()).min(row_h * 3.0);
+        let y = (offset.y - step).max(-scroll.max_offset().y);
+        let last = row_at(-y + bounds.size.height - px(1.0));
+        (y, Caret::new(last, doc.row_text(last).len()))
+    } else {
+        return false;
+    };
+    scroll.set_offset(point(offset.x, y));
+    doc.drag_to(caret);
+    true
+}
+
+/// The text position under `at` on the line of `row`, laid out as
+/// `layout`. Past the list's right edge, where long lines are cut, it is
+/// the line's end, so a drag there takes whole lines.
+fn caret_at(doc: &DiffDoc, row: usize, layout: &TextLayout, at: Point<Pixels>) -> Caret {
+    let len = doc.row_text(row).len();
+    let past_edge = doc
+        .view_bounds()
+        .is_some_and(|b| at.x >= b.right() - px(24.0));
+    let col = if past_edge {
+        len
+    } else {
+        // On the text's own line, whatever the height in the row.
+        let y = layout.bounds().center().y;
+        match layout.index_for_position(point(at.x, y)) {
+            Ok(i) | Err(i) => i,
+        }
+    };
+    Caret::new(row, col.min(len))
+}
+
+/// The right-click menu on row `row`: Copy and Copy as patch with a text
+/// selection, Copy line on a line, Copy hunk in a hunk.
+fn render_menu(
+    doc: &Arc<DiffDoc>,
+    at: Point<Pixels>,
+    row: usize,
+    view: EntityId,
+    cx: &App,
+) -> AnyElement {
+    let mut items: Vec<(&'static str, String)> = Vec::new();
+    if let Some(text) = doc.selected_text() {
+        items.push(("Copy", text));
+    }
+    if let Some(patch) = doc.selected_patch() {
+        items.push(("Copy as patch", patch));
+    }
+    if doc.line_at(row).is_some() {
+        items.push(("Copy line", doc.row_text(row).to_owned()));
+    }
+    if let Some(hunk) = doc.hunk_rows(row) {
+        items.push(("Copy hunk", doc.patch_text(hunk)));
+    }
+    let close = doc.clone();
+    let entries = items.into_iter().map(|(label, text)| {
+        let doc = doc.clone();
+        menu_item(
+            SharedString::from(format!("diff-menu-{label}")),
+            label,
+            false,
+            cx,
+        )
+        .on_click(move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            doc.close_menu();
+            cx.notify(view);
+        })
+    });
+    popup_at(
+        at,
+        context_menu(cx)
+            .on_mouse_down_out(move |_, _, cx| {
+                close.close_menu();
+                cx.notify(view);
+            })
+            .children(entries),
+    )
+    .into_any_element()
+}
+
+/// A key on a view showing the diff `doc`: Ctrl+C copies the selected
+/// text (Ctrl+Shift+C as a patch); Esc closes the right-click menu, else
+/// drops the selected text. Whether the key was used.
+pub(crate) fn on_key<V: Staging>(
+    v: &mut V,
+    doc: &DiffDoc,
+    e: &KeyDownEvent,
+    cx: &mut Context<V>,
+) -> bool {
+    // The diff is not shown while its file is edited or merged.
+    if v.panel().edit.is_some() || v.panel().merge.is_some() {
+        return false;
+    }
+    let m = e.keystroke.modifiers;
+    let used = match e.keystroke.key.as_str() {
+        "c" if (m.control || m.platform) && !m.alt => {
+            let text = if m.shift {
+                doc.selected_patch()
+            } else {
+                doc.selected_text()
+            };
+            let Some(text) = text else {
+                return false;
+            };
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            true
+        }
+        "escape" if unmodified(m) => {
+            doc.close_menu() || {
+                let had = doc.has_text();
+                doc.clear_text();
+                had
+            }
+        }
+        _ => false,
+    };
+    if used {
+        cx.notify();
+    }
+    used
 }
 
 /// Renders one row of a flattened diff (all rows share one height).
@@ -504,56 +753,35 @@ fn render_diff_row<V: Staging>(
             .text_color(color(cx, T::FgMuted))
             .child(note)
             .into_any_element(),
-        DiffRow::Hunk(f, h) => {
-            let file = &doc.files[f];
-            let hunk = &file.hunks[h];
-            let mut header = base
-                .justify_between()
-                .text_xs()
-                .text_color(color(cx, T::FgSubtle))
-                .child(format!(
-                    "@@ -{},{} +{},{} @@ {}",
-                    hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, hunk.header
-                ));
-            if let Some(side) = side {
-                let path = file.display_path();
-                let buttons = PartAction::for_side(side).iter().map(|&action| {
-                    let key = format!("\0hunk-{path}-{h}");
-                    let label = if action == PartAction::Discard && armed == Some(key.as_str()) {
-                        "Discard hunk?".to_owned()
-                    } else {
-                        format!("{} hunk", action.verb())
-                    };
-                    let doc = doc.clone();
-                    button(
-                        SharedString::from(format!("hunk-{}-{path}-{h}", action.verb())),
-                        label,
-                        cx,
-                    )
-                    // The patch is built on click, not on every frame.
-                    .on_click(cx.listener(move |v: &mut V, _, _, cx| {
-                        let all = (0..doc.files[f].hunks[h].lines.len()).collect();
-                        run_part(v, &doc, f, &[(h, all)], action, key.clone(), cx);
-                    }))
-                });
-                header = header.child(div().flex().flex_none().gap_1().children(buttons));
-            }
-            header.into_any_element()
-        }
+        DiffRow::Hunk(f, h) => render_hunk_header(base, doc, index, (f, h), side, armed, cx),
         DiffRow::Line(f, h, l) => {
             let line = &doc.files[f].hunks[h].lines[l];
             let selectable = side.is_some() && line.origin != LineOrigin::Context;
             let selected = selectable && doc.is_selected(f, h, l);
             let spans = doc.spans(f, h, l);
-            let row = diff_line_row(line, &spans, doc.lineno_width, selected, cx);
+            let text = doc
+                .text_selection()
+                .on_row(index, doc.row_text(index).len());
+            let (row, layout) = diff_line_row(line, &spans, doc.lineno_width, selected, text, cx);
             let editable = side.is_some() && doc.editable(f);
+            let row = text_handlers(
+                row.id(SharedString::from(format!("diff-line-{index}"))),
+                doc,
+                index,
+                layout,
+                editable,
+                cx,
+            );
             if !selectable && !editable {
                 return row.into_any_element();
             }
             let doc = doc.clone();
-            row.id(SharedString::from(format!("diff-line-{index}")))
-                .when(selectable, Styled::cursor_pointer)
+            row.when(selectable, Styled::cursor_pointer)
                 .on_click(cx.listener(move |v: &mut V, e: &ClickEvent, window, cx| {
+                    // A drag (or Shift+click) selected text: no click.
+                    if doc.text_selection().dragged {
+                        return;
+                    }
                     if editable && e.click_count() >= 2 {
                         // The first click of the two selected the line.
                         doc.clear_selection();
@@ -572,16 +800,126 @@ fn render_diff_row<V: Staging>(
     }
 }
 
+/// A hunk's header row: its range and function, with the stage /
+/// unstage / discard buttons on a working copy; a right-click opens the
+/// menu (Copy hunk).
+fn render_hunk_header<V: Staging>(
+    base: Div,
+    doc: &Arc<DiffDoc>,
+    index: usize,
+    (f, h): (usize, usize),
+    side: Option<DiffSide>,
+    armed: Option<&str>,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let file = &doc.files[f];
+    let hunk = &file.hunks[h];
+    let mut header = base
+        .justify_between()
+        .text_xs()
+        .text_color(color(cx, T::FgSubtle))
+        .child(format!(
+            "@@ -{},{} +{},{} @@ {}",
+            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines, hunk.header
+        ));
+    if let Some(side) = side {
+        let path = file.display_path();
+        let buttons = PartAction::for_side(side).iter().map(|&action| {
+            let key = format!("\0hunk-{path}-{h}");
+            let label = if action == PartAction::Discard && armed == Some(key.as_str()) {
+                "Discard hunk?".to_owned()
+            } else {
+                format!("{} hunk", action.verb())
+            };
+            let doc = doc.clone();
+            button(
+                SharedString::from(format!("hunk-{}-{path}-{h}", action.verb())),
+                label,
+                cx,
+            )
+            // The patch is built on click, not on every frame.
+            .on_click(cx.listener(move |v: &mut V, _, _, cx| {
+                let all = (0..doc.files[f].hunks[h].lines.len()).collect();
+                run_part(v, &doc, f, &[(h, all)], action, key.clone(), cx);
+            }))
+        });
+        header = header.child(div().flex().flex_none().gap_1().children(buttons));
+    }
+    let doc = doc.clone();
+    header
+        .id(SharedString::from(format!("diff-hunk-{index}")))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |v: &mut V, e: &MouseDownEvent, window, cx| {
+                doc.open_menu(e.position, index);
+                v.keys_focus().focus(window, cx);
+                cx.notify();
+            }),
+        )
+        .into_any_element()
+}
+
+/// The mouse on a diff line's row: a press starts selecting text (a
+/// double-click a word, a triple-click the line, Shift extends), a move
+/// with the button held drags the selection, a right-click opens the
+/// menu. On an `editable` working copy a double-click edits instead.
+fn text_handlers<V: Staging>(
+    row: Stateful<Div>,
+    doc: &Arc<DiffDoc>,
+    index: usize,
+    layout: TextLayout,
+    editable: bool,
+    cx: &mut Context<V>,
+) -> Stateful<Div> {
+    let (down, moved, right) = (doc.clone(), doc.clone(), doc.clone());
+    let held = layout.clone();
+    row.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |v: &mut V, e: &MouseDownEvent, window, cx| {
+            down.close_menu();
+            if editable && e.click_count >= 2 {
+                return;
+            }
+            let at = caret_at(&down, index, &layout, e.position);
+            down.press(at, e.click_count, e.modifiers.shift);
+            // Ctrl+C reaches the view's keys from there.
+            v.keys_focus().focus(window, cx);
+            cx.notify();
+        }),
+    )
+    .on_mouse_move(cx.listener(move |_v: &mut V, e: &MouseMoveEvent, _, cx| {
+        if !moved.text_selection().dragging {
+            return;
+        }
+        if e.pressed_button != Some(MouseButton::Left) {
+            moved.release(); // released out of the view
+            cx.notify();
+        } else if moved.drag_to(caret_at(&moved, index, &held, e.position)) {
+            cx.notify();
+        }
+    }))
+    .on_mouse_down(
+        MouseButton::Right,
+        cx.listener(move |v: &mut V, e: &MouseDownEvent, window, cx| {
+            right.open_menu(e.position, index);
+            v.keys_focus().focus(window, cx);
+            cx.notify();
+        }),
+    )
+}
+
 /// One line of a hunk: line-number gutter, +/- marker, then the file's
-/// text, colored by `spans`. A `selected` line has its gutter in the accent
-/// color.
+/// text, colored by `spans`, with the `text` selected on it (and whether
+/// its line break is) drawn over them, and the text's layout. A
+/// `selected` line has its gutter in the accent color.
 fn diff_line_row(
     line: &DiffLine,
     spans: &[(Range<usize>, T)],
     lineno_width: usize,
     selected: bool,
+    text: Option<(Range<usize>, bool)>,
     cx: &App,
-) -> Div {
+) -> (Div, TextLayout) {
     let base = div()
         .w_full()
         .h(row_height(cx))
@@ -597,10 +935,27 @@ fn diff_line_row(
     // The font is monospace, so padding aligns the gutter.
     let width = lineno_width;
     let number = |n: Option<u32>| n.map_or_else(String::new, |n| n.to_string());
+    // Over the syntax and diff colors, in light and dark themes alike.
+    let sel_bg = color(cx, T::Accent).opacity(0.35);
+    let range = text.as_ref().map(|(r, _)| r);
+    let styled = StyledText::new(line.content.trim_end_matches('\r').to_owned()).with_highlights(
+        select::runs(spans, range)
+            .into_iter()
+            .map(|(range, token, selected)| {
+                let style = HighlightStyle {
+                    color: token.map(|t| color(cx, t)),
+                    background_color: selected.then_some(sel_bg),
+                    ..HighlightStyle::default()
+                };
+                (range, style)
+            }),
+    );
+    let layout = styled.layout().clone();
     // Gutter (line numbers and marker) sits apart from the file's text,
     // on the panel color behind a separator: the marker must not read as
     // part of the line.
-    base.font_family(mono_font(cx))
+    let row = base
+        .font_family(mono_font(cx))
         .text_xs()
         .when_some(bg, gpui_kit::Styled::bg)
         .child(
@@ -626,17 +981,17 @@ fn diff_line_row(
                         .child(marker),
                 ),
         )
-        .child(div().pl_2().child(
-            StyledText::new(line.content.trim_end_matches('\r').to_owned()).with_highlights(
-                spans.iter().map(|(range, token)| {
-                    let style = HighlightStyle {
-                        color: Some(color(cx, *token)),
-                        ..HighlightStyle::default()
-                    };
-                    (range.clone(), style)
-                }),
-            ),
-        ))
+        .child(div().pl_2().cursor_text().child(styled))
+        .when(text.is_some_and(|(_, line_break)| line_break), |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .w(px(6.0))
+                    .h(row_height(cx) * 0.7)
+                    .bg(sel_bg),
+            )
+        });
+    (row, layout)
 }
 
 /// An open diff with its header (title, note, keys), in place of the
@@ -659,11 +1014,7 @@ pub(crate) fn render_open<V: Staging>(
     // A working-copy diff is titled with its file.
     let editing = file_edit::current(v, side.map(|_| title.as_str()), cx);
     let (image, svg) = image_part(v, side, doc.as_ref(), editing, cx);
-    let keys = if side.is_some() && image.is_none() {
-        "click lines to select · double-click edits · ↑↓ files · Esc closes"
-    } else {
-        "↑↓ files · Esc closes"
-    };
+    let keys = keys_hint(side, image.is_some());
     let selection = side.filter(|_| !editing).zip(
         doc.as_ref()
             .and_then(|d| d.selected().map(|s| (d.clone(), s))),
@@ -757,6 +1108,17 @@ pub(crate) fn render_open<V: Staging>(
         .child(header)
         .child(body)
         .into_any_element()
+}
+
+/// The keys and clicks an open diff takes, in its header.
+fn keys_hint(side: Option<DiffSide>, image: bool) -> &'static str {
+    if image {
+        "↑↓ files · Esc closes"
+    } else if side.is_some() {
+        "click lines to select · drag selects text · double-click edits · ↑↓ files · Esc closes"
+    } else {
+        "drag selects text · right-click copies · ↑↓ files · Esc closes"
+    }
 }
 
 /// The image diff shown in place of the lines, if any (none while

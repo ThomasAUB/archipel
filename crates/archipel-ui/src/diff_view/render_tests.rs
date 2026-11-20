@@ -53,8 +53,12 @@ pub(crate) fn context() -> HeadlessAppContext {
     cx
 }
 
-/// Diff lines stacked as in the diff view.
-struct Lines(Vec<DiffLine>);
+/// Diff lines stacked as in the diff view, each with the text selected
+/// on it.
+struct Lines(Vec<(DiffLine, Selected)>);
+
+/// Text selected on a line, and whether its line break is.
+type Selected = Option<(std::ops::Range<usize>, bool)>;
 
 impl Render for Lines {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -67,7 +71,7 @@ impl Render for Lines {
             .children(
                 self.0
                     .iter()
-                    .map(|l| diff_line_row(l, &[], LINENO_WIDTH, false, cx)),
+                    .map(|(l, sel)| diff_line_row(l, &[], LINENO_WIDTH, false, sel.clone(), cx).0),
             )
     }
 }
@@ -97,6 +101,10 @@ struct Shot {
 }
 
 fn render(lines: Vec<DiffLine>) -> (HeadlessAppContext, Shot) {
+    render_selected(lines.into_iter().map(|l| (l, None)).collect())
+}
+
+fn render_selected(lines: Vec<(DiffLine, Selected)>) -> (HeadlessAppContext, Shot) {
     let mut cx = context();
     let count = lines.len();
     let handle: AnyWindowHandle = cx
@@ -244,5 +252,31 @@ fn text_starts_at_the_same_column_for_every_origin() {
     assert!(
         starts.iter().all(|&x| x == starts[0]),
         "text columns differ: {starts:?}"
+    );
+}
+
+/// Selected text is drawn over the line: blanks show it, and so does a
+/// selected line break, even on an empty line.
+#[test]
+fn selected_text_is_drawn() {
+    let (mut cx, shot) = render_selected(vec![
+        (line(LineOrigin::Context, "    "), None),
+        (line(LineOrigin::Context, "    "), Some((0..4, false))),
+        (line(LineOrigin::Context, ""), Some((0..0, true))),
+    ]);
+    let bg = token(&mut cx, T::BgApp);
+    let from = shot.text_area_start(0, bg);
+    assert_eq!(
+        shot.ink_start(0, from, bg),
+        None,
+        "blanks alone draw nothing"
+    );
+    assert!(
+        shot.ink_start(1, from, bg).is_some(),
+        "selected blanks must be drawn"
+    );
+    assert!(
+        shot.ink_start(2, from, bg).is_some(),
+        "a selected line break must be drawn"
     );
 }

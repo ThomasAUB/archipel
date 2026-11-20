@@ -287,6 +287,12 @@ impl RepoView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(doc) = self.open_doc()
+            && diff_view::on_key(self, &doc, event, cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         let k = &event.keystroke;
         let m = k.modifiers;
         if self.open_diff.is_none() && !m.alt {
@@ -411,6 +417,15 @@ impl RepoView {
             });
         })
         .detach();
+    }
+
+    /// The diff open in place of the graph, once loaded.
+    fn open_doc(&self) -> Option<Arc<DiffDoc>> {
+        match &self.open_diff {
+            Some(OpenDiff::Commit(_, doc)) => Some(Arc::clone(doc)),
+            Some(OpenDiff::Worktree(d)) => d.doc.clone(),
+            Some(OpenDiff::File(_)) | None => None,
+        }
     }
 
     /// The open diff, in place of the graph: a header naming it, then the

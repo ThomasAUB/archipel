@@ -120,6 +120,15 @@ impl QuickEdit {
         ))
     }
 
+    /// A key for the open diff's text selection (Ctrl+C copies it, Esc
+    /// drops it). Whether the key was used.
+    pub fn on_diff_key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let Some(doc) = self.open_diff.as_ref().and_then(|d| d.doc.clone()) else {
+            return false;
+        };
+        diff_view::on_key(self, &doc, e, cx)
+    }
+
     /// A key while the dashboard shows: Esc closes the diff, else the
     /// pane; ↑ / ↓ move through the files while a diff is open. Returns
     /// whether the key was used.
@@ -241,7 +250,7 @@ impl Render for QuickEdit {
             .track_focus(&self.focus)
             // Only Esc from here: ↑ / ↓ belong to the inputs.
             .on_key_down(cx.listener(|v, e: &KeyDownEvent, _, cx| {
-                if e.keystroke.key == "escape" && v.on_key("escape", cx) {
+                if v.on_diff_key(e, cx) || e.keystroke.key == "escape" && v.on_key("escape", cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -295,6 +304,10 @@ impl Staging for QuickEdit {
 
     fn open_file(&self) -> Option<(&str, DiffSide)> {
         self.open_diff.as_ref().map(|d| (d.file.as_str(), d.side))
+    }
+
+    fn keys_focus(&self) -> &FocusHandle {
+        &self.focus
     }
 
     fn click_file(
