@@ -25,6 +25,7 @@ use crate::requests::{
     PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleUpdate,
     TagRequest,
 };
+use crate::stats::{CommitRecord, RepoStorage};
 use crate::submodule::SubmoduleInfo;
 use crate::summary::RepoSummary;
 use crate::time::Timestamp;
@@ -131,6 +132,44 @@ pub trait ChurnReader: Send + Sync {
         sink: &mut dyn FnMut(CommitChurn) -> ControlFlow<()>,
         cancel: &CancelToken,
     ) -> Result<(), GitError>;
+
+    /// Streams the commits reachable from `rev`, newest first, with their
+    /// parents, author and line changes (repository statistics). The default
+    /// streams nothing.
+    fn walk_records(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        sink: &mut dyn FnMut(CommitRecord) -> ControlFlow<()>,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        let _ = (repo, rev, sink, cancel);
+        Ok(())
+    }
+
+    /// Number of commits reachable from `rev` and not from `exclude`
+    /// (`git rev-list --count rev ^exclude`). The default does not know.
+    fn count_commits(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        exclude: Oid,
+    ) -> Result<Option<u64>, GitError> {
+        let _ = (repo, rev, exclude);
+        Ok(None)
+    }
+
+    /// What the repository weighs on disk, with its `largest` biggest blobs.
+    /// The default reports nothing.
+    fn storage(
+        &self,
+        repo: &RepoPath,
+        largest: usize,
+        cancel: &CancelToken,
+    ) -> Result<RepoStorage, GitError> {
+        let _ = (repo, largest, cancel);
+        Ok(RepoStorage::default())
+    }
 }
 
 /// Which side of the working copy to diff.

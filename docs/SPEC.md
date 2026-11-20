@@ -137,7 +137,7 @@ Always confirmed through a menu, never a silent action:
 - **Undo** for every local operation; a push gets a confirmed compensating action instead (revert or force-with-lease). Undo is refused, with an explanation, when it would lose work. Details: [PLAN.md](PLAN.md) §2.4.
 
 ### 7. Statistics — P1
-> In the desktop app so far: the Branches Panel (merged-not-deleted and stale branches across repos, batch delete). Activity and hotspots are computed (`archipel-cli stats`) but not shown yet.
+> In the desktop app so far: the Branches Panel (merged-not-deleted and stale branches across repos, batch delete) and the Statistics panel (phase 1, below). Activity and churn hotspots are also computed incrementally (`archipel-cli stats`).
 
 Computed locally, per repo and aggregated per project. Three views in v1:
 - activity over time (commits / week) per author;
@@ -145,6 +145,16 @@ Computed locally, per repo and aggregated per project. Three views in v1:
 - file hotspots by churn (lines added / removed).
 
 Anything else waits for real usage.
+
+**Statistics panel (phase 1).** Opened from the dashboard and the tree view: the **Statistics…** toolbar chip (the selected repos, all when none), **Statistics…** in the row menu (that repo, or the selection), the **Statistics** hover button of a tree repo node, and the `repos.stats` action. It reads the history of each repo's default branch (`HEAD` without one; worktrees stand for their repo) in the background, four repos at a time, and shows the project (all repos together) or one repo, picked with chips. Closing it cancels the reads. Charts, each with its values on hover:
+- KPI tiles: commits, contributors, median commit size, median lead time to merge, unreleased commits, Git size.
+- **Contribution**: share of commits and of changed lines per author (merges excluded; `.mailmap` applied, then the emails used under one name, ignoring case, count as one person), as a donut and bars; colors follow the person across repos.
+- **Activity**: commits per week over the last year.
+- **Commit size**: histograms of lines and files per commit; per author the median and 90th percentile, tiny (≤ 2 lines) and huge (> 1000 lines) commits; the largest commits; streaks of 3+ tiny commits in a row by one author.
+- **Churn against age**: files first committed 180+ days ago and changed at least twice in the last 90 days, ranked by recent commits weighted by the log of the age, as a scatter plot and a list.
+- **Lead time to merge**: for each merge on the first-parent line, the time from the oldest commit it brought to the merge, from local history alone (no forge); scatter over time (log scale), median, 90th percentile, slowest merges.
+- **Tags and releases**: tags on a time line per repo, the median time between them, and the commits of the walked branch not in the latest tag (unreleased work), even when that tag is on another branch.
+- **Repository weight**: size of the Git directory split into packs, loose objects and the rest; the largest blobs (and a few unreachable ones); suggestions: `git gc` (many loose objects or packs, large unreachable objects), Git LFS (blobs over 5 MiB without LFS), a shallow or partial clone (over 500 MiB of history).
 
 ### 8. Forge integration (GitHub, GitLab, …) — P2
 > Implemented for GitHub (and GitHub Enterprise Server) and GitLab (gitlab.com and self-hosted): sign-in by personal access token, "Pull request" dashboard column, "CI" dashboard column (latest run of the current branch, jobs on hover), pull requests across repos, open pull requests listed per repo and merged from Archipel, clone from an account, publish a new repository (ADR 0003). Not yet: OAuth device flow (it needs an OAuth application registered on each forge), Gitea / Forgejo, Bitbucket and Azure DevOps providers (links only).

@@ -2,6 +2,7 @@
 //! bytes and returns model types, so they are unit-tested on recorded outputs.
 
 pub mod diff;
+pub mod insight;
 pub mod numstat;
 pub mod progress;
 pub mod refs;

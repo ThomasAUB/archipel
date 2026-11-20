@@ -66,3 +66,63 @@ impl StatsDelta {
         self.activity.is_empty() && self.churn.is_empty()
     }
 }
+
+/// One commit of a history walk for the repository statistics: its parents,
+/// author and line changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitRecord {
+    /// Commit id.
+    pub oid: Oid,
+    /// Parent ids, first parent first.
+    pub parents: Vec<Oid>,
+    /// Author name.
+    pub author_name: String,
+    /// Author email (lowercased).
+    pub author_email: String,
+    /// Author date.
+    pub author_time: Timestamp,
+    /// Committer date.
+    pub commit_time: Timestamp,
+    /// Subject line.
+    pub subject: String,
+    /// Lines changed per path (empty for merges).
+    pub files: Vec<crate::diff::NumStat>,
+}
+
+/// One large blob of the history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobSize {
+    /// Blob id.
+    pub oid: Oid,
+    /// A path it was stored at (empty when unreachable).
+    pub path: String,
+    /// Whether a ref reaches it (else only `git gc --prune` would drop it).
+    pub reachable: bool,
+    /// Uncompressed size in bytes.
+    pub bytes: u64,
+}
+
+/// What a repository weighs on disk (`git count-objects -v`, the size of its
+/// Git directory, its largest blobs).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoStorage {
+    /// Size of the Git directory on disk, in bytes.
+    pub git_dir_bytes: u64,
+    /// Loose objects.
+    pub loose_objects: u64,
+    /// Disk space of the loose objects, in bytes.
+    pub loose_bytes: u64,
+    /// Objects in packs.
+    pub packed_objects: u64,
+    /// Number of packs.
+    pub packs: u64,
+    /// Disk space of the packs, in bytes.
+    pub pack_bytes: u64,
+    /// Largest blobs, largest first: the biggest reachable from a ref, and
+    /// a few unreachable ones left for `git gc` to prune.
+    pub largest_blobs: Vec<BlobSize>,
+    /// Whether the clone is shallow.
+    pub shallow: bool,
+    /// Whether Git LFS is set up (an `lfs` folder or `filter=lfs`).
+    pub lfs: bool,
+}

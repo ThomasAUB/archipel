@@ -29,6 +29,7 @@ mod config;
 mod default_branch;
 mod engine;
 mod error;
+mod insights;
 mod pause;
 mod provider;
 mod registry;
@@ -43,6 +44,12 @@ pub use config::{
 pub use default_branch::{DefaultBranch, detect_default_branch};
 pub use engine::{DeltaSize, StatsEngine, UpdateOutcome};
 pub use error::StatsError;
+pub use insights::{
+    Advice, AdviceLevel, AgingHotspot, AuthorSizes, BigCommit, CommitSizes, Contributor,
+    FILE_BUCKETS, HUGE_LINES, HistoryBuilder, Insights, InsightsConfig, LINE_BUCKETS, MergeLead,
+    OLD_DAYS, RECENT_DAYS, RepoHistory, RepoWeight, STREAK_MIN, TINY_LINES, TagCadence, TagPoint,
+    TinyStreak, human_bytes, latest_tag,
+};
 pub use pause::PauseToken;
 pub use provider::{RepoTarget, StatProvider, StatSources};
 pub use registry::{ProjectStats, ProviderResult, ProviderView, RepoStats, StatsRegistry};

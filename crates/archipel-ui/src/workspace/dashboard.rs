@@ -211,6 +211,18 @@ impl Workspace {
                 chip("view-branches", "Branches…", false, cx)
                     .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
             )
+            .child(
+                chip("view-stats", "Statistics…", false, cx)
+                    .tooltip(|_, cx| {
+                        TextTooltip::view(
+                            &["Statistics of the selected repos (all when none)".into()],
+                            cx,
+                        )
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_stats(this.selection(), None, window, cx);
+                    })),
+            )
             .when(hidden > 0 || ui.show_hidden, |d| {
                 d.child(
                     chip(

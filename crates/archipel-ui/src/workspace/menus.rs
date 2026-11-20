@@ -352,6 +352,20 @@ impl Workspace {
                     ),
                 )
             })
+            .child({
+                let label = if n > 1 {
+                    format!("Statistics of{plural}…")
+                } else {
+                    "Statistics…".to_owned()
+                };
+                let (scope, focus) = (targets.clone(), (n == 1).then_some(id));
+                menu_item("menu-stats", label, false, cx).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.menu = None;
+                        this.open_stats(scope.clone(), focus, window, cx);
+                    },
+                ))
+            })
             .children(self.ci_menu_item(id, cx))
             .children(self.ci_rerun_menu_item(&targets, cx))
             .child(self.forge_menu_item(id, targets, cx))

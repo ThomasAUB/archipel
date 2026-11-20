@@ -1,5 +1,7 @@
 //! Reader traits implemented with the CLI (also the fallback for `gix`).
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::ops::ControlFlow;
 use std::thread;
 
@@ -12,6 +14,7 @@ use archipel_model::ports::{
     RemoteReader, StashReader, StatusReader,
 };
 use archipel_model::refs::{BranchInfo, RefKind, RefTip, StashEntry, TagInfo};
+use archipel_model::stats::{BlobSize, CommitRecord, RepoStorage};
 use archipel_model::{
     CancelToken, ChangedFiles, ContainingBranch, GitError, HeadState, Oid, RepoPath, RepoSummary,
     Timestamp, Upstream,
@@ -21,6 +24,7 @@ use super::GitCli;
 use super::runner::{Cmd, CmdKind};
 use crate::gitdir::{GitDirs, has_submodules};
 use crate::parse::diff::parse_unified_diff;
+use crate::parse::insight::{RECORD_FORMAT, parse_blob_size, parse_count_objects, parse_record};
 use crate::parse::numstat::{CHURN_FORMAT, parse_churn_record};
 use crate::parse::refs::{
     BRANCH_FORMAT, TAG_FORMAT, TIP_FORMAT, parse_branches, parse_tags, parse_tips,
@@ -519,6 +523,166 @@ impl ChurnReader for GitCli {
             Ok(sink(churn))
         })
     }
+
+    fn walk_records(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        sink: &mut dyn FnMut(CommitRecord) -> ControlFlow<()>,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        if self.resolve(repo, rev)?.is_none() {
+            return Ok(());
+        }
+        let cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Read,
+            &["log", "-z", "--numstat", "--no-renames", RECORD_FORMAT],
+        )
+        .arg(rev)
+        .arg("--")
+        .cancel(cancel);
+        self.runner.stream(cmd, 0x1e, &mut |record| {
+            if record.is_empty() {
+                return Ok(ControlFlow::Continue(()));
+            }
+            Ok(sink(parse_record(&String::from_utf8_lossy(record))?))
+        })
+    }
+
+    fn count_commits(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        exclude: Oid,
+    ) -> Result<Option<u64>, GitError> {
+        let out = self.read(
+            repo,
+            &[
+                "rev-list",
+                "--count",
+                rev,
+                &format!("^{}", exclude.to_hex()),
+                "--",
+            ],
+        )?;
+        Ok(out.trim().parse().ok())
+    }
+
+    fn storage(
+        &self,
+        repo: &RepoPath,
+        largest: usize,
+        cancel: &CancelToken,
+    ) -> Result<RepoStorage, GitError> {
+        let mut storage = RepoStorage::default();
+        parse_count_objects(&self.read(repo, &["count-objects", "-v"])?, &mut storage);
+        let dirs = GitDirs::locate(repo.as_path())?;
+        storage.git_dir_bytes = dir_size(&dirs.common_dir, cancel)?;
+        storage.shallow = dirs.common_dir.join("shallow").is_file();
+        storage.lfs = dirs.common_dir.join("lfs").is_dir()
+            || std::fs::read_to_string(repo.as_path().join(".gitattributes"))
+                .is_ok_and(|a| a.contains("filter=lfs"));
+        if largest == 0 {
+            return Ok(storage);
+        }
+        // The biggest blobs, kept in a bounded min-heap; more than asked
+        // for, as some may be unreachable.
+        let candidates = largest * 4;
+        let mut top: BinaryHeap<Reverse<(u64, Oid)>> = BinaryHeap::with_capacity(candidates + 1);
+        let cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Read,
+            &[
+                "cat-file",
+                "--batch-all-objects",
+                "--batch-check=%(objecttype) %(objectname) %(objectsize)",
+            ],
+        )
+        .cancel(cancel);
+        self.runner.stream(cmd, b'\n', &mut |line| {
+            if let Some((oid, size)) = parse_blob_size(&String::from_utf8_lossy(line)) {
+                top.push(Reverse((size, oid)));
+                if top.len() > candidates {
+                    top.pop();
+                }
+            }
+            Ok(ControlFlow::Continue(()))
+        })?;
+        let mut blobs: Vec<BlobSize> = top
+            .into_iter()
+            .map(|Reverse((bytes, oid))| BlobSize {
+                oid,
+                path: String::new(),
+                reachable: false,
+                bytes,
+            })
+            .collect();
+        blobs.sort_by_key(|b| Reverse(b.bytes));
+        // Their paths, from the objects reachable from any ref.
+        let mut missing = blobs.len();
+        if missing > 0 {
+            let cmd = Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &["rev-list", "--objects", "--all"],
+            )
+            .cancel(cancel);
+            self.runner.stream(cmd, b'\n', &mut |line| {
+                let line = String::from_utf8_lossy(line);
+                let Some((hex, path)) = line.trim_end().split_once(' ') else {
+                    return Ok(ControlFlow::Continue(()));
+                };
+                let Ok(oid) = Oid::from_hex(hex) else {
+                    return Ok(ControlFlow::Continue(()));
+                };
+                for blob in blobs.iter_mut().filter(|b| b.oid == oid && !b.reachable) {
+                    path.clone_into(&mut blob.path);
+                    blob.reachable = true;
+                    missing -= 1;
+                }
+                Ok(if missing == 0 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                })
+            })?;
+        }
+        // The largest reachable blobs, and the few largest unreachable ones.
+        let (reachable, unreachable): (Vec<BlobSize>, Vec<BlobSize>) =
+            blobs.into_iter().partition(|b| b.reachable);
+        let mut blobs: Vec<BlobSize> = reachable
+            .into_iter()
+            .take(largest)
+            .chain(unreachable.into_iter().take(3))
+            .collect();
+        blobs.sort_by_key(|b| Reverse(b.bytes));
+        storage.largest_blobs = blobs;
+        Ok(storage)
+    }
+}
+
+/// Total size of the files under `dir`, in bytes.
+fn dir_size(dir: &std::path::Path, cancel: &CancelToken) -> Result<u64, GitError> {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        cancel.check()?;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    Ok(total)
 }
 
 const DIFF_ARGS: [&str; 5] = [
