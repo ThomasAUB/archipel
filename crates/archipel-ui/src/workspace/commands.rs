@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use archipel_app::{App as Core, Command};
 use archipel_model::RepoId;
+use archipel_model::ui_state::TabState;
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, PathPromptOptions, Point, Window};
 
@@ -28,6 +29,22 @@ impl Workspace {
     /// ([`Core::resolve_targets`]).
     pub(super) fn selection(&self) -> Vec<RepoId> {
         self.core.action_context().selected
+    }
+
+    /// What the statistics cover: the repo of the active tab when one is
+    /// shown, else the batch selection (all when none).
+    pub(super) fn stats_scope(&self) -> (Vec<RepoId>, Option<RepoId>) {
+        let active = self
+            .core
+            .ui_state()
+            .and_then(|ui| match ui.tabs.get(ui.active_tab) {
+                Some(TabState::Repo(id)) => Some(*id),
+                _ => None,
+            });
+        match active {
+            Some(id) => (vec![id], Some(id)),
+            None => (self.selection(), None),
+        }
     }
 
     /// Runs the action `id` of the registry: the one way the palette, the
@@ -81,7 +98,10 @@ impl Workspace {
             "repos.branch_all" => self.open_palette(PaletteKind::Branch, window, cx),
             "repos.tag_all" => self.open_palette(PaletteKind::Tag, window, cx),
             "repos.branches" => self.open_branches(window, cx),
-            "repos.stats" => self.open_stats(self.selection(), None, window, cx),
+            "repos.stats" => {
+                let (scope, focus) = self.stats_scope();
+                self.open_stats(scope, focus, window, cx);
+            }
             "settings.merge_tool" => self.choose_merge_tool(window, cx),
             "settings.appearance" => {
                 let size = window.viewport_size();
