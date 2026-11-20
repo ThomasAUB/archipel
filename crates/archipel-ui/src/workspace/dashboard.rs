@@ -220,7 +220,8 @@ impl Workspace {
                         )
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_stats(this.selection(), None, window, cx);
+                        let (scope, focus) = this.stats_scope();
+                        this.open_stats(scope, focus, window, cx);
                     })),
             )
             .when(hidden > 0 || ui.show_hidden, |d| {
