@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use archipel_app::{App, AppEvent, Command, Extensions, Services};
+use archipel_app::{App, AppEvent, Command, Extensions, Services, UpdateInstall};
 use archipel_model::changes::FileChange;
 use archipel_model::journal::OperationKind;
 use archipel_model::ports::{
@@ -659,6 +659,7 @@ fn release(version: &str) -> archipel_model::forge::Release {
     archipel_model::forge::Release {
         version: version.into(),
         url: format!("https://example.com/{version}"),
+        assets: Vec::new(),
     }
 }
 
@@ -1008,4 +1009,69 @@ fn without_git_s_merge_tool_conflicts_say_how_to_pick_one() {
         .dispatch(Command::ResolveConflicts(repo.id()))
         .unwrap();
     wait_until(&e.app, "the merge tool", |_| merge_tool_calls(&e.git) == 1);
+}
+
+#[test]
+fn install_update_installs_the_found_release_once_for_every_window() {
+    let e = env();
+    let sibling = e.app.sibling();
+    // Nothing found yet: nothing to install.
+    e.app.install_update();
+    assert_eq!(e.app.update_install(), UpdateInstall::Idle);
+    e.releases.publish(release("999.0.0"));
+    e.app.start_update_check(Duration::ZERO);
+    wait_until(&e.app, "the update", |a| a.available_update().is_some());
+    let mut events = sibling.subscribe();
+    e.app.install_update();
+    wait_until(&sibling, "the install", |a| {
+        matches!(a.update_install(), UpdateInstall::Installed { .. })
+    });
+    assert_eq!(
+        sibling.update_install(),
+        UpdateInstall::Installed {
+            version: "999.0.0".into(),
+            binary: "archipel-999.0.0".into(),
+        }
+    );
+    // Installed: asking again (from any window) does nothing.
+    sibling.install_update();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(e.releases.installed(), ["999.0.0"]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match events.try_recv() {
+            Ok(AppEvent::UpdateInstallChanged(UpdateInstall::Installed { .. })) => break,
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "no UpdateInstallChanged event");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_failed_install_is_reported_and_can_be_retried() {
+    let e = env();
+    e.releases.publish(release("999.0.0"));
+    e.releases.fail_installs("no archive for this platform");
+    e.app.start_update_check(Duration::ZERO);
+    wait_until(&e.app, "the update", |a| a.available_update().is_some());
+    e.app.install_update();
+    wait_until(&e.app, "the failure", |a| {
+        matches!(a.update_install(), UpdateInstall::Failed { .. })
+    });
+    assert_eq!(
+        e.app.update_install(),
+        UpdateInstall::Failed {
+            version: "999.0.0".into(),
+            message: "update: no archive for this platform".into(),
+        }
+    );
+    // A retry starts over.
+    e.app.install_update();
+    wait_until(&e.app, "the second failure", |a| {
+        matches!(a.update_install(), UpdateInstall::Failed { .. })
+    });
+    assert!(e.releases.installed().is_empty());
 }

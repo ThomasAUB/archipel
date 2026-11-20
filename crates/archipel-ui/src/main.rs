@@ -88,16 +88,20 @@ struct Args {
     dir: Option<PathBuf>,
     /// Do not hand the request to a running Archipel.
     standalone: bool,
+    /// Restarted after an update: take over from the quitting Archipel.
+    after_update: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         dir: None,
         standalone: false,
+        after_update: false,
     };
     for arg in std::env::args_os().skip(1) {
         match arg.to_str() {
             Some("--standalone") => args.standalone = true,
+            Some(instance::AFTER_UPDATE) => args.after_update = true,
             Some("-h" | "--help") => {
                 return Err("usage: archipel [--standalone] [<directory>]".into());
             }
@@ -207,6 +211,11 @@ fn main() {
     startup::mark("logging");
     let listener = if args.standalone {
         None
+    } else if args.after_update {
+        match instance::take_over(&dirs.data) {
+            Some(instance::Startup::Primary(listener)) => Some(listener),
+            _ => None,
+        }
     } else {
         let request = instance::Request {
             dir: args.dir.clone(),

@@ -501,10 +501,13 @@ impl ForgeAccountStore for InMemoryCredentials {
     }
 }
 
-/// A release feed answering with whatever release is set.
+/// A release feed answering with whatever release is set. Installs report
+/// progress at once and succeed, unless [`fail_installs`](Self::fail_installs).
 #[derive(Default)]
 pub struct FakeReleaseFeed {
     latest: Mutex<Option<Release>>,
+    install_error: Mutex<Option<String>>,
+    installed: Mutex<Vec<String>>,
 }
 
 impl FakeReleaseFeed {
@@ -512,10 +515,37 @@ impl FakeReleaseFeed {
     pub fn publish(&self, release: Release) {
         *lock(&self.latest) = Some(release);
     }
+
+    /// Makes every later install fail with `message`.
+    pub fn fail_installs(&self, message: &str) {
+        *lock(&self.install_error) = Some(message.to_owned());
+    }
+
+    /// The versions installed so far, in order.
+    pub fn installed(&self) -> Vec<String> {
+        lock(&self.installed).clone()
+    }
 }
 
 impl ReleaseFeed for FakeReleaseFeed {
     fn latest_release(&self) -> Result<Option<Release>, ForgeError> {
         Ok(lock(&self.latest).clone())
+    }
+
+    fn install(
+        &self,
+        release: &Release,
+        progress: &dyn Fn(u8),
+    ) -> Result<std::path::PathBuf, ForgeError> {
+        progress(50);
+        if let Some(message) = lock(&self.install_error).clone() {
+            return Err(ForgeError::Update(message));
+        }
+        progress(100);
+        lock(&self.installed).push(release.version.clone());
+        Ok(std::path::PathBuf::from(format!(
+            "archipel-{}",
+            release.version
+        )))
     }
 }

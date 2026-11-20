@@ -7,7 +7,11 @@
 //!   release is shared by the sibling cores.
 //! * Failures (offline, rate limit) stay in the debug log and are retried
 //!   sooner than the interval.
+//! * [`App::install_update`] installs the found release in place of the
+//!   running binary, in the background; it runs from the next launch. One
+//!   install at a time for the process, its state shared like the release.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -22,11 +26,41 @@ const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// Delay before retrying a check that failed.
 const RETRY: Duration = Duration::from_secs(3600);
 
+/// Where installing the found release stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum UpdateInstall {
+    /// Nothing asked yet.
+    #[default]
+    Idle,
+    /// Downloading and installing `version`.
+    Installing {
+        /// The version being installed.
+        version: String,
+        /// Downloaded share, 0 to 100.
+        percent: u8,
+    },
+    /// `version` replaced the binary; it runs from the next launch.
+    Installed {
+        /// The installed version.
+        version: String,
+        /// The binary to start to run it.
+        binary: PathBuf,
+    },
+    /// Installing `version` failed; asking again retries.
+    Failed {
+        /// The version that failed.
+        version: String,
+        /// What went wrong.
+        message: String,
+    },
+}
+
 /// State shared by the sibling cores.
 #[derive(Debug)]
 pub(super) struct UpdateCheck {
     started: AtomicBool,
     found: watch::Sender<Option<Release>>,
+    install: watch::Sender<UpdateInstall>,
 }
 
 impl UpdateCheck {
@@ -34,6 +68,7 @@ impl UpdateCheck {
         Arc::new(Self {
             started: AtomicBool::new(false),
             found: watch::Sender::new(None),
+            install: watch::Sender::new(UpdateInstall::Idle),
         })
     }
 }
@@ -66,13 +101,24 @@ impl App {
     /// Starts checking for a newer release, the first check after `delay`
     /// (no-op without a release feed, when `update_check_hours` is 0, or
     /// when a window already started it). Frontends call it; one-shot tools
-    /// (CLI) do not.
+    /// (CLI) do not. After `delay` it also removes what an earlier install
+    /// left behind, even when checks are off.
     pub fn start_update_check(&self, delay: Duration) {
         let hours = self.settings.update_check_hours;
         let Some(feed) = self.services.updates.clone() else {
             return;
         };
-        if hours == 0 || self.updates.started.swap(true, Ordering::SeqCst) {
+        if self.updates.started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let cleaner = feed.clone();
+        self.scheduler.runtime().spawn(async move {
+            // After the delay: the process this one replaced may still be
+            // quitting, holding the binary it ran from.
+            tokio::time::sleep(delay).await;
+            let _ = tokio::task::spawn_blocking(move || cleaner.clean_up_install()).await;
+        });
+        if hours == 0 {
             return;
         }
         let interval = Duration::from_secs(hours.saturating_mul(3600));
@@ -111,10 +157,76 @@ impl App {
         self.updates.found.borrow().clone()
     }
 
-    /// Turns a found release into [`AppEvent::UpdateAvailable`] on this
-    /// core's channel. The task outlives a closed window only until the next
-    /// release found.
+    /// Where installing the found release stands.
+    #[must_use]
+    pub fn update_install(&self) -> UpdateInstall {
+        self.updates.install.borrow().clone()
+    }
+
+    /// Installs the release found by the update check in place of the
+    /// running binary, in the background: progress and outcome come as
+    /// [`AppEvent::UpdateInstallChanged`]. No-op without a found release,
+    /// while an install runs, or once that release is installed.
+    pub fn install_update(&self) {
+        let (Some(feed), Some(release)) = (self.services.updates.clone(), self.available_update())
+        else {
+            return;
+        };
+        let state = self.updates.clone();
+        let version = release.version.clone();
+        let started = state.install.send_if_modified(|install| match install {
+            UpdateInstall::Installing { .. } => false,
+            UpdateInstall::Installed { version: done, .. } if *done == version => false,
+            UpdateInstall::Idle
+            | UpdateInstall::Installed { .. }
+            | UpdateInstall::Failed { .. } => {
+                *install = UpdateInstall::Installing {
+                    version: version.clone(),
+                    percent: 0,
+                };
+                true
+            }
+        });
+        if !started {
+            return;
+        }
+        self.scheduler.runtime().spawn_blocking(move || {
+            let progress = |share: u8| {
+                state.install.send_if_modified(|install| match install {
+                    UpdateInstall::Installing { percent, .. } if *percent != share => {
+                        *percent = share;
+                        true
+                    }
+                    _ => false,
+                });
+            };
+            let outcome = match feed.install(&release, &progress) {
+                Ok(binary) => UpdateInstall::Installed { version, binary },
+                Err(e) => {
+                    tracing::warn!(error = %e, "update install failed");
+                    UpdateInstall::Failed {
+                        version,
+                        message: e.to_string(),
+                    }
+                }
+            };
+            state.install.send_replace(outcome);
+        });
+    }
+
+    /// Turns a found release into [`AppEvent::UpdateAvailable`], and install
+    /// progress into [`AppEvent::UpdateInstallChanged`], on this core's
+    /// channel. The tasks outlive a closed window only until the next change.
     pub(super) fn forward_updates(&self) {
+        let mut install = self.updates.install.subscribe();
+        let me = self.me.clone();
+        self.scheduler.runtime().spawn(async move {
+            while install.changed().await.is_ok() {
+                let state = install.borrow_and_update().clone();
+                let Some(app) = me.upgrade() else { return };
+                app.emit(AppEvent::UpdateInstallChanged(state));
+            }
+        });
         let mut found = self.updates.found.subscribe();
         let me = self.me.clone();
         self.scheduler.runtime().spawn(async move {

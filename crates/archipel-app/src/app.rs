@@ -59,6 +59,7 @@ pub use identity::{ProjectIcon, ProjectIdentity, initials};
 pub use projects::{DirectoryTarget, file_project_id};
 pub use publish::{PUBLISH_REMOTE, PublishOutcome, PublishTarget, publish_name};
 use session::Session;
+pub use update_check::UpdateInstall;
 pub use worktree_sets::{NewSetRequest, SetMemberPlan, SetMemberState, SetRepoInfo, SetReport};
 pub use worktrees::ProjectWorktree;
 
@@ -132,6 +133,8 @@ pub enum AppEvent {
     ForgeAccountsChanged,
     /// The update check found a release newer than the running version.
     UpdateAvailable(archipel_model::forge::Release),
+    /// Installing the found release progressed, succeeded or failed.
+    UpdateInstallChanged(UpdateInstall),
     /// A Worktree Set was created (or completed), per repo (spec §10).
     WorktreeSetCreated(SetReport),
     /// Members of a Worktree Set were removed, per repo.

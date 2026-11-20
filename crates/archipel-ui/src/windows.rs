@@ -6,7 +6,7 @@
 //! SQLite store are shared. Opening a project that a window already shows
 //! focuses that window instead of opening a duplicate.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use archipel_app::App as Core;
@@ -39,6 +39,8 @@ pub struct Windows {
     open: Vec<(AnyWindowHandle, Arc<Core>)>,
     /// Most recently activated first.
     recent: Vec<AnyWindowHandle>,
+    /// Binary to start once the app has quit (restart after an update).
+    restart: Option<PathBuf>,
 }
 
 impl Global for Windows {}
@@ -51,6 +53,7 @@ impl Windows {
             base_free: true,
             open: Vec::new(),
             recent: Vec::new(),
+            restart: None,
         }
     }
 
@@ -225,14 +228,39 @@ pub fn closed(cx: &mut App, handle: AnyWindowHandle) {
 
 /// Unloads every open project when the app quits other than by closing its
 /// last window (Cmd+Q, Dock menu, logout), so their state is saved too.
+/// Then starts the binary of a [`restart`], if one was asked.
 pub fn save_on_quit(cx: &mut App) {
     cx.on_app_quit(|cx| {
-        for (_, core) in cx.global_mut::<Windows>().open.drain(..) {
+        let windows = cx.global_mut::<Windows>();
+        for (_, core) in windows.open.drain(..) {
             core.close_project();
+        }
+        if let Some(binary) = windows.restart.take() {
+            relaunch(&binary);
         }
         async {}
     })
     .detach();
+}
+
+/// Quits, then starts `binary` (an update just installed): the projects are
+/// saved first, and the new process reopens the last one, as at any launch.
+pub fn restart(cx: &mut App, binary: PathBuf) {
+    cx.global_mut::<Windows>().restart = Some(binary);
+    cx.quit();
+}
+
+/// Starts `binary` as the next primary instance.
+fn relaunch(binary: &Path) {
+    let spawned = std::process::Command::new(binary)
+        .arg(crate::instance::AFTER_UPDATE)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Err(e) = spawned {
+        tracing::error!(error = %e, binary = %binary.display(), "cannot restart after the update");
+    }
 }
 
 /// Redraws every window (after a theme change).

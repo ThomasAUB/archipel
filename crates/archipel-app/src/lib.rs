@@ -46,7 +46,7 @@ pub use app::{
     Extensions, INITIAL_COMMIT_MESSAGE, NewSetRequest, PUBLISH_REMOTE, ProjectIcon,
     ProjectIdentity, ProjectWorktree, PublishOutcome, PublishTarget, PullRequestOutcome,
     PullRequestPlan, PullRequestTarget, RepoPullRequests, Services, SetMemberPlan, SetMemberState,
-    SetRepoInfo, SetReport, clone_dir_name, file_project_id, initials, publish_name,
+    SetRepoInfo, SetReport, UpdateInstall, clone_dir_name, file_project_id, initials, publish_name,
     split_clone_urls,
 };
 pub use archipel_stats::{BranchRow, BranchesView, DEFAULT_STALE_BRANCH_DAYS};

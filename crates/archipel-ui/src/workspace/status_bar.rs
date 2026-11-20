@@ -1,6 +1,7 @@
 //! The status bar (notice, update badge, project color and theme pickers)
 //! and the operations drawer above it.
 
+use archipel_app::UpdateInstall;
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::color_picker::ColorPicker;
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -106,20 +107,25 @@ impl Workspace {
             .child(self.render_theme_picker(cx))
     }
 
-    /// The status bar's "update available" badge: opens the release page,
-    /// × hides it until a newer release. None when up to date.
+    /// The status bar's update badge, by where installing the found release
+    /// stands: "↑ Update x" installs it in the background, then "↻ Restart
+    /// to update" restarts into it (it runs from the next launch anyway); a
+    /// failure offers to try again. Right-click opens the release page, ×
+    /// hides the badge until a newer release. None when up to date.
     fn render_update_badge(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let release = self.core.available_update()?;
         if self.dismissed_update.as_ref() == Some(&release.version) {
             return None;
         }
         let fg = color(cx, T::FgDefault);
-        let tip = vec![
-            format!("Archipel {} is available", release.version),
-            "Click to open the release page".to_owned(),
-        ];
-        let url = release.url;
         let version = release.version;
+        let UpdateBadge {
+            label,
+            tip,
+            restart,
+            dismissable,
+        } = UpdateBadge::of(&version, self.core.update_install());
+        let url = release.url;
         Some(
             div()
                 .flex_none()
@@ -135,25 +141,35 @@ impl Workspace {
                         .whitespace_nowrap()
                         .hover(move |s| s.text_color(fg))
                         .tooltip(move |_, cx| TextTooltip::view(&tip, cx))
-                        .on_click(move |_, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            match &restart {
+                                Some(binary) => crate::windows::restart(cx, binary.clone()),
+                                None => this.core.install_update(),
+                            }
+                            cx.notify();
+                        }))
+                        .on_mouse_down(MouseButton::Right, move |_, _, cx| {
                             cx.open_url(&url);
                             cx.stop_propagation();
                         })
-                        .child(format!("↑ Update {version}")),
+                        .child(label),
                 )
-                .child(
-                    div()
-                        .id("update-dismiss")
-                        .px_1()
-                        .rounded(radius(cx))
-                        .hover(move |s| s.text_color(fg))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dismissed_update = Some(version.clone());
-                            cx.stop_propagation();
-                            cx.notify();
-                        }))
-                        .child("×"),
-                ),
+                .when(dismissable, |el| {
+                    el.child(
+                        div()
+                            .id("update-dismiss")
+                            .px_1()
+                            .rounded(radius(cx))
+                            .hover(move |s| s.text_color(fg))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dismissed_update = Some(version.clone());
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .child("×"),
+                    )
+                }),
         )
     }
 
@@ -234,5 +250,108 @@ impl Workspace {
             Self::menu_popup(position, menu, cx)
         });
         div().child(label).children(menu)
+    }
+}
+
+/// What the update badge shows for one state of the install.
+struct UpdateBadge {
+    label: String,
+    tip: Vec<String>,
+    /// The installed binary a click restarts into; a click installs when
+    /// `None`.
+    restart: Option<std::path::PathBuf>,
+    /// Whether × may hide it (not while installing).
+    dismissable: bool,
+}
+
+impl UpdateBadge {
+    /// The badge of `version`, the release found, given `install`.
+    fn of(version: &str, install: UpdateInstall) -> Self {
+        let page = "Right-click for the release page".to_owned();
+        // An install of an older release found earlier does not count.
+        let install = match install {
+            UpdateInstall::Installing { version: v, .. }
+            | UpdateInstall::Installed { version: v, .. }
+            | UpdateInstall::Failed { version: v, .. }
+                if v != version =>
+            {
+                UpdateInstall::Idle
+            }
+            install => install,
+        };
+        match install {
+            UpdateInstall::Idle => Self {
+                label: format!("↑ Update {version}"),
+                tip: vec![
+                    format!("Archipel {version} is available"),
+                    "Click to download and install it; it runs from the next launch".to_owned(),
+                    page,
+                ],
+                restart: None,
+                dismissable: true,
+            },
+            UpdateInstall::Installing { percent, .. } => Self {
+                label: format!("↓ Updating {percent}%"),
+                tip: vec![format!("Downloading and installing Archipel {version}…")],
+                restart: None,
+                dismissable: false,
+            },
+            UpdateInstall::Installed { binary, .. } => Self {
+                label: "↻ Restart to update".to_owned(),
+                tip: vec![
+                    format!("Archipel {version} is installed; it runs from the next launch"),
+                    "Click to restart now".to_owned(),
+                    page,
+                ],
+                restart: Some(binary),
+                dismissable: true,
+            },
+            UpdateInstall::Failed { message, .. } => Self {
+                label: "⚠ Update failed".to_owned(),
+                tip: vec![
+                    format!("Archipel {version} could not be installed: {message}"),
+                    "Click to try again".to_owned(),
+                    page,
+                ],
+                restart: None,
+                dismissable: true,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_update_badge_follows_the_install_of_the_found_release() {
+        let badge = |install| UpdateBadge::of("2.0.0", install);
+        assert_eq!(badge(UpdateInstall::Idle).label, "↑ Update 2.0.0");
+        let installing = badge(UpdateInstall::Installing {
+            version: "2.0.0".into(),
+            percent: 42,
+        });
+        assert_eq!(installing.label, "↓ Updating 42%");
+        assert!(!installing.dismissable);
+        let installed = badge(UpdateInstall::Installed {
+            version: "2.0.0".into(),
+            binary: "archipel".into(),
+        });
+        assert_eq!(installed.label, "↻ Restart to update");
+        assert_eq!(installed.restart, Some("archipel".into()));
+        let failed = badge(UpdateInstall::Failed {
+            version: "2.0.0".into(),
+            message: "update: bad checksum".into(),
+        });
+        assert_eq!(failed.label, "⚠ Update failed");
+        assert!(failed.tip[0].ends_with("update: bad checksum"));
+        // An older release installed earlier: the new one is offered.
+        let older = badge(UpdateInstall::Installed {
+            version: "1.5.0".into(),
+            binary: "archipel".into(),
+        });
+        assert_eq!(older.label, "↑ Update 2.0.0");
+        assert_eq!(older.restart, None);
     }
 }
