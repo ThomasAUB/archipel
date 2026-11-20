@@ -1,0 +1,18 @@
+[package]
+name = "archipel-term"
+description = "Integrated terminal: a shell on a pseudo-terminal (ConPTY on Windows) and a VT emulator, behind the terminal ports."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+archipel-model.workspace = true
+# The emulator and its pseudo-terminal layer (Unix PTY, Windows ConPTY);
+# no serde.
+alacritty_terminal = { version = "0.26", default-features = false }
+tracing.workspace = true
+
+[lints]
+workspace = true

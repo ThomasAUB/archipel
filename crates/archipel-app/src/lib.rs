@@ -20,6 +20,8 @@
 //!   [`deptree::DependencySource`] extension point.
 //! * [`groups`]: sidebar grouping of repos by category (spec §1).
 //! * [`settings`]: loading the settings file.
+//! * [`terminal`]: the integrated terminal's shell and tab names; terminals
+//!   start through the terminal port of [`Services`].
 //!
 //! Dependencies: `archipel-model` and the feature crates (`ops`, `project`,
 //! `graph`, `stats`, `theme`, `cache` LRUs). Concrete adapters are injected
@@ -39,6 +41,7 @@ pub mod groups;
 pub mod keymap;
 pub mod message;
 pub mod settings;
+pub mod terminal;
 
 pub use actions::{Action, ActionContext, ActionRegistry, Command, CustomCommand};
 pub use app::{

@@ -194,6 +194,16 @@ Show how the repos of a project depend on each other, as a small tree:
 - **Worktree Sets**, for agent runs across repos: the same branch checked out as a worktree in several repos under one folder; the Dashboard can switch to a set so batch actions, the Commit Panel and pull requests target its worktrees; **Finish** removes the set and its merged branches.
 - Git's "already checked out in another worktree" refusals become choices (open that worktree, check out detached).
 
+### 11. Integrated terminal — P2
+> Implemented (issue #98, ADR 0005).
+
+- A terminal panel docked under the workspace (**Toggle terminal panel**, `Ctrl+'`; its height dragged from its top edge), with one tab per terminal; the external terminal (`terminal_command`) stays available.
+- **Open terminal here** from a repo or worktree row's menu, the dependency tree's **Terminal** button or the action palette starts a shell in that folder, its tab named `repo · branch`; with several repos selected, one terminal each.
+- **Run command…** (row menu, or *Run command in selected repos* in the palette) runs one command in a terminal of its own on each selected repo (all when none); each tab shows the exit status (`✓`, `✗ code`).
+- The user's shell (`$SHELL`, PowerShell on Windows), or `terminal_shell` in `settings.toml` (`"pwsh -NoLogo"`, `"cmd"`, Git Bash…); scrollback limited by `terminal_scrollback` (default 2000 lines). No terminal is started before the first one is opened.
+- Colours (the 16 ANSI colours follow the theme), resize, scrollback (wheel, `Shift+PageUp/PageDown/Home/End`), mouse selection (double click: word, triple: line), copy / paste (`Ctrl+Shift+C` / `Ctrl+Shift+V`, `⌘C` / `⌘V` on macOS), `Ctrl+click` opens a URL or an existing file path. While a terminal has the keyboard, the shell gets Ctrl + letter, Alt and plain keys even when the keymap binds them.
+- Git commands run in it refresh the repo through the file watcher, as for any change made outside Archipel.
+
 ## Non-functional requirements
 
 - **Performance:** start < 1 s; dashboard of a 20-repo project < 500 ms; no Git operation ever blocks the UI.

@@ -22,6 +22,7 @@ implementation; you never patch the core.
 | Git backend per operation | the reader/writer traits of `archipel_model::ports::git` | `archipel_compose::git_ports` |
 | Persistence | the store traits of `archipel_model::ports::store` | `archipel_compose::compose` |
 | File watching | `archipel_model::ports::ChangeSource` | `archipel_compose::compose` |
+| Integrated terminal | `archipel_model::ports::{TerminalLauncher, TerminalSession}` | `Services::terminals` in `archipel_compose::compose` |
 
 Registering an implementation with the id of a built-in replaces the
 built-in in place.

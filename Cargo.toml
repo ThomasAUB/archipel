@@ -23,6 +23,7 @@ archipel-theme = { path = "crates/archipel-theme" }
 archipel-app = { path = "crates/archipel-app" }
 archipel-forge = { path = "crates/archipel-forge" }
 archipel-compose = { path = "crates/archipel-compose" }
+archipel-term = { path = "crates/archipel-term" }
 archipel-fixtures = { path = "tools/fixtures" }
 
 anyhow = "1"

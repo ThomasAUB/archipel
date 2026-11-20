@@ -1,0 +1,8 @@
+version = 1
+name = "98"
+
+[[repo]]
+path = "."
+
+[settings]
+accent = "#00adb4"

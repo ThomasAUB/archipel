@@ -8,7 +8,7 @@
 //! * Dependencies: none inside the workspace; no I/O, no third-party adapter types.
 //! * Main traits: see [`ports`] — Git readers/writers, project source/discovery,
 //!   stores, change sources, forge access (pull requests, account directory,
-//!   sign-in, credentials).
+//!   sign-in, credentials), terminals.
 //! * Fakes: with the `testing` feature, `testing` provides an in-memory fake of
 //!   every port trait so consumers can be tested without real repositories.
 
@@ -29,6 +29,7 @@ pub mod settings;
 pub mod stats;
 pub mod submodule;
 pub mod summary;
+pub mod terminal;
 pub mod time;
 pub mod tree;
 pub mod ui_state;
@@ -38,7 +39,7 @@ pub mod worktree;
 pub mod testing;
 
 pub use cancel::{CancelToken, NoProgress, Progress, ProgressSink};
-pub use error::{ForgeError, GitError, ProjectError, StoreError, WatchError};
+pub use error::{ForgeError, GitError, ProjectError, StoreError, TerminalError, WatchError};
 pub use ids::{Oid, ProjectId, RepoId, RepoPath};
 pub use summary::{
     ChangeCounts, ChangedFiles, ContainingBranch, HeadState, RepoOp, RepoSummary, Upstream,

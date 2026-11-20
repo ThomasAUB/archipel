@@ -451,6 +451,34 @@ impl Workspace {
                     },
                 ))
             })
+            .child({
+                let ids = targets.clone();
+                let label = if n > 1 {
+                    format!("Open terminals in{plural}")
+                } else {
+                    "Open terminal here".to_owned()
+                };
+                menu_item("menu-terminal", label, false, cx).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.menu = None;
+                        this.open_terminals(&ids, window, cx);
+                    },
+                ))
+            })
+            .child({
+                let ids = targets.clone();
+                let label = if n > 1 {
+                    format!("Run command in{plural}…")
+                } else {
+                    "Run command…".to_owned()
+                };
+                menu_item("menu-run", label, false, cx).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.menu = None;
+                        this.ask_run_in_repos(ids.clone(), window, cx);
+                    },
+                ))
+            })
             .children(self.ci_menu_item(id, cx))
             .children(self.ci_rerun_menu_item(&targets, cx))
             .children(self.auto_merge_menu_item(id, &targets, cx))

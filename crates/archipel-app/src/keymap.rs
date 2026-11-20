@@ -89,6 +89,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl-z", "history.undo"),
     ("ctrl-shift-z", "history.redo"),
     ("ctrl-j", "drawer.toggle"),
+    ("ctrl-'", "terminal.toggle"),
     ("ctrl-shift-f", "repos.fetch_all"),
     ("ctrl-k", "commit.open"),
     ("f5", "repos.refresh"),
