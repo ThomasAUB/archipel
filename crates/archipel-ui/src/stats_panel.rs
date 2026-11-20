@@ -347,7 +347,10 @@ impl StatsPanel {
                             .items_center()
                             .gap_2()
                             .child(swatch(muted))
-                            .child(format!("{} others", others.len())),
+                            .child(match others.len() {
+                                1 => "1 other".to_owned(),
+                                n => format!("{n} others"),
+                            }),
                     )
                     .child(share_bar(commits as f32 / total_commits, muted, cx))
                     .child(share_bar(
