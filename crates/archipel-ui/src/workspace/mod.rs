@@ -278,6 +278,7 @@ impl Workspace {
                 self.menu = None;
                 self.quick_edit = None;
                 self.scan = None;
+                crate::jump_list::refresh(cx);
             }
             AppEvent::ScanProgress { found, running } => self.scan = Some((found, running)),
             AppEvent::RowsChanged(ids) => {
@@ -315,8 +316,8 @@ impl Workspace {
             AppEvent::ReposRevealed(ids) => self.reveal = ids.first().copied(),
             AppEvent::WorktreeSetCreated(report) => self.on_set_report(&report, false, cx),
             AppEvent::WorktreeSetFinished(report) => self.on_set_report(&report, true, cx),
-            AppEvent::ProjectsChanged
-            | AppEvent::TreeChanged
+            AppEvent::ProjectsChanged => crate::jump_list::refresh(cx),
+            AppEvent::TreeChanged
             | AppEvent::ForgeAccountsChanged
             | AppEvent::UpdateAvailable(_)
             | AppEvent::UpdateInstallChanged(_) => {}

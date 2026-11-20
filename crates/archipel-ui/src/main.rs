@@ -34,6 +34,7 @@ mod forge_panel;
 mod ignore;
 mod image_view;
 mod instance;
+mod jump_list;
 mod keys;
 mod latest;
 mod menu;
@@ -99,10 +100,15 @@ fn parse_args() -> Result<Args, String> {
         standalone: false,
         after_update: false,
     };
-    for arg in std::env::args_os().skip(1) {
+    let mut raw = std::env::args_os().skip(1);
+    while let Some(arg) = raw.next() {
         match arg.to_str() {
             Some("--standalone") => args.standalone = true,
             Some(instance::AFTER_UPDATE) => args.after_update = true,
+            Some(jump_list::DOCK_ACTION_FLAG) => {
+                // A jump list task: its index follows (see `jump_list`).
+                raw.next();
+            }
             Some("-h" | "--help") => {
                 return Err("usage: archipel [--standalone] [<directory>]".into());
             }
@@ -240,6 +246,7 @@ fn main() {
 
     let application = gpui_kit::application();
     startup::mark("gpui platform created");
+    let open_requests = jump_list::on_open_urls(&application);
     application
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx: &mut App| {
@@ -287,6 +294,8 @@ fn main() {
             if let Some(listener) = listener {
                 serve_other_launches(cx, listener);
             }
+            jump_list::serve_open_urls(cx, open_requests);
+            jump_list::refresh(cx);
             cx.activate(true);
         });
 }

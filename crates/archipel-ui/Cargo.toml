@@ -31,6 +31,10 @@ two-face = { version = "0.4.5", default-features = false, features = ["syntect-f
 tokio.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# The jump list API takes its entries as GPUI's own `SmallVec`s.
+smallvec = "1"
+
 [build-dependencies]
 embed-resource = "3"
 
