@@ -10,9 +10,9 @@
 
 use crate::error::ForgeError;
 use crate::forge::{
-    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
-    MergeOptions, MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, Release, RemoteRepo,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, CloseReason, ForgeAccount, ForgeKind, ForgeRepo,
+    ForgeToken, Issue, IssueChoices, IssueDraft, IssueRef, MergeOptions, MergeReport, Namespace,
+    NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo,
 };
 
 /// Reads open pull / merge requests (dashboard column, review list).
@@ -83,6 +83,37 @@ pub trait PullRequestWriter: Send + Sync {
     ) -> Result<AutoMergeReport, ForgeError>;
     /// Disarms the forge's auto-merge of a pull request.
     fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError>;
+}
+
+/// Reads issues. A forge or a repo without issues (disabled on the repo,
+/// or a provider without them) fails with [`ForgeError::Unsupported`],
+/// saying so.
+pub trait IssueReader: Send + Sync {
+    /// Every open issue of the repo (bounded number of pages; pull
+    /// requests left out), oldest first.
+    fn open_issues(&self, repo: &ForgeRepo) -> Result<Vec<Issue>, ForgeError>;
+    /// The labels and assignees a new issue of the repo can carry; fails
+    /// with [`ForgeError::Unsupported`] when the repo has no issues, so a
+    /// form can say so before anything is typed.
+    fn issue_choices(&self, repo: &ForgeRepo) -> Result<IssueChoices, ForgeError>;
+}
+
+/// Creates, closes and reopens issues. A token without write access to
+/// issues fails with a message naming the scope to add.
+pub trait IssueWriter: Send + Sync {
+    /// Opens an issue.
+    fn create_issue(&self, repo: &ForgeRepo, draft: &IssueDraft) -> Result<IssueRef, ForgeError>;
+    /// Closes an issue, after posting `comment` on it when there is one.
+    /// `reason` is dropped by forges without one (GitLab).
+    fn close_issue(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        reason: CloseReason,
+        comment: Option<&str>,
+    ) -> Result<(), ForgeError>;
+    /// Reopens a closed issue.
+    fn reopen_issue(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError>;
 }
 
 /// Lists what an account can see (clone from an account / org / group),

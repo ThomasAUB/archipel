@@ -358,6 +358,67 @@ pub struct PullRequestRef {
     pub url: String,
 }
 
+/// An open issue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Issue {
+    /// Number (GitHub) or iid (GitLab).
+    pub number: u64,
+    /// Title.
+    pub title: String,
+    /// Web page.
+    pub url: String,
+    /// Login of the author.
+    pub author: String,
+    /// Label names.
+    pub labels: Vec<String>,
+    /// Logins of the assignees.
+    pub assignees: Vec<String>,
+    /// When it was opened, when the forge says.
+    pub created_at: Option<crate::Timestamp>,
+}
+
+/// An issue to create.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IssueDraft {
+    /// Title.
+    pub title: String,
+    /// Description (Markdown).
+    pub description: String,
+    /// Label names, among the repo's own ([`IssueChoices::labels`]).
+    pub labels: Vec<String>,
+    /// Logins of the assignees, among [`IssueChoices::assignees`].
+    pub assignees: Vec<String>,
+}
+
+/// A created issue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueRef {
+    /// Number (GitHub) or iid (GitLab).
+    pub number: u64,
+    /// Web page.
+    pub url: String,
+}
+
+/// What a new issue of a repo can carry: the repo's own labels and the
+/// users it can be assigned to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IssueChoices {
+    /// Label names, sorted.
+    pub labels: Vec<String>,
+    /// Logins, sorted.
+    pub assignees: Vec<String>,
+}
+
+/// Why an issue is closed (GitHub `state_reason`; GitLab has none).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CloseReason {
+    /// Done, fixed.
+    #[default]
+    Completed,
+    /// Won't fix, duplicate, stale.
+    NotPlanned,
+}
+
 /// A published release of Archipel (update check).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {

@@ -6,6 +6,7 @@
 //! action closes it.
 
 use archipel_app::Command;
+use archipel_app::forge::ForgeStatus;
 use archipel_model::RepoId;
 use archipel_model::ui_state::TabState;
 use archipel_theme::ColorToken as T;
@@ -187,6 +188,46 @@ impl Workspace {
             }))
             .into_any_element()
         })
+    }
+
+    /// Row menu entries: a new issue on the repo (or one of the targeted
+    /// repos), and the open issues of the targeted repos. None for a repo
+    /// on no known forge.
+    fn issue_menu_items(
+        &self,
+        id: RepoId,
+        targets: &[RepoId],
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        if self
+            .core
+            .row(id)
+            .is_none_or(|r| matches!(r.forge, ForgeStatus::NotOnForge))
+        {
+            return Vec::new();
+        }
+        // The clicked repo first: the dialog picks it.
+        let mut new_on = vec![id];
+        new_on.extend(targets.iter().copied().filter(|t| *t != id));
+        let listed = targets.to_vec();
+        let open_label = match targets.len() {
+            1 => "Open issues…".to_owned(),
+            n => format!("Open issues of {n} repos…"),
+        };
+        vec![
+            menu_item("menu-new-issue", "New issue…", false, cx)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu = None;
+                    this.open_forge(ForgeTab::NewIssue(new_on.clone()), window, cx);
+                }))
+                .into_any_element(),
+            menu_item("menu-issues", open_label, false, cx)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu = None;
+                    this.open_forge(ForgeTab::Issues(listed.clone()), window, cx);
+                }))
+                .into_any_element(),
+        ]
     }
 
     /// Row menu entry: open the CI run of the repo's branch, when it has one.
@@ -413,6 +454,7 @@ impl Workspace {
             .children(self.ci_menu_item(id, cx))
             .children(self.ci_rerun_menu_item(&targets, cx))
             .children(self.auto_merge_menu_item(id, &targets, cx))
+            .children(self.issue_menu_items(id, &targets, cx))
             .child(self.forge_menu_item(id, targets, cx))
             .children(self.worktree_menu_items(id, cx))
             .when(!is_worktree, |d| d.child(menu_separator(cx)))

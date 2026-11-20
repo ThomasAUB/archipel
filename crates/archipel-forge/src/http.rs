@@ -637,9 +637,73 @@ pub fn encode_path(path: &str) -> String {
     path.split('/').map(encode).collect::<Vec<_>>().join("/")
 }
 
+/// Parses an RFC 3339 / ISO 8601 date and time as the forges write them
+/// (`2024-03-01T12:30:00Z`, `2024-03-01T12:30:00.123+01:00`).
+#[must_use]
+pub fn parse_time(text: &str) -> Option<Timestamp> {
+    let text = text.trim();
+    let (date, time) = text.split_once(['T', ' '])?;
+    let mut d = date.splitn(3, '-').map(str::parse::<i64>);
+    let (year, month, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // The offset: `Z`, `+hh:mm` or `-hh:mm` after the seconds.
+    let (clock, offset) = match time.find(['Z', 'z', '+', '-']) {
+        Some(i) => (&time[..i], &time[i..]),
+        None => (time, ""),
+    };
+    let mut c = clock.splitn(3, ':');
+    let hour: i64 = c.next()?.parse().ok()?;
+    let minute: i64 = c.next()?.parse().ok()?;
+    // Fractions of a second dropped.
+    let second: i64 = match c.next() {
+        Some(s) => s.split('.').next()?.parse().ok()?,
+        None => 0,
+    };
+    let offset = match offset.as_bytes().first() {
+        None | Some(b'Z' | b'z') => 0,
+        Some(sign) => {
+            let (h, m) = offset[1..].split_once(':').unwrap_or((&offset[1..], "0"));
+            let secs = h.parse::<i64>().ok()? * 3_600 + m.parse::<i64>().ok()? * 60;
+            if *sign == b'-' { -secs } else { secs }
+        }
+    };
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(Timestamp(
+        days * 86_400 + hour * 3_600 + minute * 60 + second - offset,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forge_dates_parse() {
+        assert_eq!(parse_time("1970-01-01T00:00:00Z"), Some(Timestamp(0)));
+        assert_eq!(
+            parse_time("2024-03-01T12:30:00Z"),
+            Some(Timestamp(1_709_296_200))
+        );
+        assert_eq!(
+            parse_time("2024-03-01T13:30:00.123+01:00"),
+            Some(Timestamp(1_709_296_200))
+        );
+        assert_eq!(
+            parse_time("2024-03-01T07:30:00-05:00"),
+            Some(Timestamp(1_709_296_200))
+        );
+        assert_eq!(parse_time("yesterday"), None);
+        assert_eq!(parse_time("2024-13-01T00:00:00Z"), None);
+    }
 
     #[test]
     fn link_header_and_encoding() {

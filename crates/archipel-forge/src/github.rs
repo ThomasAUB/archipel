@@ -2,15 +2,18 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    AutoMergeReport, CiJob, CiJobState, CiRun, ForgeKind, MergeMethod, MergeOptions, MergeReport,
-    MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo, ReviewState, overall_ci_state,
+    AutoMergeReport, CiJob, CiJobState, CiRun, CloseReason, ForgeKind, Issue, IssueChoices,
+    IssueDraft, IssueRef, MergeMethod, MergeOptions, MergeReport, MergeState, Namespace,
+    NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    ReviewState, overall_ci_state,
 };
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode, encode_path, optional, permission, scoped};
-use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+use crate::http::{
+    Api, Auth, Method, encode, encode_path, optional, parse_time, permission, scoped,
+};
+use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, IssueApi, PullRequestApi};
 
 /// The GitHub provider.
 pub struct GitHub;
@@ -184,6 +187,70 @@ impl From<Repo> for RemoteRepo {
             default_branch: r.default_branch,
             archived: r.archived,
         }
+    }
+}
+
+/// An issue, or a pull request: the issues endpoints list both.
+#[derive(Deserialize)]
+struct IssueItem {
+    number: u64,
+    title: String,
+    html_url: String,
+    #[serde(default)]
+    user: Option<User>,
+    #[serde(default)]
+    labels: Vec<Label>,
+    #[serde(default)]
+    assignees: Vec<User>,
+    #[serde(default)]
+    created_at: Option<String>,
+    /// Present on pull requests only.
+    #[serde(default)]
+    pull_request: Option<serde_json::Value>,
+}
+
+impl From<IssueItem> for Issue {
+    fn from(i: IssueItem) -> Self {
+        Self {
+            number: i.number,
+            title: i.title,
+            url: i.html_url,
+            author: i.user.map(|u| u.login).unwrap_or_default(),
+            labels: i.labels.into_iter().map(|l| l.name).collect(),
+            assignees: i.assignees.into_iter().map(|u| u.login).collect(),
+            created_at: i.created_at.as_deref().and_then(parse_time),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Label {
+    name: String,
+}
+
+/// Whether a repository has issues.
+#[derive(Deserialize)]
+struct RepoFeatures {
+    #[serde(default = "yes")]
+    has_issues: bool,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// What a token needs to create, comment on and close issues.
+const ISSUE_SCOPE: &str = "the token needs the repo scope (public_repo for a public \
+                           repository) on a classic token, or Issues: read and write on a \
+                           fine-grained token";
+
+/// GitHub answers 410 Gone on the issues of a repository that disabled them.
+fn issues_disabled<T>(result: Result<T, ForgeError>, repo: &str) -> Result<T, ForgeError> {
+    match result {
+        Err(ForgeError::Http { status: 410, .. }) => Err(ForgeError::Unsupported(format!(
+            "issues are disabled on {repo}"
+        ))),
+        other => other,
     }
 }
 
@@ -692,6 +759,135 @@ impl CiApi for GitHub {
             )?;
         }
         Ok(runs.len())
+    }
+}
+
+impl IssueApi for GitHub {
+    fn open_issues(&self, at: &Endpoint, repo: &str) -> Result<Vec<Issue>, ForgeError> {
+        let items: Vec<IssueItem> = issues_disabled(
+            api(at).get_pages(
+                &format!(
+                    "/repos/{}/issues?state=open&sort=created&direction=asc&per_page=100",
+                    encode_path(repo)
+                ),
+                &format!("repository {repo}"),
+            ),
+            repo,
+        )?;
+        Ok(items
+            .into_iter()
+            .filter(|i| i.pull_request.is_none())
+            .map(Issue::from)
+            .collect())
+    }
+
+    fn issue_choices(&self, at: &Endpoint, repo: &str) -> Result<IssueChoices, ForgeError> {
+        let api = api(at);
+        let base = format!("/repos/{}", encode_path(repo));
+        let features: RepoFeatures = api.get(&base, &format!("repository {repo}"))?;
+        if !features.has_issues {
+            return Err(ForgeError::Unsupported(format!(
+                "issues are disabled on {repo}"
+            )));
+        }
+        let labels: Vec<Label> =
+            optional(api.get_pages(&format!("{base}/labels?per_page=100"), "labels"))?
+                .unwrap_or_default();
+        // Only users with push access may list (and set) assignees.
+        let assignees: Vec<User> =
+            optional(api.get_pages(&format!("{base}/assignees?per_page=100"), "assignees"))?
+                .unwrap_or_default();
+        let mut choices = IssueChoices {
+            labels: labels.into_iter().map(|l| l.name).collect(),
+            assignees: assignees.into_iter().map(|u| u.login).collect(),
+        };
+        choices.labels.sort_by_key(|l| l.to_lowercase());
+        choices.assignees.sort_by_key(|l| l.to_lowercase());
+        Ok(choices)
+    }
+
+    fn create_issue(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        draft: &IssueDraft,
+    ) -> Result<IssueRef, ForgeError> {
+        let mut body = json!({ "title": draft.title, "body": draft.description });
+        if !draft.labels.is_empty() {
+            body["labels"] = json!(draft.labels);
+        }
+        if !draft.assignees.is_empty() {
+            body["assignees"] = json!(draft.assignees);
+        }
+        let created: Created = scoped(
+            issues_disabled(
+                api(at).write(
+                    Method::Post,
+                    &format!("/repos/{}/issues", encode_path(repo)),
+                    body,
+                    &format!("repository {repo}"),
+                ),
+                repo,
+            ),
+            "create an issue",
+            ISSUE_SCOPE,
+        )?;
+        Ok(IssueRef {
+            number: created.number,
+            url: created.html_url,
+        })
+    }
+
+    fn close_issue(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        reason: CloseReason,
+        comment: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        let api = api(at);
+        let path = format!("/repos/{}/issues/{number}", encode_path(repo));
+        let what = format!("issue #{number}");
+        if let Some(comment) = comment.filter(|c| !c.trim().is_empty()) {
+            scoped(
+                api.write_unit(
+                    Method::Post,
+                    &format!("{path}/comments"),
+                    json!({ "body": comment }),
+                    &what,
+                ),
+                "comment on the issue",
+                ISSUE_SCOPE,
+            )?;
+        }
+        let reason = match reason {
+            CloseReason::Completed => "completed",
+            CloseReason::NotPlanned => "not_planned",
+        };
+        scoped(
+            api.write_unit(
+                Method::Patch,
+                &path,
+                json!({ "state": "closed", "state_reason": reason }),
+                &what,
+            ),
+            "close the issue",
+            ISSUE_SCOPE,
+        )
+    }
+
+    fn reopen_issue(&self, at: &Endpoint, repo: &str, number: u64) -> Result<(), ForgeError> {
+        scoped(
+            api(at).write_unit(
+                Method::Patch,
+                &format!("/repos/{}/issues/{number}", encode_path(repo)),
+                json!({ "state": "open", "state_reason": "reopened" }),
+                &format!("issue #{number}"),
+            ),
+            "reopen the issue",
+            ISSUE_SCOPE,
+        )
     }
 }
 

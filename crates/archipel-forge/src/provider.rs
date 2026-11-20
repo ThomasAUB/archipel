@@ -4,8 +4,9 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    AutoMergeReport, CiJobLog, CiRun, ForgeKind, ForgeToken, MergeOptions, MergeReport, Namespace,
-    NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo,
+    AutoMergeReport, CiJobLog, CiRun, CloseReason, ForgeKind, ForgeToken, Issue, IssueChoices,
+    IssueDraft, IssueRef, MergeOptions, MergeReport, Namespace, NewRemoteRepo, PullRequestDraft,
+    PullRequestRef, PullRequestStatus, RemoteRepo,
 };
 
 use crate::http::HttpTransport;
@@ -129,6 +130,58 @@ pub trait CiApi: Send + Sync {
     }
 }
 
+/// Issues. Every call is unsupported by default: a provider without issues
+/// implements nothing (`impl IssueApi for Gitea {}`), and the app says so
+/// instead of offering a form that cannot be sent.
+pub trait IssueApi: Send + Sync {
+    /// Every open issue (pull requests left out), oldest first.
+    fn open_issues(&self, at: &Endpoint, repo: &str) -> Result<Vec<Issue>, ForgeError> {
+        let _ = (at, repo);
+        Err(no_issues())
+    }
+
+    /// The repo's labels and assignable users; [`ForgeError::Unsupported`]
+    /// when the repo has issues disabled.
+    fn issue_choices(&self, at: &Endpoint, repo: &str) -> Result<IssueChoices, ForgeError> {
+        let _ = (at, repo);
+        Err(no_issues())
+    }
+
+    /// Opens an issue.
+    fn create_issue(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        draft: &IssueDraft,
+    ) -> Result<IssueRef, ForgeError> {
+        let _ = (at, repo, draft);
+        Err(no_issues())
+    }
+
+    /// Closes an issue, posting `comment` first when there is one.
+    fn close_issue(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        reason: CloseReason,
+        comment: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        let _ = (at, repo, number, reason, comment);
+        Err(no_issues())
+    }
+
+    /// Reopens an issue.
+    fn reopen_issue(&self, at: &Endpoint, repo: &str, number: u64) -> Result<(), ForgeError> {
+        let _ = (at, repo, number);
+        Err(no_issues())
+    }
+}
+
+fn no_issues() -> ForgeError {
+    ForgeError::Unsupported("this forge does not serve issues here".into())
+}
+
 /// Account browsing (clone from an account / org / group) and repository
 /// creation (publish a local repository).
 pub trait DirectoryApi: Send + Sync {
@@ -155,6 +208,6 @@ pub trait DirectoryApi: Send + Sync {
 }
 
 /// A complete provider: what [`crate::ForgeClient::register`] takes.
-pub trait Provider: ForgeApi + PullRequestApi + CiApi + DirectoryApi {}
+pub trait Provider: ForgeApi + PullRequestApi + CiApi + IssueApi + DirectoryApi {}
 
-impl<T: ForgeApi + PullRequestApi + CiApi + DirectoryApi> Provider for T {}
+impl<T: ForgeApi + PullRequestApi + CiApi + IssueApi + DirectoryApi> Provider for T {}

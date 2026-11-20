@@ -42,12 +42,13 @@ pub mod settings;
 
 pub use actions::{Action, ActionContext, ActionRegistry, Command, CustomCommand};
 pub use app::{
-    App, AppError, AppEvent, AutoMergeOutcome, CloneOutcome, CloneProtocol, CreateRepoRequest,
-    DirectoryTarget, Extensions, INITIAL_COMMIT_MESSAGE, InsightsReport, NewSetRequest,
-    PUBLISH_REMOTE, ProjectIcon, ProjectIdentity, ProjectWorktree, PublishOutcome, PublishTarget,
-    PullRequestOutcome, PullRequestPlan, PullRequestTarget, RepoInsights, RepoPullRequests,
-    Services, SetMemberPlan, SetMemberState, SetRepoInfo, SetReport, UpdateInstall, clone_dir_name,
-    file_project_id, initials, publish_name, split_clone_urls,
+    App, AppError, AppEvent, AutoMergeOutcome, CloneOutcome, CloneProtocol, ClosedIssue,
+    CreateRepoRequest, DirectoryTarget, Extensions, INITIAL_COMMIT_MESSAGE, InsightsReport,
+    IssueTarget, NewSetRequest, PUBLISH_REMOTE, ProjectIcon, ProjectIdentity, ProjectWorktree,
+    PublishOutcome, PublishTarget, PullRequestOutcome, PullRequestPlan, PullRequestTarget,
+    RepoInsights, RepoIssues, RepoPullRequests, Services, SetMemberPlan, SetMemberState,
+    SetRepoInfo, SetReport, UpdateInstall, clone_dir_name, file_project_id, initials, publish_name,
+    split_clone_urls,
 };
 pub use archipel_stats::{BranchRow, BranchesView, DEFAULT_STALE_BRANCH_DAYS};
 /// Repository statistics (issue #93).

@@ -3,15 +3,16 @@
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    AutoMergeReport, CiJob, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeOptions,
-    MergeReport, MergeState, Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft,
-    PullRequestRef, PullRequestStatus, RemoteRepo, ReviewState,
+    AutoMergeReport, CiJob, CiJobState, CiRun, CiState, CloseReason, ForgeKind, Issue,
+    IssueChoices, IssueDraft, IssueRef, MergeMethod, MergeOptions, MergeReport, MergeState,
+    Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    RemoteRepo, ReviewState,
 };
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{Api, Auth, Method, encode, optional, permission, scoped};
-use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+use crate::http::{Api, Auth, Method, encode, optional, parse_time, permission, scoped};
+use crate::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, IssueApi, PullRequestApi};
 
 /// The GitLab provider.
 pub struct GitLab;
@@ -135,6 +136,82 @@ impl From<Project> for RemoteRepo {
 #[derive(Deserialize)]
 struct NamespaceId {
     id: u64,
+}
+
+#[derive(Deserialize)]
+struct GitLabIssue {
+    iid: u64,
+    title: String,
+    web_url: String,
+    #[serde(default)]
+    author: Option<User>,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    assignees: Vec<User>,
+    #[serde(default)]
+    created_at: Option<String>,
+}
+
+impl From<GitLabIssue> for Issue {
+    fn from(i: GitLabIssue) -> Self {
+        Self {
+            number: i.iid,
+            title: i.title,
+            url: i.web_url,
+            author: i.author.map(|u| u.username).unwrap_or_default(),
+            labels: i.labels,
+            assignees: i.assignees.into_iter().map(|u| u.username).collect(),
+            created_at: i.created_at.as_deref().and_then(parse_time),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Label {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct Member {
+    id: u64,
+    username: String,
+}
+
+/// Whether a project has issues (`issues_access_level`, or the older
+/// `issues_enabled`).
+#[derive(Deserialize)]
+struct ProjectFeatures {
+    #[serde(default)]
+    issues_enabled: Option<bool>,
+    #[serde(default)]
+    issues_access_level: Option<String>,
+}
+
+impl ProjectFeatures {
+    fn has_issues(&self) -> bool {
+        match self.issues_access_level.as_deref() {
+            Some(level) => level != "disabled",
+            None => self.issues_enabled.unwrap_or(true),
+        }
+    }
+}
+
+/// What a token needs to create, comment on and close issues.
+const ISSUE_SCOPE: &str = "the token needs the api scope, and a role allowed to manage issues \
+                           (Planner or Reporter to close them)";
+
+/// Fails with [`ForgeError::Unsupported`] when the project has issues
+/// disabled.
+fn check_issues(api: &Api<'_>, repo: &str) -> Result<(), ForgeError> {
+    let features: ProjectFeatures = api.get(&project(repo), &format!("project {repo}"))?;
+    if features.has_issues() {
+        Ok(())
+    } else {
+        Err(ForgeError::Unsupported(format!(
+            "issues are disabled on {repo}"
+        )))
+    }
 }
 
 /// What a token needs to create a project.
@@ -509,6 +586,138 @@ impl CiApi for GitLab {
             RETRY_SCOPE,
         )?;
         Ok(1)
+    }
+}
+
+impl IssueApi for GitLab {
+    fn open_issues(&self, at: &Endpoint, repo: &str) -> Result<Vec<Issue>, ForgeError> {
+        let api = api(at);
+        let listed = api.get_pages::<GitLabIssue>(
+            &format!(
+                "{}/issues?state=opened&order_by=created_at&sort=asc&per_page=100",
+                project(repo)
+            ),
+            &format!("project {repo}"),
+        );
+        match listed {
+            Ok(issues) => Ok(issues.into_iter().map(Issue::from).collect()),
+            // Disabled issues answer 403 / 404: say so when it is that.
+            Err(e @ (ForgeError::NotFound { .. } | ForgeError::Unauthorized { .. })) => {
+                check_issues(&api, repo)?;
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn issue_choices(&self, at: &Endpoint, repo: &str) -> Result<IssueChoices, ForgeError> {
+        let api = api(at);
+        check_issues(&api, repo)?;
+        let base = project(repo);
+        let labels: Vec<Label> =
+            optional(api.get_pages(&format!("{base}/labels?per_page=100"), "labels"))?
+                .unwrap_or_default();
+        let members: Vec<Member> =
+            optional(api.get_pages(&format!("{base}/members/all?per_page=100"), "members"))?
+                .unwrap_or_default();
+        let mut choices = IssueChoices {
+            labels: labels.into_iter().map(|l| l.name).collect(),
+            assignees: members.into_iter().map(|m| m.username).collect(),
+        };
+        choices.labels.sort_by_key(|l| l.to_lowercase());
+        choices.assignees.sort_by_key(|l| l.to_lowercase());
+        choices.assignees.dedup();
+        Ok(choices)
+    }
+
+    fn create_issue(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        draft: &IssueDraft,
+    ) -> Result<IssueRef, ForgeError> {
+        let api = api(at);
+        let base = project(repo);
+        let mut body = json!({ "title": draft.title, "description": draft.description });
+        if !draft.labels.is_empty() {
+            body["labels"] = json!(draft.labels.join(","));
+        }
+        if !draft.assignees.is_empty() {
+            // GitLab assigns by user id.
+            let mut ids = Vec::new();
+            for login in &draft.assignees {
+                let found: Vec<Member> = api.get(
+                    &format!("/users?username={}", encode(login)),
+                    &format!("user {login}"),
+                )?;
+                let user = found
+                    .into_iter()
+                    .find(|u| u.username == *login)
+                    .ok_or_else(|| ForgeError::NotFound {
+                        host: at.host.to_owned(),
+                        what: format!("user {login}"),
+                    })?;
+                ids.push(user.id);
+            }
+            body["assignee_ids"] = json!(ids);
+        }
+        let created: Created = scoped(
+            api.write(
+                Method::Post,
+                &format!("{base}/issues"),
+                body,
+                &format!("project {repo}"),
+            ),
+            "create an issue",
+            ISSUE_SCOPE,
+        )?;
+        Ok(IssueRef {
+            number: created.iid,
+            url: created.web_url,
+        })
+    }
+
+    fn close_issue(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        _reason: CloseReason,
+        comment: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        let api = api(at);
+        let path = format!("{}/issues/{number}", project(repo));
+        let what = format!("issue #{number}");
+        if let Some(comment) = comment.filter(|c| !c.trim().is_empty()) {
+            scoped(
+                api.write_unit(
+                    Method::Post,
+                    &format!("{path}/notes"),
+                    json!({ "body": comment }),
+                    &what,
+                ),
+                "comment on the issue",
+                ISSUE_SCOPE,
+            )?;
+        }
+        scoped(
+            api.write_unit(Method::Put, &path, json!({ "state_event": "close" }), &what),
+            "close the issue",
+            ISSUE_SCOPE,
+        )
+    }
+
+    fn reopen_issue(&self, at: &Endpoint, repo: &str, number: u64) -> Result<(), ForgeError> {
+        scoped(
+            api(at).write_unit(
+                Method::Put,
+                &format!("{}/issues/{number}", project(repo)),
+                json!({ "state_event": "reopen" }),
+                &format!("issue #{number}"),
+            ),
+            "reopen the issue",
+            ISSUE_SCOPE,
+        )
     }
 }
 

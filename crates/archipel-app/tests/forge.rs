@@ -11,8 +11,9 @@ use archipel_app::{
     App, AppError, AutoMergeOutcome, CloneProtocol, Command, Extensions, PublishTarget, Services,
 };
 use archipel_model::forge::{
-    CiJob, CiJobLog, CiJobState, CiRun, CiState, ForgeKind, MergeMethod, MergeState, Namespace,
-    NamespaceKind, NewRemoteRepo, PullRequestStatus, RemoteRepo, ReviewState,
+    CiJob, CiJobLog, CiJobState, CiRun, CiState, CloseReason, ForgeKind, Issue, IssueChoices,
+    IssueDraft, MergeMethod, MergeState, Namespace, NamespaceKind, NewRemoteRepo,
+    PullRequestStatus, RemoteRepo, ReviewState,
 };
 use archipel_model::ports::{CredentialStore, ForgeAccountStore, ForgeDirectory, RemoteInfo};
 use archipel_model::project::{ProjectDef, ProjectLocation, RepoEntry};
@@ -491,6 +492,131 @@ fn passing_failure_of_a_first_read_is_retried_before_showing_an_error() {
         matches!(ci_of(&e, &r0), BranchCi::Error(_))
             && matches!(forge_of(&e, 0), ForgeStatus::Error(_))
     });
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one story, from listing to reopening
+fn issues_are_listed_created_closed_and_reopened() {
+    let e = env();
+    sign_in(&e);
+    e.forge.with_issue(
+        "acme/r0",
+        Issue {
+            number: 3,
+            title: "Crash".into(),
+            url: "https://github.com/acme/r0/issues/3".into(),
+            author: "ann".into(),
+            labels: vec!["bug".into()],
+            assignees: Vec::new(),
+            created_at: None,
+        },
+    );
+    e.forge.with_issue_choices(
+        "acme/r0",
+        IssueChoices {
+            labels: vec!["bug".into(), "ui".into()],
+            assignees: vec!["ann".into()],
+        },
+    );
+    e.forge.without_issues("acme/r1");
+
+    let app = e.app.clone();
+    let targets =
+        e.rt.block_on(async move { app.issue_targets(&[]).await })
+            .unwrap();
+    let choices: Vec<_> = targets.iter().map(|t| t.choices.clone()).collect();
+    assert_eq!(choices[0].as_ref().unwrap().labels, ["bug", "ui"]);
+    // Issues disabled on r1, r2's forge not signed in: said before typing.
+    assert!(
+        choices[1]
+            .as_ref()
+            .unwrap_err()
+            .contains("issues are disabled on acme/r1")
+    );
+    assert!(choices[2].as_ref().unwrap_err().contains("not signed in"));
+
+    let r0 = targets[0].clone();
+    let forge_repo = r0.forge.clone().unwrap();
+    assert_eq!(forge_repo.path, "acme/r0");
+    let app = e.app.clone();
+    let fr = forge_repo.clone();
+    let err =
+        e.rt.block_on(async move { app.create_issue(r0.repo, &fr, IssueDraft::default()).await })
+            .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)), "{err}");
+    let app = e.app.clone();
+    let fr = forge_repo.clone();
+    let created =
+        e.rt.block_on(async move {
+            let draft = IssueDraft {
+                title: "  Slow start ".into(),
+                description: "Takes 10 s".into(),
+                labels: vec!["ui".into()],
+                assignees: vec!["ann".into()],
+            };
+            app.create_issue(r0.repo, &fr, draft).await
+        })
+        .unwrap();
+    assert_eq!(created.number, 4);
+    assert_eq!(created.url, "https://github.com/acme/r0/issues/4");
+
+    let app = e.app.clone();
+    let listed =
+        e.rt.block_on(async move { app.open_issues(&[]).await })
+            .unwrap();
+    let numbers: Vec<_> = listed[0]
+        .result
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|i| (i.number, i.title.clone()))
+        .collect();
+    assert_eq!(numbers, [(3, "Crash".into()), (4, "Slow start".into())]);
+    assert!(listed[1].result.is_err());
+
+    let crash = listed[0].result.as_ref().unwrap()[0].clone();
+    let app = e.app.clone();
+    let fr = forge_repo.clone();
+    e.rt.block_on(async move {
+        app.close_issue(
+            r0.repo,
+            &fr,
+            &crash,
+            CloseReason::NotPlanned,
+            Some("Duplicate of #1".into()),
+        )
+        .await
+    })
+    .unwrap();
+    let closed = e
+        .forge
+        .issues()
+        .into_iter()
+        .find(|i| i.issue.number == 3)
+        .unwrap();
+    assert!(!closed.open);
+    assert_eq!(closed.reason, Some(CloseReason::NotPlanned));
+    assert_eq!(closed.comments, ["Duplicate of #1"]);
+    let session: Vec<u64> = e
+        .app
+        .closed_issues()
+        .iter()
+        .map(|c| c.issue.number)
+        .collect();
+    assert_eq!(session, [3]);
+
+    let app = e.app.clone();
+    e.rt.block_on(async move { app.reopen_issue(r0.repo, &forge_repo, 3).await })
+        .unwrap();
+    assert!(
+        e.forge
+            .issues()
+            .iter()
+            .find(|i| i.issue.number == 3)
+            .unwrap()
+            .open
+    );
+    assert!(e.app.closed_issues().is_empty());
 }
 
 #[test]

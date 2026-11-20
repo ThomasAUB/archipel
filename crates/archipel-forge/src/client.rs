@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use archipel_model::ForgeError;
 use archipel_model::forge::{
-    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
-    MergeOptions, MergeReport, Namespace, NewRemoteRepo, PullRequestDraft, PullRequestRef,
-    PullRequestStatus, RemoteRepo, normalize_host,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, CloseReason, ForgeAccount, ForgeKind, ForgeRepo,
+    ForgeToken, Issue, IssueChoices, IssueDraft, IssueRef, MergeOptions, MergeReport, Namespace,
+    NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus, RemoteRepo, normalize_host,
 };
 use archipel_model::ports::{
-    CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, PullRequestReader,
-    PullRequestWriter,
+    CiReader, CiWriter, CredentialStore, ForgeDirectory, ForgeSignIn, IssueReader, IssueWriter,
+    PullRequestReader, PullRequestWriter,
 };
 
 use crate::github::GitHub;
@@ -177,6 +177,40 @@ impl PullRequestWriter for ForgeClient {
     fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError> {
         self.with(&repo.account, |p, at| {
             p.disable_auto_merge(at, &repo.path, number)
+        })
+    }
+}
+
+impl IssueReader for ForgeClient {
+    fn open_issues(&self, repo: &ForgeRepo) -> Result<Vec<Issue>, ForgeError> {
+        self.with(&repo.account, |p, at| p.open_issues(at, &repo.path))
+    }
+
+    fn issue_choices(&self, repo: &ForgeRepo) -> Result<IssueChoices, ForgeError> {
+        self.with(&repo.account, |p, at| p.issue_choices(at, &repo.path))
+    }
+}
+
+impl IssueWriter for ForgeClient {
+    fn create_issue(&self, repo: &ForgeRepo, draft: &IssueDraft) -> Result<IssueRef, ForgeError> {
+        self.with(&repo.account, |p, at| p.create_issue(at, &repo.path, draft))
+    }
+
+    fn close_issue(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        reason: CloseReason,
+        comment: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        self.with(&repo.account, |p, at| {
+            p.close_issue(at, &repo.path, number, reason, comment)
+        })
+    }
+
+    fn reopen_issue(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError> {
+        self.with(&repo.account, |p, at| {
+            p.reopen_issue(at, &repo.path, number)
         })
     }
 }

@@ -7,13 +7,14 @@ use std::sync::{Condvar, Mutex};
 use super::lock;
 use crate::error::ForgeError;
 use crate::forge::{
-    AutoMergeReport, CiJob, CiJobLog, CiRun, ForgeAccount, ForgeKind, ForgeRepo, ForgeToken,
-    MergeOptions, MergeReport, MergeState, Namespace, NamespaceKind, NewRemoteRepo,
-    PullRequestDraft, PullRequestRef, PullRequestStatus, Release, RemoteRepo, ReviewState,
+    AutoMergeReport, CiJob, CiJobLog, CiRun, CloseReason, ForgeAccount, ForgeKind, ForgeRepo,
+    ForgeToken, Issue, IssueChoices, IssueDraft, IssueRef, MergeOptions, MergeReport, MergeState,
+    Namespace, NamespaceKind, NewRemoteRepo, PullRequestDraft, PullRequestRef, PullRequestStatus,
+    Release, RemoteRepo, ReviewState,
 };
 use crate::ports::{
     CiReader, CiWriter, CredentialStore, ForgeAccountStore, ForgeDirectory, ForgeSignIn,
-    PullRequestReader, PullRequestWriter, ReleaseFeed,
+    IssueReader, IssueWriter, PullRequestReader, PullRequestWriter, ReleaseFeed,
 };
 
 /// A pull request created through the fake.
@@ -40,6 +41,21 @@ pub struct MergedPullRequest {
     pub options: MergeOptions,
 }
 
+/// An issue of the fake, open or closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeIssue {
+    /// Repository path on the forge.
+    pub repo: String,
+    /// The issue.
+    pub issue: Issue,
+    /// Still open.
+    pub open: bool,
+    /// Why it was last closed.
+    pub reason: Option<CloseReason>,
+    /// Comments posted on it.
+    pub comments: Vec<String>,
+}
+
 /// A host known to the fake: provider, accepted token, user.
 type FakeHost = (ForgeKind, String, String);
 
@@ -60,6 +76,12 @@ struct ForgeState {
     auto_merges: HashMap<(String, u64), MergeOptions>,
     /// Repo paths whose forge auto-merge is refused, with the error.
     auto_merge_refused: HashMap<String, ForgeError>,
+    issues: Vec<FakeIssue>,
+    /// Repo path → its labels and assignees; a repo missing has issues
+    /// with nothing to choose from.
+    issue_choices: HashMap<String, IssueChoices>,
+    /// Repo paths with issues disabled.
+    no_issues: Vec<String>,
     repos: HashMap<String, Vec<RemoteRepo>>,
     hosts: HashMap<String, FakeHost>,
     /// Repo paths whose calls fail.
@@ -179,6 +201,45 @@ impl FakeForge {
     #[must_use]
     pub fn merged(&self) -> Vec<MergedPullRequest> {
         lock(&self.state).merged.clone()
+    }
+
+    /// Declares an open issue of repo `path`.
+    pub fn with_issue(&self, path: &str, issue: Issue) {
+        lock(&self.state).issues.push(FakeIssue {
+            repo: path.into(),
+            issue,
+            open: true,
+            reason: None,
+            comments: Vec::new(),
+        });
+    }
+
+    /// Declares the labels and assignees of repo `path`.
+    pub fn with_issue_choices(&self, path: &str, choices: IssueChoices) {
+        lock(&self.state).issue_choices.insert(path.into(), choices);
+    }
+
+    /// Disables the issues of repo `path`.
+    pub fn without_issues(&self, path: &str) {
+        lock(&self.state).no_issues.push(path.into());
+    }
+
+    /// Every issue, open or closed, created or declared.
+    #[must_use]
+    pub fn issues(&self) -> Vec<FakeIssue> {
+        lock(&self.state).issues.clone()
+    }
+
+    /// Fails when `repo` fails or has issues disabled.
+    fn check_issues(&self, repo: &ForgeRepo) -> Result<(), ForgeError> {
+        self.check(repo)?;
+        if lock(&self.state).no_issues.contains(&repo.path) {
+            return Err(ForgeError::Unsupported(format!(
+                "issues are disabled on {}",
+                repo.path
+            )));
+        }
+        Ok(())
     }
 
     /// Makes the status reads of repo `path` wait until [`Self::release`]
@@ -437,6 +498,109 @@ impl PullRequestWriter for FakeForge {
             }
         }
         s.auto_merges.remove(&(repo.path.clone(), number));
+        Ok(())
+    }
+}
+
+impl IssueReader for FakeForge {
+    fn open_issues(&self, repo: &ForgeRepo) -> Result<Vec<Issue>, ForgeError> {
+        self.check_issues(repo)?;
+        let mut open: Vec<Issue> = lock(&self.state)
+            .issues
+            .iter()
+            .filter(|i| i.repo == repo.path && i.open)
+            .map(|i| i.issue.clone())
+            .collect();
+        open.sort_by_key(|i| i.number);
+        Ok(open)
+    }
+
+    fn issue_choices(&self, repo: &ForgeRepo) -> Result<IssueChoices, ForgeError> {
+        self.check_issues(repo)?;
+        Ok(lock(&self.state)
+            .issue_choices
+            .get(&repo.path)
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+impl FakeForge {
+    fn find_issue<'a>(
+        s: &'a mut ForgeState,
+        repo: &ForgeRepo,
+        number: u64,
+    ) -> Result<&'a mut FakeIssue, ForgeError> {
+        s.issues
+            .iter_mut()
+            .find(|i| i.repo == repo.path && i.issue.number == number)
+            .ok_or_else(|| ForgeError::NotFound {
+                host: repo.account.host.clone(),
+                what: format!("issue {number}"),
+            })
+    }
+}
+
+impl IssueWriter for FakeForge {
+    fn create_issue(&self, repo: &ForgeRepo, draft: &IssueDraft) -> Result<IssueRef, ForgeError> {
+        self.check_issues(repo)?;
+        let mut s = lock(&self.state);
+        let number = s
+            .issues
+            .iter()
+            .filter(|i| i.repo == repo.path)
+            .map(|i| i.issue.number)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let url = format!(
+            "https://{}/{}/issues/{number}",
+            repo.account.host, repo.path
+        );
+        s.issues.push(FakeIssue {
+            repo: repo.path.clone(),
+            issue: Issue {
+                number,
+                title: draft.title.clone(),
+                url: url.clone(),
+                author: repo.account.user.clone(),
+                labels: draft.labels.clone(),
+                assignees: draft.assignees.clone(),
+                created_at: None,
+            },
+            open: true,
+            reason: None,
+            comments: if draft.description.is_empty() {
+                Vec::new()
+            } else {
+                vec![draft.description.clone()]
+            },
+        });
+        Ok(IssueRef { number, url })
+    }
+
+    fn close_issue(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        reason: CloseReason,
+        comment: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        self.check_issues(repo)?;
+        let mut s = lock(&self.state);
+        let issue = Self::find_issue(&mut s, repo, number)?;
+        if let Some(c) = comment {
+            issue.comments.push(c.to_owned());
+        }
+        issue.open = false;
+        issue.reason = Some(reason);
+        Ok(())
+    }
+
+    fn reopen_issue(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError> {
+        self.check_issues(repo)?;
+        let mut s = lock(&self.state);
+        Self::find_issue(&mut s, repo, number)?.open = true;
         Ok(())
     }
 }

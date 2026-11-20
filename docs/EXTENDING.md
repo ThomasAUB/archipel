@@ -12,7 +12,7 @@ implementation; you never patch the core.
 | Palette / menu actions | `archipel_app::Action` (or `SimpleAction`) | `Extensions::actions` (`ActionRegistry`) |
 | Shortcuts | keymap file `keymap.toml` | user config dir |
 | "Open in browser" links | `archipel_app::forge::ForgeProvider` | `ForgeRegistry::register` |
-| Forge API provider (Gitea, Bitbucket…) | `archipel_forge::provider::{ForgeApi, PullRequestApi, DirectoryApi}` | `ForgeClient::register` in `archipel_compose::forge_ports` |
+| Forge API provider (Gitea, Bitbucket…) | `archipel_forge::provider::{ForgeApi, PullRequestApi, CiApi, IssueApi, DirectoryApi}` | `ForgeClient::register` in `archipel_compose::forge_ports` |
 | Forge access as a whole (other client, no network) | the forge ports of `archipel_model::ports::forge` | `Services::forge` (`ForgePorts`) |
 | Ticket prefix | `archipel_app::message::TicketPrefixExtractor` | per-project settings |
 | Commit message templates | `archipel_app::message::MessageTemplate` | per-project settings |
@@ -123,14 +123,14 @@ impl ForgeProvider for Gitea {
 
 ## A forge API provider
 
-The "Pull request" dashboard column, pull request creation and clone from an
-account go through `ForgeClient` (`archipel-forge`), which dispatches to the
+The "Pull request" dashboard column, pull request creation, issues and clone
+from an account go through `ForgeClient` (`archipel-forge`), which dispatches to the
 provider registered for each account's kind. A provider only builds HTTP
 requests and parses answers through `Endpoint` (transport, API URL, token),
 so it is tested against a fake transport.
 
 ```rust
-use archipel_forge::provider::{DirectoryApi, Endpoint, ForgeApi, PullRequestApi};
+use archipel_forge::provider::{CiApi, DirectoryApi, Endpoint, ForgeApi, IssueApi, PullRequestApi};
 use archipel_model::ForgeError;
 use archipel_model::forge::ForgeKind;
 
@@ -143,6 +143,11 @@ impl ForgeApi for Gitea {
     fn current_user(&self, at: &Endpoint) -> Result<String, ForgeError> { todo!("GET /user") }
 }
 impl PullRequestApi for Gitea { /* for_branch, create, set_description */ }
+impl CiApi for Gitea { /* branch_ci; job_log, rerun_failed optional */ }
+// Every issue call defaults to "unsupported": the app then says the repo
+// takes no issues. Override open_issues, issue_choices, create_issue,
+// close_issue and reopen_issue to serve them.
+impl IssueApi for Gitea {}
 impl DirectoryApi for Gitea { /* namespaces, repositories */ }
 
 // In archipel_compose::forge_ports:

@@ -594,6 +594,16 @@ impl ActionRegistry {
             with_project,
         ));
         r.register(ui(
+            "forge.issues",
+            "Open issues of selected repos (all when none): close, reopen…",
+            with_project,
+        ));
+        r.register(ui(
+            "forge.new_issue",
+            "New issue… (on one of the selected repos)",
+            with_project,
+        ));
+        r.register(ui(
             "forge.clone",
             "Clone repositories from a forge account…",
             with_project,

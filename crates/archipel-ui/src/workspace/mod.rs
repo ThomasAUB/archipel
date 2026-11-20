@@ -105,6 +105,9 @@ pub struct Workspace {
     dash_rows: HashMap<RepoId, Entity<DashRow>>,
     log: VecDeque<(Timestamp, String, bool)>,
     notice: Option<String>,
+    /// A notice that opens a page when clicked: `(notice text, URL)`, only
+    /// while that text is the notice shown.
+    notice_link: Option<(String, String)>,
     warnings: Vec<String>,
     /// The open menu and where it opens (see [`menus`]).
     menu: Option<(Menu, Point<Pixels>)>,
@@ -181,6 +184,7 @@ impl Workspace {
             dash_rows: HashMap::new(),
             log: VecDeque::new(),
             notice: None,
+            notice_link: None,
             warnings,
             menu: None,
             menu_closed_at: None,
