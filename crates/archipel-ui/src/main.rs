@@ -57,6 +57,7 @@ mod worktree_dialog;
 mod worktree_open;
 mod worktree_set_dialog;
 
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 
 use archipel_compose::{AppDirs, ComposeError, ComposeOptions, Composition};
@@ -216,25 +217,8 @@ fn main() {
     };
     let _log = archipel_compose::init_logging(&dirs);
     startup::mark("logging");
-    let listener = if args.standalone {
-        None
-    } else if args.after_update {
-        match instance::take_over(&dirs.data) {
-            Some(instance::Startup::Primary(listener)) => Some(listener),
-            _ => None,
-        }
-    } else {
-        let request = instance::Request {
-            dir: args.dir.clone(),
-        };
-        match instance::forward_or_listen(&dirs.data, &request) {
-            Some(instance::Startup::Forwarded) => {
-                startup::mark("forwarded to the running instance");
-                return;
-            }
-            Some(instance::Startup::Primary(listener)) => Some(listener),
-            None => None,
-        }
+    let ControlFlow::Continue(listener) = claim_instance(&args, &dirs) else {
+        return;
     };
     startup::mark("instance");
     let themes_dir = dirs.themes_dir();
@@ -298,6 +282,31 @@ fn main() {
             jump_list::refresh(cx);
             cx.activate(true);
         });
+}
+
+/// Becomes the primary instance (listening for later launches), or hands
+/// the request to the running one: `Break` then means this process is done.
+fn claim_instance(args: &Args, dirs: &AppDirs) -> ControlFlow<(), Option<instance::Listener>> {
+    if args.standalone {
+        return ControlFlow::Continue(None);
+    }
+    if args.after_update {
+        return ControlFlow::Continue(match instance::take_over(&dirs.data) {
+            Some(instance::Startup::Primary(listener)) => Some(listener),
+            _ => None,
+        });
+    }
+    let request = instance::Request {
+        dir: args.dir.clone(),
+    };
+    match instance::forward_or_listen(&dirs.data, &request) {
+        Some(instance::Startup::Forwarded) => {
+            startup::mark("forwarded to the running instance");
+            ControlFlow::Break(())
+        }
+        Some(instance::Startup::Primary(listener)) => ControlFlow::Continue(Some(listener)),
+        None => ControlFlow::Continue(None),
+    }
 }
 
 /// Opens a window for each later `archipel [<dir>]` launch.
