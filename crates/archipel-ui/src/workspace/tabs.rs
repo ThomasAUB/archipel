@@ -51,11 +51,9 @@ impl Workspace {
             .rows()
             .into_iter()
             .map(|r| {
-                // A worktree: `libfoo · feat/parser` with the glyph, its
-                // folder on hover (spec §10).
-                let path = r
-                    .is_worktree()
-                    .then(|| r.path.as_path().display().to_string());
+                // Every repo tab shows its folder on hover; a worktree reads
+                // `libfoo · feat/parser` with the glyph (spec §10).
+                let path = Some(r.path.as_path().display().to_string());
                 let label = match &r.worktree {
                     Some(_) => format!("{} {}", archipel_app::dashboard::WORKTREE_GLYPH, r.label()),
                     None => r.name.clone(),
