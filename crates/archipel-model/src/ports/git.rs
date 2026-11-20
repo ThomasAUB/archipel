@@ -25,7 +25,7 @@ use crate::requests::{
     PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleUpdate,
     TagRequest,
 };
-use crate::stats::{CommitRecord, RepoStorage};
+use crate::stats::{CommitRecord, RepoStorage, TreeFile};
 use crate::submodule::SubmoduleInfo;
 use crate::summary::RepoSummary;
 use crate::time::Timestamp;
@@ -169,6 +169,19 @@ pub trait ChurnReader: Send + Sync {
     ) -> Result<RepoStorage, GitError> {
         let _ = (repo, largest, cancel);
         Ok(RepoStorage::default())
+    }
+
+    /// The text files of the tree at `rev` with their line counts (binary
+    /// files left out) and their `linguist-*` attributes. The default
+    /// lists nothing.
+    fn tree_files(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        cancel: &CancelToken,
+    ) -> Result<Vec<TreeFile>, GitError> {
+        let _ = (repo, rev, cancel);
+        Ok(Vec::new())
     }
 }
 

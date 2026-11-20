@@ -766,6 +766,30 @@ fn records_and_storage_for_statistics() {
 }
 
 #[test]
+fn tree_files_for_the_language_breakdown() {
+    let (repo, path, cli) = setup();
+    repo.write("src/main.rs", "fn main() {\n}\n").unwrap();
+    repo.write("gen/schema.rs", "// generated\n").unwrap();
+    repo.write("blob.bin", "a\0b\nc").unwrap();
+    repo.write(".gitattributes", "gen/** linguist-generated\n")
+        .unwrap();
+    repo.commit_all("sources").unwrap();
+    // Not committed: not counted.
+    repo.write("src/lib.rs", "x\n").unwrap();
+    let mut files = cli.tree_files(&path, "HEAD", &CancelToken::new()).unwrap();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [".gitattributes", "a.txt", "gen/schema.rs", "src/main.rs"]
+    );
+    assert_eq!(files[1].lines, 3);
+    assert_eq!(files[3].lines, 2);
+    assert_eq!(files[2].excluded, Some(true));
+    assert_eq!(files[3].excluded, None);
+}
+
+#[test]
 fn branch_upstream_configuration() {
     let (repo, path, cli) = setup();
     repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"])

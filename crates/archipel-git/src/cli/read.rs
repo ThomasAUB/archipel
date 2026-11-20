@@ -14,7 +14,7 @@ use archipel_model::ports::{
     RemoteReader, StashReader, StatusReader,
 };
 use archipel_model::refs::{BranchInfo, RefKind, RefTip, StashEntry, TagInfo};
-use archipel_model::stats::{BlobSize, CommitRecord, RepoStorage};
+use archipel_model::stats::{BlobSize, CommitRecord, RepoStorage, TreeFile};
 use archipel_model::{
     CancelToken, ChangedFiles, ContainingBranch, GitError, HeadState, Oid, RepoPath, RepoSummary,
     Timestamp, Upstream,
@@ -24,7 +24,10 @@ use super::GitCli;
 use super::runner::{Cmd, CmdKind};
 use crate::gitdir::{GitDirs, has_submodules};
 use crate::parse::diff::parse_unified_diff;
-use crate::parse::insight::{RECORD_FORMAT, parse_blob_size, parse_count_objects, parse_record};
+use crate::parse::insight::{
+    LINGUIST_ATTRS, RECORD_FORMAT, apply_linguist_attrs, parse_blob_size, parse_count_objects,
+    parse_grep_count, parse_record,
+};
 use crate::parse::numstat::{CHURN_FORMAT, parse_churn_record};
 use crate::parse::refs::{
     BRANCH_FORMAT, TAG_FORMAT, TIP_FORMAT, parse_branches, parse_tags, parse_tips,
@@ -659,6 +662,63 @@ impl ChurnReader for GitCli {
         blobs.sort_by_key(|b| Reverse(b.bytes));
         storage.largest_blobs = blobs;
         Ok(storage)
+    }
+
+    fn tree_files(
+        &self,
+        repo: &RepoPath,
+        rev: &str,
+        cancel: &CancelToken,
+    ) -> Result<Vec<TreeFile>, GitError> {
+        let Some(oid) = self.resolve(repo, rev)? else {
+            return Ok(Vec::new());
+        };
+        let hex = oid.to_hex();
+        // Every line matches the empty pattern; `-I` leaves binary files
+        // out, and submodules are not searched. Exit code 1: no text file.
+        let cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Read,
+            &["grep", "-c", "-I", "-z", "--no-color", "-e", ""],
+        )
+        .arg(hex.as_str())
+        .arg("--")
+        .ok_codes(&[0, 1])
+        .cancel(cancel);
+        let mut files = Vec::new();
+        self.runner.stream(cmd, b'\n', &mut |line| {
+            files.extend(parse_grep_count(line, &hex));
+            Ok(ControlFlow::Continue(()))
+        })?;
+        // `linguist-*` attributes, as of that commit (`--source`, Git 2.40),
+        // when the tree has a `.gitattributes`.
+        let attributed = files
+            .iter()
+            .any(|f| f.path.rsplit('/').next() == Some(".gitattributes"));
+        if attributed {
+            cancel.check()?;
+            let paths: Vec<u8> = files
+                .iter()
+                .flat_map(|f| f.path.bytes().chain([0]))
+                .collect();
+            let out = self.runner.run(
+                Cmd::new(
+                    repo.as_path(),
+                    CmdKind::Read,
+                    &["check-attr", "-z", "--stdin"],
+                )
+                .arg(format!("--source={hex}"))
+                .args(LINGUIST_ATTRS)
+                .stdin(paths)
+                .cancel(cancel),
+            );
+            match out {
+                Ok(out) => apply_linguist_attrs(&out.stdout, &mut files),
+                Err(GitError::Cancelled) => return Err(GitError::Cancelled),
+                Err(e) => tracing::debug!("linguist attributes: {e}"),
+            }
+        }
+        Ok(files)
     }
 }
 

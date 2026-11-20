@@ -244,7 +244,8 @@ impl Runner {
     }
 
     /// Runs a command and streams its stdout split on `delimiter`; the sink
-    /// may stop early with `Break` (the process is then killed).
+    /// may stop early with `Break` (the process is then killed). Fails when
+    /// the exit code is not in `ok_codes`.
     pub fn stream(
         &self,
         mut cmd: Cmd<'_>,
@@ -268,7 +269,11 @@ impl Runner {
         log_command(&display, started, status.code());
         match outcome? {
             ControlFlow::Break(()) => Ok(()),
-            ControlFlow::Continue(()) if status.success() => Ok(()),
+            ControlFlow::Continue(())
+                if status.code().is_some_and(|c| cmd.ok_codes.contains(&c)) =>
+            {
+                Ok(())
+            }
             ControlFlow::Continue(()) => Err(GitError::CommandFailed {
                 command: display,
                 exit_code: status.code(),

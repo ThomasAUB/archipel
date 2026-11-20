@@ -30,6 +30,7 @@ mod default_branch;
 mod engine;
 mod error;
 mod insights;
+pub mod languages;
 mod pause;
 mod provider;
 mod registry;
@@ -50,6 +51,7 @@ pub use insights::{
     OLD_DAYS, RECENT_DAYS, RepoHistory, RepoWeight, STREAK_MIN, TINY_LINES, TagCadence, TagPoint,
     TinyStreak, human_bytes, latest_tag,
 };
+pub use languages::{LanguageShare, RepoLanguages};
 pub use pause::PauseToken;
 pub use provider::{RepoTarget, StatProvider, StatSources};
 pub use registry::{ProjectStats, ProviderResult, ProviderView, RepoStats, StatsRegistry};

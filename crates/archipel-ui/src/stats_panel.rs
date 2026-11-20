@@ -1,6 +1,7 @@
 //! The statistics panel (issue #93): contribution per author, commit size
-//! distribution, churn against age, tag cadence, lead time to merge and
-//! repository weight, for the project or one of its repos, as charts.
+//! distribution, churn against age, tag cadence, lead time to merge,
+//! repository weight and (issue #94) the language breakdown, for the project
+//! or one of its repos, as charts.
 //!
 //! Opened from the dashboard and the tree view (toolbar **Statistics…**, the
 //! row menu and the tree's hover buttons). Everything is read in the
@@ -14,8 +15,8 @@ use std::time::Duration;
 
 use archipel_app::dashboard::exact_time;
 use archipel_app::insights::{
-    AdviceLevel, FILE_BUCKETS, HUGE_LINES, Insights, LINE_BUCKETS, RECENT_DAYS, TINY_LINES,
-    human_bytes,
+    AdviceLevel, FILE_BUCKETS, HUGE_LINES, Insights, LINE_BUCKETS, LanguageShare, RECENT_DAYS,
+    TINY_LINES, human_bytes,
 };
 use archipel_app::{App as Core, InsightsReport};
 use archipel_model::{CancelToken, RepoId, Timestamp};
@@ -27,7 +28,7 @@ use gpui_kit::{
     SharedString, Window, canvas, div, point, px, relative,
 };
 
-use crate::theme::{color, lane, mono_font, radius};
+use crate::theme::{color, lane, mono_font, radius, rgb_color};
 use crate::widgets::{SHORT_OID, TextTooltip, button, chip};
 
 /// What the panel reports to the workspace.
@@ -40,6 +41,8 @@ pub enum StatsPanelEvent {
 const SERIES: u32 = 8;
 /// Contributors shown by name; the rest fold into "Others".
 const TOP_PEOPLE: usize = 7;
+/// Languages shown by name; the rest fold into "Other".
+const TOP_LANGUAGES: usize = 10;
 /// Weeks of the activity chart.
 const WEEKS: i64 = 52;
 const DAY: f64 = 86_400.0;
@@ -409,6 +412,142 @@ impl StatsPanel {
             )
             .child(columns("st-week", bars, 80.0, 2.0, cx)),
         )
+    }
+
+    #[allow(clippy::cast_precision_loss)] // shares
+    fn render_languages(&self, s: &Insights, cx: &App) -> Div {
+        let card = card(
+            "Languages",
+            "Share of each language in the code of the walked branch, by lines and by files \
+             (from file extensions; vendored, generated and binary files left out).",
+            cx,
+        );
+        if s.repo_languages.is_empty() {
+            return card.child(hint("The files could not be read.", cx));
+        }
+        if s.languages.is_empty() {
+            return card.child(hint("No source file in a known language.", cx));
+        }
+        let muted = color(cx, T::FgSubtle);
+        let (shown, other) = fold_languages(&s.languages);
+        let lines = s.languages.iter().map(|l| l.lines).sum::<u64>().max(1) as f32;
+        let files = s.languages.iter().map(|l| l.files).sum::<u64>().max(1) as f32;
+        let fill = |l: &LanguageShare| {
+            if l.name.is_empty() {
+                muted
+            } else {
+                rgb_color(l.color)
+            }
+        };
+        let mut rows: Vec<AnyElement> = vec![
+            div()
+                .flex()
+                .gap_3()
+                .text_xs()
+                .text_color(color(cx, T::FgSubtle))
+                .child(div().flex_1().child("LANGUAGE"))
+                .child(div().w(px(150.0)).child("SHARE OF LINES"))
+                .child(div().w(px(150.0)).child("SHARE OF FILES"))
+                .into_any_element(),
+        ];
+        for (i, l) in shown.iter().chain(other.as_ref()).enumerate() {
+            let tip = language_tip(l, lines, files);
+            let label = if l.name.is_empty() {
+                "Other".to_owned()
+            } else {
+                l.name.clone()
+            };
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("st-lang-{i}")))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .py(px(3.0))
+                    .rounded(radius(cx))
+                    .hover(|s| s.bg(color(cx, T::BgHover)))
+                    .when(l.name.is_empty(), |d| d.text_color(color(cx, T::FgMuted)))
+                    .tooltip(move |_, cx| TextTooltip::view(&tip, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(swatch(fill(l)))
+                            .child(div().truncate().child(label)),
+                    )
+                    .child(share_bar(l.lines as f32 / lines, fill(l), cx))
+                    .child(share_bar(l.files as f32 / files, fill(l).opacity(0.55), cx))
+                    .into_any_element(),
+            );
+        }
+        let mut card = card
+            .child(language_bar(
+                "st-lang-bar",
+                &s.languages,
+                px(10.0),
+                muted,
+                cx,
+            ))
+            .child(div().flex().flex_col().children(rows));
+        if s.repo_languages.len() > 1 {
+            let max = s
+                .repo_languages
+                .iter()
+                .map(archipel_app::insights::RepoLanguages::lines)
+                .max()
+                .unwrap_or(1)
+                .max(1) as f32;
+            card = card.child(sub_title("Per repository", cx)).children(
+                s.repo_languages.iter().enumerate().map(|(i, r)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .py(px(2.0))
+                        .child(div().w(px(130.0)).truncate().child(r.repo.clone()))
+                        .child(div().flex_1().min_w_0().child(
+                            div().w(relative((r.lines() as f32 / max).max(0.02))).child(
+                                language_bar(
+                                    &format!("st-lang-repo-{i}"),
+                                    &r.languages,
+                                    px(8.0),
+                                    muted,
+                                    cx,
+                                ),
+                            ),
+                        ))
+                        .child(
+                            div()
+                                .w(px(110.0))
+                                .text_xs()
+                                .text_color(color(cx, T::FgMuted))
+                                .child(format!("{} lines", thousands(r.lines()))),
+                        )
+                }),
+            );
+        }
+        let (excluded_files, excluded_lines) = s.repo_languages.iter().fold((0, 0), |(f, l), r| {
+            (f + r.excluded_files, l + r.excluded_lines)
+        });
+        card.child(hint(
+            &format!(
+                "{} lines in {} files.{}",
+                thousands(s.languages.iter().map(|l| l.lines).sum()),
+                thousands(s.languages.iter().map(|l| l.files).sum()),
+                match excluded_files {
+                    0 => String::new(),
+                    n => format!(
+                        " {} vendored or generated files left out ({} lines).",
+                        thousands(n),
+                        thousands(excluded_lines)
+                    ),
+                }
+            ),
+            cx,
+        ))
     }
 
     fn render_sizes(&self, s: &Insights, cx: &App) -> Div {
@@ -1076,6 +1215,7 @@ impl Render for StatsPanel {
                     .child(self.render_kpis(&s, cx))
                     .child(self.render_contribution(&s, cx))
                     .children(self.render_activity(&s, cx))
+                    .child(self.render_languages(&s, cx))
                     .child(self.render_sizes(&s, cx))
                     .child(self.render_aging(&s, cx))
                     .child(self.render_lead(&s, cx))
@@ -1349,6 +1489,86 @@ fn range_bar(from: f32, to: f32, fill: Hsla, cx: &App) -> Div {
                 .border_2()
                 .border_color(color(cx, T::BgPanel)),
         )
+}
+
+/// The [`TOP_LANGUAGES`] first languages, and the rest summed into one
+/// share with an empty name.
+fn fold_languages(languages: &[LanguageShare]) -> (&[LanguageShare], Option<LanguageShare>) {
+    if languages.len() <= TOP_LANGUAGES {
+        return (languages, None);
+    }
+    let (shown, rest) = languages.split_at(TOP_LANGUAGES);
+    let other = LanguageShare {
+        name: String::new(),
+        color: [0; 3],
+        lines: rest.iter().map(|l| l.lines).sum(),
+        files: rest.iter().map(|l| l.files).sum(),
+    };
+    (shown, Some(other))
+}
+
+/// Tooltip of a language: its lines and files, and their shares.
+#[allow(clippy::cast_precision_loss)] // shares
+fn language_tip(l: &LanguageShare, lines: f32, files: f32) -> Vec<String> {
+    vec![
+        if l.name.is_empty() {
+            "Other languages".to_owned()
+        } else {
+            l.name.clone()
+        },
+        format!(
+            "{} lines ({})",
+            thousands(l.lines),
+            percent(l.lines as f32 / lines)
+        ),
+        format!(
+            "{} files ({})",
+            thousands(l.files),
+            percent(l.files as f32 / files)
+        ),
+    ]
+}
+
+/// A language bar, as on a GitHub repo page: one segment per language,
+/// as wide as its share of the lines, each with its tooltip.
+#[allow(clippy::cast_precision_loss)] // shares
+fn language_bar(
+    id: &str,
+    languages: &[LanguageShare],
+    height: Pixels,
+    other_fill: Hsla,
+    cx: &App,
+) -> Div {
+    let (shown, other) = fold_languages(languages);
+    let lines = languages.iter().map(|l| l.lines).sum::<u64>().max(1) as f32;
+    let files = languages.iter().map(|l| l.files).sum::<u64>().max(1) as f32;
+    let segments = shown
+        .iter()
+        .chain(other.as_ref())
+        .enumerate()
+        .map(|(i, l)| {
+            let tip = language_tip(l, lines, files);
+            let fill = if l.name.is_empty() {
+                other_fill
+            } else {
+                rgb_color(l.color)
+            };
+            div()
+                .id(SharedString::from(format!("{id}-{i}")))
+                .h_full()
+                .w(relative(l.lines as f32 / lines))
+                .when(l.lines > 0, |d| d.min_w(px(2.0)))
+                .bg(fill)
+                .tooltip(move |_, cx| TextTooltip::view(&tip, cx))
+        });
+    div()
+        .w_full()
+        .h(height)
+        .flex()
+        .overflow_hidden()
+        .rounded_full()
+        .bg(color(cx, T::BgHover))
+        .children(segments)
 }
 
 /// A segment of a stacked bar, `frac` of the track wide.

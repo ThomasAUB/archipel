@@ -362,6 +362,11 @@ pub fn clean_dot() -> Hsla {
     to_hsla(Color::rgb(0x30, 0x98, 0x5e))
 }
 
+/// A fixed RGB color, not derived from the theme (language colors).
+pub fn rgb_color([r, g, b]: [u8; 3]) -> Hsla {
+    to_hsla(Color::rgb(r, g, b))
+}
+
 /// The color of graph lane `index` (wraps around the palette).
 pub fn lane(cx: &App, index: u32) -> Hsla {
     let i = usize::try_from(index).unwrap_or(0);
