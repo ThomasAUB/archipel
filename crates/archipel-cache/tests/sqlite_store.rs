@@ -71,6 +71,7 @@ fn ui_state() -> UiState {
         refs_collapsed: true,
         details_width: 500.0,
         quick_edit_width: 400.0,
+        column_widths: [("repo".to_owned(), 2.5)].into(),
         sidebar_collapsed: true,
         drawer_height: 120.0,
         selection: vec![RepoId(8)],

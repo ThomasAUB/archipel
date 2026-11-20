@@ -1,5 +1,7 @@
 //! Per-project UI state (spec §2). Never stored in the shared project file.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ids::RepoId;
@@ -86,6 +88,9 @@ pub struct UiState {
     pub details_width: f32,
     /// Width of the dashboard's quick edit pane in logical pixels.
     pub quick_edit_width: f32,
+    /// Relative widths of the dashboard columns the user resized, by
+    /// column id; the others keep their default width.
+    pub column_widths: BTreeMap<String, f32>,
     /// Whether the sidebar is collapsed.
     pub sidebar_collapsed: bool,
     /// Height of the operations drawer in logical pixels.
@@ -212,6 +217,7 @@ impl Default for UiState {
             refs_collapsed: false,
             details_width: 460.0,
             quick_edit_width: 360.0,
+            column_widths: BTreeMap::new(),
             sidebar_collapsed: false,
             drawer_height: 180.0,
             selection: Vec::new(),
@@ -245,6 +251,7 @@ mod tests {
         let state: UiState = serde_json::from_str(old).unwrap();
         assert!(state.hidden_repos.is_empty());
         assert!(!state.show_dependency_tree);
+        assert!(state.column_widths.is_empty());
         assert_eq!(state.hidden_graph_columns, [GraphColumn::Date]);
     }
 

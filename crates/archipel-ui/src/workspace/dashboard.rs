@@ -13,7 +13,7 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, DragMoveEvent, Entity, KeyDownEvent, MouseButton,
+    AnyElement, ClickEvent, Context, DragMoveEvent, Empty, Entity, KeyDownEvent, MouseButton,
     MouseDownEvent, Pixels, SharedString, StyleRefinement, WeakEntity, Window, div, px,
 };
 
@@ -29,8 +29,119 @@ use crate::widgets::{
 use super::Workspace;
 use super::menus::Menu;
 
-/// Relative widths of the dashboard columns.
-pub(super) const WIDTHS: [f32; 8] = [2.0, 1.4, 1.0, 1.2, 1.0, 0.8, 1.0, 0.9];
+/// Default relative widths of the dashboard columns, by position.
+const DEFAULT_WIDTHS: [f32; 8] = [2.0, 1.4, 1.0, 1.2, 1.0, 0.8, 1.0, 0.9];
+
+/// Narrowest a dashboard column can be dragged, in logical pixels.
+const MIN_COLUMN: f32 = 40.0;
+
+/// Default relative width of the dashboard column at `i`.
+fn default_width(i: usize) -> f32 {
+    DEFAULT_WIDTHS.get(i).copied().unwrap_or(1.0)
+}
+
+/// Relative widths of the dashboard columns, in order: as the user left
+/// them, else their default. The header, the rows and the dependency tree
+/// all lay their cells out with them.
+pub(super) fn column_widths(ext: &Extensions, ui: &UiState) -> Vec<f32> {
+    ext.columns
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(i, col)| {
+            ui.column_widths
+                .get(col.id())
+                .copied()
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .unwrap_or_else(|| default_width(i))
+        })
+        .collect()
+}
+
+/// Moves the border after column `i` to `x` pixels from the columns' left
+/// edge, the columns being `total` pixels wide: column `i` takes room from
+/// column `i + 1` or gives it back, the others stay put, and neither gets
+/// narrower than [`MIN_COLUMN`].
+fn drag_border(widths: &mut [f32], i: usize, x: f32, total: f32) {
+    if i + 1 >= widths.len() || total <= 0.0 {
+        return;
+    }
+    let per_px = widths.iter().sum::<f32>() / total;
+    let left: f32 = widths[..i].iter().sum();
+    let pair = widths[i] + widths[i + 1];
+    let min = (MIN_COLUMN * per_px).min(pair / 2.0);
+    let width = (x * per_px - left).clamp(min, pair - min);
+    widths[i] = width;
+    widths[i + 1] = pair - width;
+}
+
+/// Gives column `i` its default width back, taking the difference from
+/// column `i + 1` or giving it to it (the border it was dragged by), that
+/// one kept at a quarter of its default at least.
+fn reset_border(widths: &mut [f32], i: usize) {
+    let Some(old) = widths.get(i).copied() else {
+        return;
+    };
+    widths[i] = default_width(i);
+    if let Some(next) = widths.get_mut(i + 1) {
+        *next = (*next + old - default_width(i)).max(default_width(i + 1) / 4.0);
+    }
+}
+
+/// Saves `widths` as the column widths of `ui`, keeping only those that
+/// differ from their default.
+fn store_widths(ui: &mut UiState, ext: &Extensions, widths: &[f32]) {
+    for (i, (col, w)) in ext.columns.columns().iter().zip(widths).enumerate() {
+        if (w - default_width(i)).abs() < 1e-3 {
+            ui.column_widths.remove(col.id());
+        } else {
+            ui.column_widths.insert(col.id().to_owned(), *w);
+        }
+    }
+}
+
+/// Drag payload of a Column Resize Handle: the index of the column whose
+/// right border is dragged.
+struct ColumnDrag(usize);
+
+/// The grab area on the right edge of a header cell, dragging the border
+/// with the next column; a double-click resets the column's width.
+fn column_handle(i: usize, cx: &mut Context<Workspace>) -> AnyElement {
+    let group = SharedString::from(format!("col-resize-{i}"));
+    let accent = color(cx, T::Accent);
+    div()
+        .id(group.clone())
+        .group(group.clone())
+        .w(px(7.0))
+        .h_full()
+        .flex_none()
+        .flex()
+        .justify_center()
+        .cursor_col_resize()
+        .tooltip(|_, cx| TextTooltip::view(&["Drag to resize, double-click to reset".into()], cx))
+        .on_drag(ColumnDrag(i), |_, _, _, cx| cx.new(|_| Empty))
+        .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+            cx.stop_propagation();
+            if e.click_count() > 1 {
+                let ext = this.core.extensions().clone();
+                this.core.update_ui_state(|ui| {
+                    let mut widths = column_widths(&ext, ui);
+                    reset_border(&mut widths, i);
+                    store_widths(ui, &ext, &widths);
+                });
+                cx.notify();
+            }
+        }))
+        .child(
+            div()
+                .w(px(1.0))
+                .h(px(12.0))
+                .my_auto()
+                .bg(color(cx, T::BorderSubtle))
+                .group_hover(group, move |s| s.h_full().bg(accent)),
+        )
+        .into_any_element()
+}
 
 impl Workspace {
     /// Opens the quick edit pane on a repo, or closes it when it already
@@ -330,40 +441,67 @@ impl Workspace {
         let rows = self.core.visible_rows();
         let now = Timestamp::now();
         let toolbar = self.render_dashboard_toolbar(&ui, cx);
-        let widths = WIDTHS;
-        let header = div()
-            .flex()
-            .px_3()
-            .h(row_height(cx))
-            .items_center()
-            .text_xs()
-            .text_color(color(cx, T::FgSubtle))
-            .children(ext.columns.columns().iter().enumerate().map(|(i, col)| {
-                let id = col.id().to_owned();
-                let arrow = match (
-                    ui.sort_column.as_deref() == Some(col.id()),
-                    ui.sort_direction,
-                ) {
-                    (true, SortDirection::Ascending) => " ▲",
-                    (true, SortDirection::Descending) => " ▼",
-                    _ => "",
-                };
-                div()
-                    .id(SharedString::from(format!("col-{id}")))
-                    .flex_grow(widths.get(i).copied().unwrap_or(1.0))
-                    .flex_basis(px(0.0))
-                    .min_w_0()
-                    .truncate()
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.dispatch(Command::SortBy(id.clone()), cx);
-                    }))
-                    .child(format!("{}{arrow}", col.header().to_uppercase()))
-            }));
+        let widths = column_widths(&ext, &ui);
+        let columns = ext.columns.columns().len();
+        let cells = ext.columns.columns().iter().enumerate().map(|(i, col)| {
+            let id = col.id().to_owned();
+            let arrow = match (
+                ui.sort_column.as_deref() == Some(col.id()),
+                ui.sort_direction,
+            ) {
+                (true, SortDirection::Ascending) => " ▲",
+                (true, SortDirection::Descending) => " ▼",
+                _ => "",
+            };
+            let title = div()
+                .id(SharedString::from(format!("col-{id}")))
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.dispatch(Command::SortBy(id.clone()), cx);
+                }))
+                .child(format!("{}{arrow}", col.header().to_uppercase()));
+            // The last column has no border to drag: the rows end there.
+            let handle = (i + 1 < columns).then(|| column_handle(i, cx));
+            div()
+                .flex_grow(widths.get(i).copied().unwrap_or(1.0))
+                .flex_basis(px(0.0))
+                .min_w_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .child(title)
+                .children(handle)
+        });
+        let cells: Vec<_> = cells.collect();
+        let header = div().px_3().h(row_height(cx)).flex().child(
+            // Without the padding, so its bounds are the columns'.
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .text_xs()
+                .text_color(color(cx, T::FgSubtle))
+                .on_drag_move(cx.listener(|this, e: &DragMoveEvent<ColumnDrag>, _, cx| {
+                    let i = e.drag(cx).0;
+                    let x = f32::from(e.event.position.x - e.bounds.left());
+                    let total = f32::from(e.bounds.size.width);
+                    let ext = this.core.extensions().clone();
+                    this.core.update_ui_state(|ui| {
+                        let mut widths = column_widths(&ext, ui);
+                        drag_border(&mut widths, i, x, total);
+                        store_widths(ui, &ext, &widths);
+                    });
+                    cx.notify();
+                }))
+                .children(cells),
+        );
         let selected = ui.batch_selection();
         let body: Vec<AnyElement> = if ui.show_dependency_tree {
             let tree = self.core.dependency_tree();
-            self.render_tree(&tree, &rows, &selected, &ui, cx)
+            self.render_tree(&tree, &rows, &selected, &ui, &widths, cx)
         } else {
             self.dash_rows
                 .retain(|id, _| rows.iter().any(|r| r.id == *id));
@@ -375,7 +513,7 @@ impl Workspace {
             rows.iter()
                 .enumerate()
                 .map(|(i, row)| {
-                    let mut content = RowContent::new(&ext, row, now, &selected);
+                    let mut content = RowContent::new(&ext, row, now, &selected, &widths);
                     if !set_view {
                         content.nesting = nesting(row, rows.get(i + 1), &ui, all_worktrees);
                     }
@@ -696,7 +834,13 @@ struct RowContent {
 }
 
 impl RowContent {
-    fn new(ext: &Extensions, row: &DashboardRow, now: Timestamp, selected: &[RepoId]) -> Self {
+    fn new(
+        ext: &Extensions,
+        row: &DashboardRow,
+        now: Timestamp,
+        selected: &[RepoId],
+        widths: &[f32],
+    ) -> Self {
         Self {
             id: row.id,
             selected: selected.contains(&row.id),
@@ -704,7 +848,7 @@ impl RowContent {
             hidden: row.hidden,
             context: row.context_only,
             nesting: Nesting::None,
-            cells: cell_contents(ext, row, now, 0),
+            cells: cell_contents(ext, row, now, 0, widths),
         }
     }
 }
@@ -740,7 +884,7 @@ impl Render for DashRow {
                     return element;
                 }
                 let toggle = toggle.clone();
-                nested_cell(element, nesting, id, cx, move |cx| {
+                nested_cell(element, cell.width, nesting, id, cx, move |cx| {
                     let _ = toggle.update(cx, |this, cx| {
                         this.dispatch(Command::ToggleWorktrees(id), cx);
                     });
@@ -751,9 +895,11 @@ impl Render for DashRow {
 
 /// The Repo cell of a row with its place among worktrees: the tree
 /// connector of a worktree row, the Worktree Count of a repo row (a click
-/// lists or unlists its worktrees: `on_toggle`).
+/// lists or unlists its worktrees: `on_toggle`). `width` is the Repo
+/// column's relative width.
 pub(super) fn nested_cell(
     cell: AnyElement,
+    width: f32,
     nesting: Nesting,
     id: RepoId,
     cx: &gpui_kit::App,
@@ -763,7 +909,7 @@ pub(super) fn nested_cell(
     match nesting {
         Nesting::None => cell,
         Nesting::Worktree { last } => div()
-            .flex_grow(WIDTHS[0])
+            .flex_grow(width)
             .flex_basis(px(0.0))
             .min_w_0()
             .flex()
@@ -782,7 +928,7 @@ pub(super) fn nested_cell(
         Nesting::Repo { count, expanded } => {
             let hover = color(cx, T::BgHover);
             div()
-                .flex_grow(WIDTHS[0])
+                .flex_grow(width)
                 .flex_basis(px(0.0))
                 .min_w_0()
                 .flex()
@@ -842,6 +988,8 @@ fn row_box_height(two_lines: bool, window: &Window, cx: &gpui_kit::App) -> Pixel
 #[derive(PartialEq)]
 struct CellContent {
     column: usize,
+    /// Relative width of its column.
+    width: f32,
     cell: Cell,
     tooltip: Option<Vec<String>>,
     /// Pill after the text (the Sync column's conflict forecast).
@@ -851,16 +999,18 @@ struct CellContent {
     failing_ci: Option<CiRun>,
 }
 
-/// The dashboard cells of a row, from column `from` on.
+/// The dashboard cells of a row, from column `from` on, the columns
+/// `widths` wide.
 pub(super) fn row_cells(
     ext: &Extensions,
     core: &Arc<Core>,
     row: &DashboardRow,
     now: Timestamp,
     from: usize,
+    widths: &[f32],
     cx: &gpui_kit::App,
 ) -> Vec<AnyElement> {
-    cell_contents(ext, row, now, from)
+    cell_contents(ext, row, now, from, widths)
         .iter()
         .map(|cell| cell_element(cell, row.id, core, cx))
         .collect()
@@ -871,6 +1021,7 @@ fn cell_contents(
     row: &DashboardRow,
     now: Timestamp,
     from: usize,
+    widths: &[f32],
 ) -> Vec<CellContent> {
     ext.columns
         .columns()
@@ -892,6 +1043,7 @@ fn cell_contents(
                 .cloned();
             CellContent {
                 column: i,
+                width: widths.get(i).copied().unwrap_or_else(|| default_width(i)),
                 cell,
                 tooltip: col.tooltip(row),
                 badge: col.badge(row),
@@ -911,7 +1063,7 @@ fn cell_element(
     let cell = &content.cell;
     div()
         .id(i)
-        .flex_grow(WIDTHS.get(i).copied().unwrap_or(1.0))
+        .flex_grow(content.width)
         .flex_basis(px(0.0))
         .overflow_hidden()
         .flex()
@@ -951,4 +1103,52 @@ fn cell_element(
             }
         })
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn dragging_a_border_moves_room_between_its_two_columns() {
+        // 4 weights over 400 px: 100 px per weight.
+        let mut widths = vec![1.0, 1.0, 1.0, 1.0];
+        drag_border(&mut widths, 1, 250.0, 400.0);
+        assert!(close(widths[0], 1.0));
+        assert!(close(widths[1], 1.5));
+        assert!(close(widths[2], 0.5));
+        assert!(close(widths[3], 1.0));
+    }
+
+    #[test]
+    fn a_dragged_column_keeps_its_minimum_width() {
+        let mut widths = vec![1.0, 1.0, 1.0, 1.0];
+        drag_border(&mut widths, 1, 0.0, 400.0);
+        assert!(close(widths[1], MIN_COLUMN / 100.0));
+        drag_border(&mut widths, 1, 400.0, 400.0);
+        assert!(close(widths[2], MIN_COLUMN / 100.0));
+        assert!(close(widths.iter().sum(), 4.0));
+    }
+
+    #[test]
+    fn the_last_column_has_no_border_to_drag() {
+        let mut widths = vec![1.0, 1.0];
+        drag_border(&mut widths, 1, 50.0, 200.0);
+        assert_eq!(widths, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_reset_gives_the_room_back_to_the_next_column() {
+        let mut widths = DEFAULT_WIDTHS.to_vec();
+        drag_border(&mut widths, 0, 400.0, 930.0);
+        assert!(!close(widths[0], DEFAULT_WIDTHS[0]));
+        reset_border(&mut widths, 0);
+        for (w, d) in widths.iter().zip(DEFAULT_WIDTHS) {
+            assert!(close(*w, d));
+        }
+    }
 }
