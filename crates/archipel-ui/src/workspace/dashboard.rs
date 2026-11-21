@@ -7,7 +7,7 @@ use std::sync::Arc;
 use archipel_app::dashboard::{Cell, CellBadge, DashboardRow};
 use archipel_app::{App as Core, Command, Extensions};
 use archipel_model::forge::CiRun;
-use archipel_model::ui_state::{SortDirection, TabState, UiState};
+use archipel_model::ui_state::{SortDirection, UiState};
 use archipel_model::{RepoId, Timestamp};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -201,7 +201,7 @@ impl Workspace {
         let on_dashboard = self
             .core
             .ui_state()
-            .is_some_and(|ui| !matches!(ui.tabs.get(ui.active_tab), Some(TabState::Repo(_))));
+            .is_some_and(|ui| ui.focus().is_dashboard());
         let Some((pane, _)) = &self.quick_edit else {
             return false;
         };
@@ -245,7 +245,7 @@ impl Workspace {
         let on_dashboard = self
             .core
             .ui_state()
-            .is_some_and(|ui| !matches!(ui.tabs.get(ui.active_tab), Some(TabState::Repo(_))));
+            .is_some_and(|ui| ui.focus().is_dashboard());
         let pane_focused = self
             .quick_edit
             .as_ref()
@@ -339,8 +339,7 @@ impl Workspace {
                         )
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let (scope, focus) = this.stats_scope();
-                        this.open_stats(scope, focus, window, cx);
+                        this.open_stats_in_focus(window, cx);
                     })),
             )
             .when(hidden > 0 || ui.show_hidden, |d| {

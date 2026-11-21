@@ -97,7 +97,7 @@ impl Workspace {
         }
         let core = self.core.clone();
         // Every targeted repo checked: the set's in a set view.
-        let selected = self.core.resolve_targets(&self.selection());
+        let selected = self.core.resolve_targets(&self.targets());
         let dialog = cx.new(|cx| NewSetDialog::new(core, selected, window, cx));
         let sub = cx.subscribe_in(&dialog, window, |this, _, e, window, cx| {
             this.on_worktree_dialog(e, window, cx);

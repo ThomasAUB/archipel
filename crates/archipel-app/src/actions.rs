@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use archipel_model::ui_state::Focus;
 use archipel_model::worktree::{SetView, WorktreeAddRequest};
 use archipel_model::{RepoId, RepoPath};
 
@@ -186,27 +187,39 @@ pub enum Command {
 }
 
 /// What an action can see to decide availability and build its command.
+///
+/// Actions on "the selected repos" take [`Self::targets`]: the scope the
+/// current view dictates ([`Focus`]), the repo of a repo tab or the
+/// dashboard selection. There is deliberately no raw dashboard selection
+/// here, so no action can act on repos the user is not looking at.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActionContext {
     /// A project is open.
     pub project_open: bool,
-    /// Repos selected in the dashboard, the batch selection. Commands on
-    /// "the selected repos (all when none)" take it as is: the core
-    /// resolves an empty one (`App::resolve_targets`).
-    pub selected: Vec<RepoId>,
-    /// The repo of the active tab, if it is a repo tab.
-    pub active_repo: Option<RepoId>,
+    /// What the current view focuses on.
+    pub focus: Focus,
 }
 
 impl ActionContext {
+    /// The repos an action on "the selected repos (all when none)" acts
+    /// on, as commands take them: the core resolves an empty one
+    /// (`App::resolve_targets`).
+    #[must_use]
+    pub fn targets(&self) -> Vec<RepoId> {
+        self.focus.targets()
+    }
+
     /// The one repo an action on a single repo acts on: the active tab's,
     /// else the selected repo when exactly one is.
     #[must_use]
     pub fn target_repo(&self) -> Option<RepoId> {
-        self.active_repo.or(match self.selected[..] {
-            [only] => Some(only),
-            _ => None,
-        })
+        self.focus.repo()
+    }
+
+    /// The repo of the active tab, if it is a repo tab.
+    #[must_use]
+    pub fn active_repo(&self) -> Option<RepoId> {
+        self.focus.tab_repo()
     }
 }
 
@@ -313,7 +326,7 @@ fn with_project(ctx: &ActionContext) -> bool {
     ctx.project_open
 }
 fn with_selection(ctx: &ActionContext) -> bool {
-    ctx.project_open && !ctx.selected.is_empty()
+    ctx.project_open && ctx.focus.is_explicit()
 }
 fn with_repo(ctx: &ActionContext) -> bool {
     ctx.project_open && ctx.target_repo().is_some()
@@ -385,13 +398,13 @@ impl ActionRegistry {
             "repos.fetch_all",
             "Fetch selected repos (all when none)",
             with_project,
-            |c| Some(Command::Fetch(c.selected.clone())),
+            |c| Some(Command::Fetch(c.targets())),
         )));
         r.register(Arc::new(SimpleAction::new(
             "repos.pull_all",
             "Pull selected repos (all when none)",
             with_project,
-            |c| Some(Command::Pull(c.selected.clone())),
+            |c| Some(Command::Pull(c.targets())),
         )));
         r.register(Arc::new(SimpleAction::new(
             "history.undo",
@@ -508,7 +521,7 @@ impl ActionRegistry {
             "repos.toggle_hidden",
             "Hide / unhide selected repos",
             with_selection,
-            |c| Some(Command::ToggleHidden(c.selected.clone())),
+            |c| Some(Command::ToggleHidden(c.targets())),
         )));
         r.register(ui(
             "repos.set_category",
@@ -576,7 +589,7 @@ impl ActionRegistry {
             "worktree.prune",
             "Prune missing worktrees",
             with_project,
-            |c| Some(Command::PruneWorktrees(c.selected.clone())),
+            |c| Some(Command::PruneWorktrees(c.targets())),
         )));
         r.register(Arc::new(SimpleAction::new(
             "worktree.view_all",
@@ -644,7 +657,7 @@ impl ActionRegistry {
             "forge.rerun_failed_ci",
             "Rerun failing CI of selected repos (all when none)",
             with_project,
-            |c| Some(Command::RerunFailedCi(c.selected.clone())),
+            |c| Some(Command::RerunFailedCi(c.targets())),
         )));
         r.register(Arc::new(SimpleAction::new(
             "forge.refresh",
@@ -705,11 +718,29 @@ mod tests {
         assert!(!undo.is_available(&none));
         let ctx = ActionContext {
             project_open: true,
-            selected: vec![RepoId(4)],
-            active_repo: None,
+            focus: Focus::Dashboard(vec![RepoId(4)]),
         };
         assert!(undo.is_available(&ctx));
         assert_eq!(undo.command(&ctx), Some(Command::Undo(RepoId(4))));
         assert!(actions.available(&none).len() < actions.all().len());
+    }
+
+    #[test]
+    fn batch_actions_act_on_the_repo_tab_not_the_dashboard_selection() {
+        let actions = ActionRegistry::with_builtins();
+        let ctx = ActionContext {
+            project_open: true,
+            focus: Focus::Repo(RepoId(7)),
+        };
+        let fetch = actions.get("repos.fetch_all").unwrap();
+        assert_eq!(fetch.command(&ctx), Some(Command::Fetch(vec![RepoId(7)])));
+        // A repo tab is an explicit pick: "selected repos" actions apply.
+        assert!(
+            actions
+                .get("repos.toggle_hidden")
+                .unwrap()
+                .is_available(&ctx)
+        );
+        assert_eq!(ctx.active_repo(), Some(RepoId(7)));
     }
 }

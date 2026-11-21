@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use archipel_model::RepoId;
 use archipel_model::ui_state::SortDirection;
-use archipel_model::ui_state::{TabState, UiState};
+use archipel_model::ui_state::UiState;
 use archipel_model::worktree::{SetView, WorktreeSet};
 
 use super::{App, AppEvent, Extensions, Session, lock};
@@ -201,14 +201,9 @@ impl App {
         let Some(s) = guard.as_ref() else {
             return ActionContext::default();
         };
-        let active_repo = match s.ui.tabs.get(s.ui.active_tab) {
-            Some(TabState::Repo(r)) => Some(*r),
-            _ => None,
-        };
         ActionContext {
             project_open: true,
-            selected: s.ui.batch_selection(),
-            active_repo,
+            focus: s.ui.focus(),
         }
     }
 

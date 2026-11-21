@@ -219,11 +219,27 @@ fn multi_selection_drives_batch_actions() {
     let (a, b) = (e.repos[0].id(), e.repos[2].id());
     e.app.dispatch(Command::Select(Some(a))).unwrap();
     e.app.dispatch(Command::ToggleSelect(b)).unwrap();
-    assert_eq!(e.app.action_context().selected, vec![a, b]);
+    assert_eq!(e.app.action_context().targets(), vec![a, b]);
     e.app.dispatch(Command::ToggleSelect(a)).unwrap();
-    assert_eq!(e.app.action_context().selected, vec![b]);
+    assert_eq!(e.app.action_context().targets(), vec![b]);
     e.app.dispatch(Command::Select(Some(a))).unwrap();
-    assert_eq!(e.app.action_context().selected, vec![a]);
+    assert_eq!(e.app.action_context().targets(), vec![a]);
+}
+
+#[test]
+fn a_repo_tab_scopes_batch_actions_to_its_repo() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let (a, b, c) = (e.repos[0].id(), e.repos[1].id(), e.repos[2].id());
+    e.app.dispatch(Command::Select(Some(a))).unwrap();
+    e.app.dispatch(Command::ToggleSelect(c)).unwrap();
+    e.app.dispatch(Command::OpenRepoTab(b)).unwrap();
+    // The dashboard selection stays, but the repo tab is what is in focus.
+    assert_eq!(e.app.ui_state().unwrap().batch_selection(), vec![a, c]);
+    assert_eq!(e.app.action_context().targets(), vec![b]);
+    assert_eq!(e.app.action_context().target_repo(), Some(b));
+    e.app.dispatch(Command::CycleTab(true)).unwrap();
+    assert_eq!(e.app.action_context().targets(), vec![a, c]);
 }
 
 #[test]
