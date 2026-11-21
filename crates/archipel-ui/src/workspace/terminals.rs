@@ -168,7 +168,7 @@ impl Workspace {
                 None => self.notice = Some("Select a repository or worktree first".into()),
             },
             "terminal.run_in_repos" => {
-                let ids = self.selection();
+                let ids = self.targets();
                 self.ask_run_in_repos(ids, window, cx);
             }
             _ => {}

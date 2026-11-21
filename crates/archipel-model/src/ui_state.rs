@@ -16,6 +16,80 @@ pub enum TabState {
     Repo(RepoId),
 }
 
+/// What the current view is about: the scope of every action on "the
+/// selected repos" (fetch, statistics, issues, branches…). The active tab
+/// dictates it, so an action never reaches past what is on screen: a repo
+/// tab focuses its repo alone, the dashboard its batch selection.
+///
+/// Built only by [`UiState::focus`]. Actions read the dashboard selection
+/// through it, never through [`UiState::batch_selection`], which is for
+/// drawing the dashboard and the sidebar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Focus {
+    /// The dashboard, on its batch selection (empty: every repo).
+    Dashboard(Vec<RepoId>),
+    /// A repo tab, on its repo.
+    Repo(RepoId),
+}
+
+impl Default for Focus {
+    /// The dashboard with nothing selected: every repo.
+    fn default() -> Self {
+        Self::Dashboard(Vec::new())
+    }
+}
+
+impl Focus {
+    /// The repos in focus as batch commands take them: the repo tab's
+    /// repo, else the dashboard selection, empty meaning "all" (the core
+    /// resolves it, `App::resolve_targets`).
+    #[must_use]
+    pub fn targets(&self) -> Vec<RepoId> {
+        match self {
+            Self::Dashboard(selected) => selected.clone(),
+            Self::Repo(id) => vec![*id],
+        }
+    }
+
+    /// The one repo in focus: the repo tab's, else the dashboard's only
+    /// selected repo.
+    #[must_use]
+    pub fn repo(&self) -> Option<RepoId> {
+        match self {
+            Self::Dashboard(selected) => match selected[..] {
+                [only] => Some(only),
+                _ => None,
+            },
+            Self::Repo(id) => Some(*id),
+        }
+    }
+
+    /// The repo of the active tab, when it is a repo tab.
+    #[must_use]
+    pub fn tab_repo(&self) -> Option<RepoId> {
+        match self {
+            Self::Dashboard(_) => None,
+            Self::Repo(id) => Some(*id),
+        }
+    }
+
+    /// Whether the dashboard is the view.
+    #[must_use]
+    pub fn is_dashboard(&self) -> bool {
+        matches!(self, Self::Dashboard(_))
+    }
+
+    /// Whether repos were picked explicitly: a repo tab, or a dashboard
+    /// selection (not the implicit "all").
+    #[must_use]
+    pub fn is_explicit(&self) -> bool {
+        match self {
+            Self::Dashboard(selected) => !selected.is_empty(),
+            Self::Repo(_) => true,
+        }
+    }
+}
+
 /// Sort direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SortDirection {
@@ -189,8 +263,19 @@ impl UiState {
         self.expanded_worktrees.retain(|r| !ids.contains(r));
     }
 
-    /// The repos batch actions apply to: the multi-selection, else the
-    /// selected repo, else none (meaning "all").
+    /// What the current view focuses on (see [`Focus`]): the scope of
+    /// actions on "the selected repos".
+    #[must_use]
+    pub fn focus(&self) -> Focus {
+        match self.tabs.get(self.active_tab) {
+            Some(TabState::Repo(id)) => Focus::Repo(*id),
+            Some(TabState::Dashboard) | None => Focus::Dashboard(self.batch_selection()),
+        }
+    }
+
+    /// The dashboard batch selection: the multi-selection, else the
+    /// selected repo, else none (meaning "all"). It is what the dashboard
+    /// and the sidebar show selected; actions take [`Self::focus`].
     #[must_use]
     pub fn batch_selection(&self) -> Vec<RepoId> {
         let mut out: Vec<RepoId> = self.selected_repo.into_iter().collect();
@@ -302,6 +387,34 @@ mod tests {
         assert!(state.selection.is_empty());
         assert!(state.hidden_repos.is_empty());
         assert!(state.expanded_worktrees.is_empty());
+    }
+
+    #[test]
+    fn the_active_tab_dictates_the_focus() {
+        let mut state = UiState {
+            tabs: vec![TabState::Dashboard, TabState::Repo(RepoId(3))],
+            active_tab: 0,
+            selected_repo: Some(RepoId(1)),
+            selection: vec![RepoId(2)],
+            ..UiState::default()
+        };
+        let dashboard = state.focus();
+        assert_eq!(dashboard, Focus::Dashboard(vec![RepoId(1), RepoId(2)]));
+        assert_eq!(dashboard.targets(), vec![RepoId(1), RepoId(2)]);
+        assert_eq!(dashboard.repo(), None);
+        assert_eq!(dashboard.tab_repo(), None);
+        state.active_tab = 1;
+        let tab = state.focus();
+        // The dashboard selection does not leak into a repo tab.
+        assert_eq!(tab.targets(), vec![RepoId(3)]);
+        assert_eq!(tab.repo(), Some(RepoId(3)));
+        assert_eq!(tab.tab_repo(), Some(RepoId(3)));
+        assert!(tab.is_explicit());
+        state.active_tab = 0;
+        state.selected_repo = None;
+        state.selection.clear();
+        assert!(!state.focus().is_explicit());
+        assert_eq!(state.focus().targets(), Vec::new());
     }
 
     #[test]

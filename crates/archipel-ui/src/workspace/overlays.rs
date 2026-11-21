@@ -444,7 +444,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let targets = self.selection();
+        let targets = self.targets();
         match kind {
             PaletteKind::Projects => match value.as_str() {
                 "+folder" => self.new_project_from_folder(cx),
@@ -693,7 +693,7 @@ impl Workspace {
         if self.core.project().is_none() {
             return;
         }
-        let (core, scope) = (self.core.clone(), self.selection());
+        let (core, scope) = (self.core.clone(), self.targets());
         let panel = cx.new(|cx| BranchesPanel::new(core, scope, cx));
         let sub = cx.subscribe_in(
             &panel,

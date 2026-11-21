@@ -233,7 +233,7 @@ fn removing_a_repo_closes_its_tab_and_saves_the_ui_state() {
     assert!(!ui.tabs.contains(&TabState::Repo(gone)));
     // Its tab was the active one: the dashboard takes over, not a neighbor.
     assert_eq!(ui.active_tab, 0);
-    assert_eq!(e.app.action_context().active_repo, None);
+    assert_eq!(e.app.action_context().active_repo(), None);
     assert_eq!(ui.selected_repo, Some(kept));
     assert!(ui.selection.is_empty());
     assert!(e.app.row(gone).is_none());
@@ -395,7 +395,7 @@ fn filters_sorting_tabs_and_missing_repos() {
     let ui = e.app.ui_state().unwrap();
     assert_eq!(ui.tabs.len(), 2);
     assert_eq!(ui.active_tab, 1);
-    assert_eq!(e.app.action_context().active_repo, Some(e.repos[1].id()));
+    assert_eq!(e.app.action_context().active_repo(), Some(e.repos[1].id()));
     e.app.dispatch(Command::CycleTab(true)).unwrap();
     assert_eq!(e.app.ui_state().unwrap().active_tab, 0);
     e.app.dispatch(Command::CloseTab(0)).unwrap(); // the dashboard cannot be closed
