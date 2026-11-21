@@ -15,6 +15,7 @@ use crate::cancel::{CancelToken, NoProgress, ProgressSink};
 use crate::changes::{ConflictSides, FileChange};
 use crate::diff::{FileDiff, NumStat};
 use crate::error::GitError;
+use crate::file_history::{Blame, BlameOptions, FileRevision};
 use crate::forecast::{MergeForecast, MergeStrategy};
 use crate::history::{CommitMeta, CommitText, SquashPreview, TopologyNode, WalkOrder};
 use crate::ids::{Oid, RepoPath};
@@ -252,6 +253,35 @@ pub trait TreeReader: Send + Sync {
     fn read_blob(&self, repo: &RepoPath, commit: Oid, path: &str) -> Result<Vec<u8>, GitError>;
     /// The bytes of `path` as staged in the index (stage 0).
     fn read_index_blob(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError>;
+}
+
+/// Reads the history of one file (the file browser's History and Blame).
+/// Paths are relative to the repository root and `/`-separated. Both calls
+/// can be long on big histories: they return [`GitError::Cancelled`] once
+/// `cancel` fires.
+pub trait FileHistoryReader: Send + Sync {
+    /// The commits that touched `path`, newest first, following renames,
+    /// walking back from `from` (`HEAD` when `None`): `limit` of them after
+    /// skipping the first `skip`, for paging.
+    fn file_log(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        from: Option<Oid>,
+        skip: usize,
+        limit: usize,
+        cancel: &CancelToken,
+    ) -> Result<Vec<FileRevision>, GitError>;
+    /// Who last changed each line of `path` as it is at commit `at`, or,
+    /// when `None`, in the working copy (uncommitted lines included).
+    fn blame(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        at: Option<Oid>,
+        options: BlameOptions,
+        cancel: &CancelToken,
+    ) -> Result<Blame, GitError>;
 }
 
 /// Modifies the index and the worktree.

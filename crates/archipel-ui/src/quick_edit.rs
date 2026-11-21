@@ -115,6 +115,7 @@ impl QuickEdit {
             diff_view::side_note(side),
             Some(side),
             doc,
+            None,
             window,
             cx,
         ))
