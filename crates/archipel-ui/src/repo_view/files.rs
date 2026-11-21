@@ -11,23 +11,28 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use archipel_app::fuzzy;
-use archipel_model::Oid;
+use archipel_model::file_history::BlameOptions;
 use archipel_model::tree::{EntryKind, TreeEntry};
+use archipel_model::{CancelToken, GitError, Oid};
 use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FocusHandle, ImageFormat, KeyDownEvent, MouseButton,
+    AnyElement, Context, Div, Entity, FocusHandle, ImageFormat, KeyDownEvent, MouseButton,
     MouseDownEvent, ScrollStrategy, SharedString, Subscription, SvgRenderer,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
+use crate::diff_view::{self, DiffDoc};
 use crate::file_edit::{self, language_of};
 use crate::image_view::viewer::ImageViewer;
 use crate::image_view::{self, Picture, image_format};
 use crate::theme::{color, mono_font, row_height};
-use crate::widgets::{ListMove, SHORT_OID, button, list_row, scroll_list, section, unmodified};
+use crate::widgets::{
+    ListMove, SHORT_OID, TextTooltip, button, list_row, scroll_list, section, unmodified,
+};
 
+use super::file_history::{self, BlameDoc, FileHistory, FileMode};
 use super::{OpenDiff, RepoView};
 
 /// Files above this size are not shown.
@@ -36,6 +41,8 @@ const MAX_VIEW_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MATCHES: usize = 500;
 /// Indentation of one tree level.
 const INDENT: f32 = 12.0;
+/// Width the open file's path keeps in its header.
+const PATH_MIN_WIDTH: f32 = 160.0;
 
 /// A folder of the tree: its sub-folders and files, by name.
 #[derive(Default)]
@@ -154,7 +161,7 @@ fn visible_rows(
 /// The browser's state, kept while **Files** is on.
 pub(super) struct FileBrowser {
     /// Commit browsed; `None`: the working copy.
-    at: Option<Oid>,
+    pub(super) at: Option<Oid>,
     /// Files of `at`, `None` while they load.
     files: Option<Arc<Vec<TreeEntry>>>,
     root: Arc<Folder>,
@@ -164,9 +171,15 @@ pub(super) struct FileBrowser {
     /// Path of the selected row.
     selected: Option<String>,
     /// File open in place of the graph, reopened at the next commit selected.
-    open: Option<String>,
+    pub(super) open: Option<String>,
     /// SVG files show their source, not their image.
     svg_source: bool,
+    /// What the open file shows, kept from one commit to the next.
+    pub(super) mode: FileMode,
+    /// How the blame matches lines to commits.
+    blame_options: BlameOptions,
+    /// The open file's history, shown in place of the tree.
+    pub(super) history: Option<FileHistory>,
     filter: Entity<InputState>,
     _filter_sub: Subscription,
     focus: FocusHandle,
@@ -180,6 +193,15 @@ pub(super) struct OpenFile {
     content: Content,
     /// The diff view's editor was open on it at the last render.
     editing: bool,
+    /// Cancels its load once another file, commit or mode is shown; also
+    /// tells its load's result from an older one's.
+    cancel: CancelToken,
+}
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 enum Content {
@@ -189,6 +211,10 @@ enum Content {
     Shown(Entity<EditorState>),
     /// An image file, decoded.
     Image(Entity<ImageViewer>),
+    /// The selected commit's change to the file.
+    Change(Arc<DiffDoc>),
+    /// Who last changed each line.
+    Blame(Arc<BlameDoc>),
     /// Why the file is not shown (binary, too large, unreadable).
     Note(String),
 }
@@ -271,6 +297,9 @@ impl RepoView {
             selected: None,
             open: None,
             svg_source: false,
+            mode: FileMode::default(),
+            blame_options: BlameOptions::default(),
+            history: None,
             filter,
             _filter_sub: sub,
             focus,
@@ -364,11 +393,11 @@ impl RepoView {
 
     /// Opens `path` of the browsed commit (or working copy) in place of the
     /// graph, its folders opened in the tree.
-    fn open_tree_file(&mut self, path: String, cx: &mut Context<Self>) {
+    pub(super) fn open_tree_file(&mut self, path: String, cx: &mut Context<Self>) {
         let Some(b) = &mut self.browser else {
             return;
         };
-        let (at, svg_source) = (b.at, b.svg_source);
+        let (at, svg_source, mode) = (b.at, b.svg_source, b.mode);
         let mut dir = parent(&path);
         while let Some(d) = dir {
             b.expanded.insert(d.to_owned());
@@ -389,51 +418,179 @@ impl RepoView {
             _ => Content::Loading,
         };
         let load = matches!(content, Content::Loading);
+        if let Some(OpenDiff::File(old)) = &self.open_diff {
+            old.cancel.cancel();
+        }
+        let cancel = CancelToken::new();
         self.open_diff = Some(OpenDiff::File(OpenFile {
             path: path.clone(),
             at,
             content,
             editing: false,
+            cancel: cancel.clone(),
         }));
         cx.notify();
         if !load {
             return;
         }
+        // Read at a commit whose tree does not list it (listed or not yet).
+        let absent = kind.is_none() && at.is_some();
+        match mode {
+            FileMode::Content => self.load_content(path, at, svg_source, absent, cancel, cx),
+            FileMode::Change => self.load_change(path, at, cancel, cx),
+            FileMode::Blame => self.load_blame(path, at, absent, cancel, cx),
+        }
+    }
+
+    /// Shows `content` in the open file, unless another load replaced the
+    /// one `cancel` belongs to.
+    fn land(&mut self, cancel: &CancelToken, content: Content, cx: &mut Context<Self>) {
+        let Some(OpenDiff::File(open)) = &mut self.open_diff else {
+            return;
+        };
+        if open.cancel.same_as(cancel) {
+            open.content = content;
+            cx.notify();
+        }
+    }
+
+    /// Reads the open file's content.
+    fn load_content(
+        &mut self,
+        path: String,
+        at: Option<Oid>,
+        svg_source: bool,
+        absent: bool,
+        cancel: CancelToken,
+        cx: &mut Context<Self>,
+    ) {
         let actions = self.core.repo_actions().clone();
         let repo = self.path.clone();
         let svg = cx.svg_renderer();
+        let task = cx.background_spawn(async move {
+            actions
+                .read_file_at(&repo, at, &path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| readable(&path, &bytes, &svg, svg_source))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                let content = match result {
+                    Ok(Readable::Text(text)) => Content::Loaded(text),
+                    Ok(Readable::Image(picture)) => {
+                        Content::Image(cx.new(|cx| ImageViewer::new(picture, cx)))
+                    }
+                    Err(e) if absent => Content::Note(format!("Not in this commit ({e})")),
+                    Err(e) => Content::Note(e),
+                };
+                v.land(&cancel, content, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Reads what the browsed commit changed in the open file: from the
+    /// selected commit's diff when it is listed already.
+    fn load_change(
+        &mut self,
+        path: String,
+        at: Option<Oid>,
+        cancel: CancelToken,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(oid) = at else {
+            let note = "The working copy: select a commit to see its change to this file";
+            self.land(&cancel, Content::Note(note.into()), cx);
+            return;
+        };
+        let unchanged = move || Content::Note(format!("Not changed in {}", oid.short(SHORT_OID)));
+        if let Some((listed, doc)) = &self.details
+            && *listed == oid
+        {
+            let content = file_history::change_of(&doc.files, &path).map_or_else(unchanged, |f| {
+                Content::Change(file_history::change_doc(f, oid))
+            });
+            self.land(&cancel, content, cx);
+            return;
+        }
+        let diffs = self.core.diff_reader();
+        let repo = self.path.clone();
+        let task = cx.background_spawn(async move { diffs.commit_diff(&repo, oid) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                let content = match result {
+                    Ok(files) => file_history::change_of(&files, &path)
+                        .map_or_else(unchanged, |f| {
+                            Content::Change(file_history::change_doc(f, oid))
+                        }),
+                    Err(e) => Content::Note(e.to_string()),
+                };
+                v.land(&cancel, content, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Reads who last changed each line of the open file.
+    fn load_blame(
+        &mut self,
+        path: String,
+        at: Option<Oid>,
+        absent: bool,
+        cancel: CancelToken,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(options) = self.browser.as_ref().map(|b| b.blame_options) else {
+            return;
+        };
+        let reader = self.core.repo_actions().ports().file_history.clone();
+        let repo = self.path.clone();
         let task = {
-            let path = path.clone();
+            let cancel = cancel.clone();
             cx.background_spawn(async move {
-                actions
-                    .read_file_at(&repo, at, &path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|bytes| readable(&path, &bytes, &svg, svg_source))
+                reader
+                    .blame(&repo, &path, at, options, &cancel)
+                    .map(|blame| BlameDoc::new(blame, MAX_VIEW_BYTES))
             })
         };
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |v, cx| {
-                let Some(OpenDiff::File(open)) = &mut v.open_diff else {
-                    return;
+                let content = match result {
+                    Ok(Ok(doc)) => Content::Blame(Arc::new(doc)),
+                    Ok(Err(note)) => Content::Note(note),
+                    Err(GitError::Cancelled) => return,
+                    Err(e) if absent => Content::Note(format!("Not in this commit ({e})")),
+                    Err(e) => Content::Note(e.to_string()),
                 };
-                if open.path != path || open.at != at {
-                    return; // another file was opened meanwhile
-                }
-                open.content = match result {
-                    Ok(Readable::Text(text)) => Content::Loaded(text),
-                    Ok(Readable::Image(picture)) => {
-                        Content::Image(cx.new(|cx| ImageViewer::new(picture, cx)))
-                    }
-                    Err(e) if kind.is_none() && at.is_some() => {
-                        Content::Note(format!("Not in this commit ({e})"))
-                    }
-                    Err(e) => Content::Note(e),
-                };
-                cx.notify();
+                v.land(&cancel, content, cx);
             });
         })
         .detach();
+    }
+
+    /// Shows the open file as `mode` from now on.
+    fn set_file_mode(&mut self, mode: FileMode, cx: &mut Context<Self>) {
+        let Some(b) = &mut self.browser else {
+            return;
+        };
+        b.mode = mode;
+        if let Some(path) = b.open.clone() {
+            self.open_tree_file(path, cx);
+        }
+    }
+
+    /// Flips a blame option, and blames the open file again.
+    fn toggle_blame_option(&mut self, flip: fn(&mut BlameOptions), cx: &mut Context<Self>) {
+        let Some(b) = &mut self.browser else {
+            return;
+        };
+        flip(&mut b.blame_options);
+        if let Some(path) = b.open.clone() {
+            self.open_tree_file(path, cx);
+        }
     }
 
     /// Closes the open file (it is not reopened at the next commit).
@@ -588,6 +745,9 @@ impl RepoView {
     /// The details pane while browsing: what is browsed, the filter and
     /// the tree.
     pub(super) fn render_browser(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.history_shown() {
+            return self.render_history(cx);
+        }
         let Some(b) = &self.browser else {
             return div().into_any_element();
         };
@@ -688,17 +848,15 @@ impl RepoView {
             Content::Shown(editor) => Some(editor.clone()),
             _ => None,
         };
-        let note = match &open.content {
-            Content::Note(note) => Some(note.clone()),
-            _ => None,
-        };
-        let image = match &open.content {
-            Content::Image(image) => Some(image.clone()),
-            _ => None,
-        };
+        let (mode, options, history) = self
+            .browser
+            .as_ref()
+            .map(|b| (b.mode, b.blame_options, b.history.is_some()))
+            .unwrap_or_default();
         // At a commit, Edit goes to the working-copy file (see
         // `edit_open_file`).
         let editable = (viewer.is_some() || was_editing)
+            && mode == FileMode::Content
             && self.browser.as_ref().is_some_and(|b| {
                 b.files.as_ref().is_some_and(|f| {
                     f.iter().any(|e| {
@@ -729,18 +887,20 @@ impl RepoView {
             .py_1()
             .border_b_1()
             .border_color(color(cx, T::BorderSubtle))
-            .child(div().flex_1().min_w_0().truncate().child(path.clone()))
+            .child(path_title(path.clone()))
             .when(!editing, |header| {
-                header.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(color(cx, T::FgMuted))
-                        .child(file_note(at, editable)),
-                )
+                header.child(hint(file_note(at, editable, mode), cx))
+            })
+            .when(!editing, |header| {
+                header.child(Self::mode_buttons(mode, history, cx))
+            })
+            .when(!editing && mode == FileMode::Blame, |header| {
+                header.child(blame_option_buttons(options, cx))
             })
             .when(
-                !editing && image_format(&path) == Some(ImageFormat::Svg),
+                !editing
+                    && mode == FileMode::Content
+                    && image_format(&path) == Some(ImageFormat::Svg),
                 |header| header.child(self.svg_toggle(path.clone(), cx)),
             )
             .when(editable && !editing, |header| {
@@ -751,14 +911,8 @@ impl RepoView {
             .children(bar);
         let body = if editing {
             file_edit::render_body(self, cx)
-        } else if let Some(editor) = viewer {
-            Self::render_viewer(&editor, editable, cx)
-        } else if let Some(image) = image {
-            image.into_any_element()
-        } else if let Some(note) = note {
-            muted(note, cx)
         } else {
-            muted("Loading file…", cx)
+            self.render_file_body(editable, cx)
         };
         div()
             .flex_1()
@@ -769,6 +923,54 @@ impl RepoView {
             .child(header)
             .child(body)
             .into_any_element()
+    }
+
+    /// The open file's body, out of the editor: its text, image, change or
+    /// blame, or why it is not shown.
+    fn render_file_body(&self, editable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let Some(OpenDiff::File(open)) = &self.open_diff else {
+            return div().into_any_element();
+        };
+        let at = open.at.map_or_else(|| "wc".to_owned(), |o| o.to_hex());
+        let key = format!("{}@{at}", open.path);
+        match &open.content {
+            Content::Change(doc) => diff_view::diff_list(
+                SharedString::from(format!("file-change-{key}")),
+                doc.clone(),
+                None,
+                None,
+                cx,
+            ),
+            Content::Blame(doc) => file_history::render_blame(doc, &key, cx),
+            Content::Shown(editor) => Self::render_viewer(editor, editable, cx),
+            Content::Image(image) => image.clone().into_any_element(),
+            Content::Note(note) => muted(note.clone(), cx),
+            Content::Loading | Content::Loaded(_) => muted("Loading file…", cx),
+        }
+    }
+
+    /// The buttons picking what the open file shows, and the one showing
+    /// its history.
+    fn mode_buttons(mode: FileMode, history: bool, cx: &mut Context<Self>) -> AnyElement {
+        let selected = color(cx, T::BgSelected);
+        let mut row = div().flex_none().flex().items_center().gap_1();
+        for (m, label, tip) in FileMode::ALL {
+            row = row.child(
+                button(SharedString::from(format!("file-mode-{label}")), label, cx)
+                    .when(m == mode, |b| b.bg(selected))
+                    .tooltip(move |_, cx| TextTooltip::view(&[tip.into()], cx))
+                    .on_click(cx.listener(move |v: &mut Self, _, _, cx| v.set_file_mode(m, cx))),
+            );
+        }
+        row.child(
+            button("file-history", "History", cx)
+                .when(history, |b| b.bg(selected))
+                .tooltip(|_, cx| {
+                    TextTooltip::view(&["The commits that touched this file".into()], cx)
+                })
+                .on_click(cx.listener(|v: &mut Self, _, _, cx| v.toggle_history(cx))),
+        )
+        .into_any_element()
     }
 
     /// The button showing an SVG's source or its image.
@@ -841,12 +1043,74 @@ impl RepoView {
     }
 }
 
+/// The open file's path, in its header: it keeps some room, the hint
+/// after it gives way first.
+fn path_title(path: String) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(PATH_MIN_WIDTH))
+        .truncate()
+        .child(path)
+}
+
+/// The open file's hint (where it is read from, its keys), in its header.
+fn hint(text: String, cx: &Context<RepoView>) -> Div {
+    div()
+        .min_w_0()
+        .truncate()
+        .text_xs()
+        .text_color(color(cx, T::FgMuted))
+        .child(text)
+}
+
+/// The blame's options, each a toggle.
+fn blame_option_buttons(options: BlameOptions, cx: &mut Context<RepoView>) -> AnyElement {
+    let selected = color(cx, T::BgSelected);
+    let toggle = |id: &'static str,
+                  label: &'static str,
+                  tip: &'static str,
+                  on: bool,
+                  flip: fn(&mut BlameOptions),
+                  cx: &mut Context<RepoView>| {
+        button(id, label, cx)
+            .when(on, |b| b.bg(selected))
+            .tooltip(move |_, cx| TextTooltip::view(&[tip.into()], cx))
+            .on_click(
+                cx.listener(move |v: &mut RepoView, _, _, cx| v.toggle_blame_option(flip, cx)),
+            )
+    };
+    div()
+        .flex_none()
+        .flex()
+        .gap_1()
+        .child(toggle(
+            "blame-whitespace",
+            "Ignore whitespace",
+            "Whitespace-only changes do not count",
+            options.ignore_whitespace,
+            |o| o.ignore_whitespace = !o.ignore_whitespace,
+            cx,
+        ))
+        .child(toggle(
+            "blame-moves",
+            "Detect moves",
+            "Lines moved or copied keep the commit that wrote them (slower)",
+            options.detect_moves,
+            |o| o.detect_moves = !o.detect_moves,
+            cx,
+        ))
+        .into_any_element()
+}
+
 /// Where the open file is read from, and its keys.
-fn file_note(at: Option<Oid>, editable: bool) -> String {
+fn file_note(at: Option<Oid>, editable: bool, mode: FileMode) -> String {
     let place = match at {
         Some(oid) => format!("at {}", oid.short(SHORT_OID)),
         None => "working copy".to_owned(),
     };
+    if mode != FileMode::Content {
+        return format!("{place} · ↑↓ files · Esc closes");
+    }
     let keys = if editable && at.is_none() {
         "double-click edits · ↑↓ files · Esc closes"
     } else if editable {

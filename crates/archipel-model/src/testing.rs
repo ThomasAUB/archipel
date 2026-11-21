@@ -13,18 +13,19 @@ use crate::cancel::{CancelToken, ProgressSink};
 use crate::changes::{ConflictSides, FileChange, FileState};
 use crate::diff::FileDiff;
 use crate::error::{GitError, ProjectError, StoreError, WatchError};
+use crate::file_history::{Blame, BlameOptions, FileRevision};
 use crate::forecast::{MergeForecast, MergeStrategy};
 use crate::history::{CommitMeta, CommitText, TopologyNode, WalkOrder};
 use crate::ids::{Oid, ProjectId, RepoId, RepoPath};
 use crate::journal::{BatchId, EntryState, HeadRef, JournalEntry, JournalId, RefSnapshot};
 use crate::ports::{
     BranchWriter, ChangeSource, ChurnReader, CommitChurn, CommitWriter, ConflictResolver, Coverage,
-    DiffReader, DiffSide, HistoryReader, HistoryRewriter, IndexWriter, InvalidationSink,
-    JournalStore, LocalFilesCopier, MergeForecaster, MergeToolInfo, MergeToolLauncher,
-    ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps, RemoteReader,
-    RemoteWriter, RepoCreator, RepoDiscovery, StashReader, StashWriter, StatsStore, StatusReader,
-    SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader, UiStateStore,
-    WatchHandle, WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
+    DiffReader, DiffSide, FileHistoryReader, HistoryReader, HistoryRewriter, IndexWriter,
+    InvalidationSink, JournalStore, LocalFilesCopier, MergeForecaster, MergeToolInfo,
+    MergeToolLauncher, ProjectRegistry, ProjectSource, RefReader, RefWriter, RemoteInfo, RemoteOps,
+    RemoteReader, RemoteWriter, RepoCreator, RepoDiscovery, StashReader, StashWriter, StatsStore,
+    StatusReader, SubmoduleReader, SubmoduleWriter, SummaryStore, TagWriter, TreeReader,
+    UiStateStore, WatchHandle, WorktreeFiles, WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
 use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry, ScanOptions};
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
@@ -111,6 +112,12 @@ pub struct FakeRepo {
     pub conflict_sides: BTreeMap<String, ConflictSides>,
     /// Git's `merge.tool` for `MergeToolLauncher::configured_tool`.
     pub merge_tool: Option<String>,
+    /// Commits touching each path, newest first, for
+    /// `FileHistoryReader::file_log` (the `from` commit is ignored).
+    pub file_logs: HashMap<String, Vec<FileRevision>>,
+    /// Blames per path and commit (`None`: the working copy), for
+    /// `FileHistoryReader::blame` (options are ignored).
+    pub blames: HashMap<(String, Option<Oid>), Blame>,
 }
 
 impl Default for FakeRepo {
@@ -138,6 +145,8 @@ impl Default for FakeRepo {
             worktrees: Vec::new(),
             conflict_sides: BTreeMap::new(),
             merge_tool: None,
+            file_logs: HashMap::new(),
+            blames: HashMap::new(),
         }
     }
 }
@@ -501,6 +510,40 @@ impl TreeReader for FakeGit {
     fn read_index_blob(&self, repo: &RepoPath, path: &str) -> Result<Vec<u8>, GitError> {
         self.with_repo(repo, |r| r.index.get(path).cloned())
             .ok_or_else(|| GitError::InvalidRequest(format!("{path} is not in the index")))
+    }
+}
+
+impl FileHistoryReader for FakeGit {
+    fn file_log(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        _from: Option<Oid>,
+        skip: usize,
+        limit: usize,
+        cancel: &CancelToken,
+    ) -> Result<Vec<FileRevision>, GitError> {
+        cancel.check()?;
+        self.read(repo, "file_log", |r| {
+            r.file_logs
+                .get(path)
+                .map(|log| log.iter().skip(skip).take(limit).cloned().collect())
+                .unwrap_or_default()
+        })
+    }
+    fn blame(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        at: Option<Oid>,
+        _options: BlameOptions,
+        cancel: &CancelToken,
+    ) -> Result<Blame, GitError> {
+        cancel.check()?;
+        self.read(repo, "blame", |r| {
+            r.blames.get(&(path.to_owned(), at)).cloned()
+        })?
+        .ok_or_else(|| GitError::InvalidRequest(format!("no blame of {path}")))
     }
 }
 

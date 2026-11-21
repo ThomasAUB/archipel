@@ -6,11 +6,11 @@ use std::sync::Arc;
 use archipel_model::changes::{ConflictSides, FileState};
 use archipel_model::journal::{BatchId, OperationKind, StashRecord};
 use archipel_model::ports::{
-    BranchWriter, CommitWriter, ConflictResolver, HistoryReader, HistoryRewriter, IndexWriter,
-    LocalFilesCopier, MergeForecaster, MergeToolLauncher, RefReader, RefWriter, RemoteOps,
-    RemoteReader, RemoteWriter, RepoCreator, StashReader, StashWriter, StatusReader,
-    SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles, WorktreeReader,
-    WorktreeSnapshots, WorktreeWriter,
+    BranchWriter, CommitWriter, ConflictResolver, FileHistoryReader, HistoryReader,
+    HistoryRewriter, IndexWriter, LocalFilesCopier, MergeForecaster, MergeToolLauncher, RefReader,
+    RefWriter, RemoteOps, RemoteReader, RemoteWriter, RepoCreator, StashReader, StashWriter,
+    StatusReader, SubmoduleReader, SubmoduleWriter, TagWriter, TreeReader, WorktreeFiles,
+    WorktreeReader, WorktreeSnapshots, WorktreeWriter,
 };
 use archipel_model::requests::{
     CheckoutTarget, CommitMode, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection,
@@ -72,6 +72,8 @@ pub struct GitPorts {
     pub files: Arc<dyn WorktreeFiles>,
     /// Files of a commit or of the working copy (the file browser).
     pub tree: Arc<dyn TreeReader>,
+    /// A file's commits and blame (the file browser's History and Blame).
+    pub file_history: Arc<dyn FileHistoryReader>,
     /// In-memory merges (the conflict forecast).
     pub forecaster: Arc<dyn MergeForecaster>,
     /// Worktree list (spec §10).
@@ -108,6 +110,7 @@ impl GitPorts {
             + RemoteWriter
             + WorktreeFiles
             + TreeReader
+            + FileHistoryReader
             + MergeForecaster
             + WorktreeReader
             + WorktreeWriter
@@ -137,6 +140,7 @@ impl GitPorts {
             remote_writer: backend.clone(),
             files: backend.clone(),
             tree: backend.clone(),
+            file_history: backend.clone(),
             forecaster: backend.clone(),
             worktrees: backend.clone(),
             worktree_writer: backend.clone(),

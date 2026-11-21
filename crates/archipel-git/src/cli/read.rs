@@ -34,7 +34,7 @@ use crate::parse::refs::{
 };
 use crate::parse::status::{StatusReport, parse_status};
 
-const META_FORMAT: &str = "--format=%H%x1f%s%x1f%an%x1f%ae%x1f%at%x1f%ct";
+pub(super) const META_FORMAT: &str = "--format=%H%x1f%s%x1f%an%x1f%ae%x1f%at%x1f%ct";
 /// [`META_FORMAT`] then the full message; records separated by NUL (`-z`).
 const TEXT_FORMAT: &str = "--format=%H%x1f%s%x1f%an%x1f%ae%x1f%at%x1f%ct%x1f%B";
 
@@ -144,7 +144,7 @@ impl GitCli {
     }
 }
 
-fn oid(text: &str, what: &'static str) -> Result<Oid, GitError> {
+pub(super) fn oid(text: &str, what: &'static str) -> Result<Oid, GitError> {
     Oid::from_hex(text).map_err(|_| GitError::Parse {
         what,
         detail: text.to_owned(),
@@ -473,7 +473,7 @@ fn parse_text(record: &str) -> Result<CommitText, GitError> {
     })
 }
 
-fn parse_meta(line: &str) -> Result<CommitMeta, GitError> {
+pub(super) fn parse_meta(line: &str) -> Result<CommitMeta, GitError> {
     let f: Vec<&str> = line.split('\x1f').collect();
     let [hash, summary, name, email, at, ct] = f[..] else {
         return Err(GitError::Parse {

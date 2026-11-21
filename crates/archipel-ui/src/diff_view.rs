@@ -996,12 +996,14 @@ fn diff_line_row(
 
 /// An open diff with its header (title, note, keys), in place of the
 /// graph or the dashboard rows; `doc` is `None` while it loads.
+#[allow(clippy::too_many_arguments)] // the header's parts, then the diff
 pub(crate) fn render_open<V: Staging>(
     v: &mut V,
     title: String,
     note: &str,
     side: Option<DiffSide>,
     doc: Option<Arc<DiffDoc>>,
+    extra: Option<AnyElement>,
     window: &gpui_kit::Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
@@ -1074,6 +1076,7 @@ pub(crate) fn render_open<V: Staging>(
                     .child(format!("{note} · {keys}")),
             )
         })
+        .when(!editing, |header| header.children(extra))
         .when_some(selection, |header, (side, (doc, (f, picks)))| {
             header.child(selection_bar(v, side, &doc, f, picks, cx))
         })

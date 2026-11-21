@@ -2,6 +2,7 @@
 
 mod conflict;
 mod copy;
+mod file_history;
 mod files;
 mod forecast;
 mod read;

@@ -459,7 +459,16 @@ impl RepoView {
             ),
             Some(OpenDiff::File(_)) | None => return div().into_any_element(),
         };
-        diff_view::render_open(self, title, &note, side, doc, window, cx)
+        // One file: its history and blame, in the file browser.
+        let file = match &self.open_diff {
+            Some(OpenDiff::Commit(Some(_), doc)) => {
+                doc.files.first().map(|f| f.display_path().to_owned())
+            }
+            Some(OpenDiff::Worktree(d)) => Some(d.file.clone()),
+            _ => None,
+        };
+        let extra = file.map(|f| Self::file_history_buttons(f, cx));
+        diff_view::render_open(self, title, &note, side, doc, extra, window, cx)
     }
 }
 

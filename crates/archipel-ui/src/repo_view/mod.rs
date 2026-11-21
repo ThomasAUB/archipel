@@ -14,6 +14,7 @@
 
 mod details;
 mod dialogs;
+mod file_history;
 mod files;
 mod graph_paint;
 mod loading;
