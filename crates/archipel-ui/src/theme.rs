@@ -244,7 +244,8 @@ pub fn sync_toolkit_theme(cx: &mut App) {
         k.secondary_hover = bg_hover;
         k.secondary_active = bg_selected;
         k.secondary_foreground = fg;
-        k.list = bg_panel;
+        // Lists, and the head of a rendered Markdown file's tables.
+        (k.list, k.table_head, k.table_head_foreground) = (bg_panel, bg_panel, fg);
         k.list_hover = bg_hover;
         k.list_active = bg_selected;
         k.list_active_border = accent;
@@ -476,6 +477,11 @@ pub fn row_height(cx: &App) -> Pixels {
 /// Corner radius from the theme.
 pub fn radius(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.radius)
+}
+
+/// Whether the theme is a dark one.
+pub fn is_dark(cx: &App) -> bool {
+    cx.global::<UiTheme>().theme.appearance() == Appearance::Dark
 }
 
 /// UI font family (installed).

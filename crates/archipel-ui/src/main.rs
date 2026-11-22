@@ -37,6 +37,7 @@ mod instance;
 mod jump_list;
 mod keys;
 mod latest;
+mod markdown_view;
 mod menu;
 mod merge_view;
 mod new_repo_dialog;
