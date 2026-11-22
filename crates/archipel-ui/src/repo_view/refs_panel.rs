@@ -95,8 +95,18 @@ impl RepoView {
             .bg(repo_surface(cx))
             .flex()
             .flex_col()
+            .overflow_hidden()
             .child(render_refs_hide(cx))
-            .child(self.render_refs(cx))
+            .child(
+                // Held to the pane's height, as the graph's list is, so the
+                // list's viewport is the visible part and not its rows.
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(self.render_refs(cx)),
+            )
             .into_any_element()
     }
 
@@ -185,7 +195,9 @@ impl RepoView {
                     .collect()
             }),
         );
-        scroll_list("refs-scroll", list).into_any_element()
+        scroll_list("refs-scroll", list)
+            .handle(&self.refs_scroll)
+            .into_any_element()
     }
 
     /// Collapses the whole refs pane to a thin strip, or expands it back.
