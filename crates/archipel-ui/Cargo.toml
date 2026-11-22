@@ -22,7 +22,12 @@ gpui-kit = { version = "0.9.0", features = ["syntect"] }
 # The decoders gpui-kit already builds, for the image viewer's own decoding
 # (sizes, pixel differences).
 image = { version = "0.25.9", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "pnm", "tiff", "webp"] }
+# The Markdown parser gpui-kit's text view already builds, to find the images
+# a Markdown file shows and the headings its links point to.
+markdown = "1.0.0"
 memory-stats = "1"
+# Mermaid diagrams in Markdown files, drawn to SVG without a browser.
+mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 serde_json.workspace = true
 # Same versions and features as gpui-kit's own highlighter, so both share one
 # build and one syntax set.

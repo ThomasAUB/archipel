@@ -4,9 +4,10 @@
 //! with a fuzzy filter. A file clicked there opens read-only, highlighted,
 //! in place of the graph; selecting another commit shows the same file
 //! there, so a file can be followed through the history. An image file
-//! shows as its image (an SVG can show its source instead).
+//! shows as its image (an SVG can show its source instead), a Markdown file
+//! rendered (or its source).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -18,8 +19,8 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Div, Entity, FocusHandle, ImageFormat, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollStrategy, SharedString, Subscription, SvgRenderer,
+    AnyElement, App, Context, Div, Entity, FocusHandle, Image, ImageFormat, KeyDownEvent,
+    MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Subscription, SvgRenderer,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
@@ -27,6 +28,7 @@ use crate::diff_view::{self, DiffDoc};
 use crate::file_edit::{self, language_of};
 use crate::image_view::viewer::ImageViewer;
 use crate::image_view::{self, Picture, image_format};
+use crate::markdown_view::{self, Link, MarkdownDoc};
 use crate::theme::{color, mono_font, row_height};
 use crate::widgets::{
     ListMove, SHORT_OID, TextTooltip, button, list_row, scroll_list, section, unmodified,
@@ -174,6 +176,8 @@ pub(super) struct FileBrowser {
     pub(super) open: Option<String>,
     /// SVG files show their source, not their image.
     svg_source: bool,
+    /// Markdown files show their source, not rendered.
+    md_source: bool,
     /// What the open file shows, kept from one commit to the next.
     pub(super) mode: FileMode,
     /// How the blame matches lines to commits.
@@ -193,6 +197,8 @@ pub(super) struct OpenFile {
     content: Content,
     /// The diff view's editor was open on it at the last render.
     editing: bool,
+    /// The heading to scroll to once shown (a link led here).
+    anchor: Option<String>,
     /// Cancels its load once another file, commit or mode is shown; also
     /// tells its load's result from an older one's.
     cancel: CancelToken,
@@ -211,6 +217,8 @@ enum Content {
     Shown(Entity<EditorState>),
     /// An image file, decoded.
     Image(Entity<ImageViewer>),
+    /// A Markdown file, rendered.
+    Markdown(Box<MarkdownDoc>),
     /// The selected commit's change to the file.
     Change(Arc<DiffDoc>),
     /// Who last changed each line.
@@ -223,6 +231,8 @@ enum Content {
 enum Readable {
     Text(String),
     Image(Picture),
+    /// A Markdown file's text, and the images it shows by their source.
+    Markdown(String, HashMap<String, Arc<Image>>),
 }
 
 /// What to show of `bytes` of `path`: an image file its image (an SVG
@@ -297,6 +307,7 @@ impl RepoView {
             selected: None,
             open: None,
             svg_source: false,
+            md_source: false,
             mode: FileMode::default(),
             blame_options: BlameOptions::default(),
             history: None,
@@ -397,7 +408,7 @@ impl RepoView {
         let Some(b) = &mut self.browser else {
             return;
         };
-        let (at, svg_source, mode) = (b.at, b.svg_source, b.mode);
+        let (at, sources, mode) = (b.at, (b.svg_source, b.md_source), b.mode);
         let mut dir = parent(&path);
         while let Some(d) = dir {
             b.expanded.insert(d.to_owned());
@@ -427,6 +438,7 @@ impl RepoView {
             at,
             content,
             editing: false,
+            anchor: None,
             cancel: cancel.clone(),
         }));
         cx.notify();
@@ -436,7 +448,7 @@ impl RepoView {
         // Read at a commit whose tree does not list it (listed or not yet).
         let absent = kind.is_none() && at.is_some();
         match mode {
-            FileMode::Content => self.load_content(path, at, svg_source, absent, cancel, cx),
+            FileMode::Content => self.load_content(path, at, sources, absent, cancel, cx),
             FileMode::Change => self.load_change(path, at, cancel, cx),
             FileMode::Blame => self.load_blame(path, at, absent, cancel, cx),
         }
@@ -454,12 +466,13 @@ impl RepoView {
         }
     }
 
-    /// Reads the open file's content.
+    /// Reads the open file's content: a Markdown file (unless its source
+    /// is asked for) with the images it shows, from the same commit.
     fn load_content(
         &mut self,
         path: String,
         at: Option<Oid>,
-        svg_source: bool,
+        (svg_source, md_source): (bool, bool),
         absent: bool,
         cancel: CancelToken,
         cx: &mut Context<Self>,
@@ -468,10 +481,18 @@ impl RepoView {
         let repo = self.path.clone();
         let svg = cx.svg_renderer();
         let task = cx.background_spawn(async move {
-            actions
+            let bytes = actions
                 .read_file_at(&repo, at, &path)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| readable(&path, &bytes, &svg, svg_source))
+                .map_err(|e| e.to_string())?;
+            match readable(&path, &bytes, &svg, svg_source)? {
+                Readable::Text(text) if !md_source && markdown_view::is_markdown(&path) => {
+                    let images = markdown_view::load_images(&path, &text, |image| {
+                        actions.read_file_at(&repo, at, image).ok()
+                    });
+                    Ok(Readable::Markdown(text, images))
+                }
+                shown => Ok(shown),
+            }
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -480,6 +501,9 @@ impl RepoView {
                     Ok(Readable::Text(text)) => Content::Loaded(text),
                     Ok(Readable::Image(picture)) => {
                         Content::Image(cx.new(|cx| ImageViewer::new(picture, cx)))
+                    }
+                    Ok(Readable::Markdown(text, images)) => {
+                        Content::Markdown(Box::new(MarkdownDoc::new(text, images, cx)))
                     }
                     Err(e) if absent => Content::Note(format!("Not in this commit ({e})")),
                     Err(e) => Content::Note(e),
@@ -843,6 +867,7 @@ impl RepoView {
             });
             open.content = Content::Shown(editor);
         }
+        let rendered = prepare_markdown(open, cx);
         let (path, at, was_editing) = (open.path.clone(), open.at, open.editing);
         let viewer = match &open.content {
             Content::Shown(editor) => Some(editor.clone()),
@@ -855,7 +880,7 @@ impl RepoView {
             .unwrap_or_default();
         // At a commit, Edit goes to the working-copy file (see
         // `edit_open_file`).
-        let editable = (viewer.is_some() || was_editing)
+        let editable = (viewer.is_some() || rendered || was_editing)
             && mode == FileMode::Content
             && self.browser.as_ref().is_some_and(|b| {
                 b.files.as_ref().is_some_and(|f| {
@@ -889,7 +914,7 @@ impl RepoView {
             .border_color(color(cx, T::BorderSubtle))
             .child(path_title(path.clone()))
             .when(!editing, |header| {
-                header.child(hint(file_note(at, editable, mode), cx))
+                header.child(hint(file_note(at, editable && !rendered, mode), cx))
             })
             .when(!editing, |header| {
                 header.child(Self::mode_buttons(mode, history, cx))
@@ -902,6 +927,10 @@ impl RepoView {
                     && mode == FileMode::Content
                     && image_format(&path) == Some(ImageFormat::Svg),
                 |header| header.child(self.svg_toggle(path.clone(), cx)),
+            )
+            .when(
+                !editing && mode == FileMode::Content && markdown_view::is_markdown(&path),
+                |header| header.child(self.markdown_toggle(path.clone(), cx)),
             )
             .when(editable && !editing, |header| {
                 header.child(button("file-edit", "Edit", cx).on_click(
@@ -944,6 +973,13 @@ impl RepoView {
             Content::Blame(doc) => file_history::render_blame(doc, &key, cx),
             Content::Shown(editor) => Self::render_viewer(editor, editable, cx),
             Content::Image(image) => image.clone().into_any_element(),
+            Content::Markdown(doc) => {
+                let view = cx.entity().downgrade();
+                doc.render(move |href, window, cx| {
+                    let href = href.to_string();
+                    let _ = view.update(cx, |v, cx| v.follow_markdown_link(&href, window, cx));
+                })
+            }
             Content::Note(note) => muted(note.clone(), cx),
             Content::Loading | Content::Loaded(_) => muted("Loading file…", cx),
         }
@@ -985,6 +1021,64 @@ impl RepoView {
                 v.open_tree_file(path.clone(), cx);
             }))
             .into_any_element()
+    }
+
+    /// The button showing a Markdown file's source, or rendered.
+    fn markdown_toggle(&self, path: String, cx: &mut Context<Self>) -> AnyElement {
+        let source = self.browser.as_ref().is_some_and(|b| b.md_source);
+        let label = if source { "Rendered" } else { "Source" };
+        button("file-md-source", label, cx)
+            .on_click(cx.listener(move |v: &mut Self, _, _, cx| {
+                if let Some(b) = &mut v.browser {
+                    b.md_source = !b.md_source;
+                }
+                v.open_tree_file(path.clone(), cx);
+            }))
+            .into_any_element()
+    }
+
+    /// Follows `href`, clicked in the open Markdown file: a heading of it
+    /// scrolls into view, a file of the repo opens in its place (a folder:
+    /// its README), a web link opens in the browser.
+    fn follow_markdown_link(&mut self, href: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(OpenDiff::File(open)) = &mut self.open_diff else {
+            return;
+        };
+        match markdown_view::link_target(&open.path, href) {
+            Some(Link::External(url)) => cx.open_url(&url),
+            Some(Link::Anchor(anchor)) => {
+                if let Content::Markdown(doc) = &mut open.content {
+                    doc.scroll_to(anchor, cx);
+                    cx.notify();
+                }
+            }
+            Some(Link::File { path, anchor }) => {
+                let path = self.link_file(path);
+                self.open_tree_file(path, cx);
+                if let Some(OpenDiff::File(open)) = &mut self.open_diff {
+                    open.anchor = anchor;
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// The file a link to `path` opens: `path`, or for a folder, its README.
+    fn link_file(&self, path: String) -> String {
+        let Some(files) = self.browser.as_ref().and_then(|b| b.files.as_ref()) else {
+            return path;
+        };
+        if files.iter().any(|e| e.path == path) {
+            return path;
+        }
+        let folder = format!("{path}/");
+        files
+            .iter()
+            .filter_map(|e| e.path.strip_prefix(&folder).map(|name| (name, &e.path)))
+            .find(|(name, _)| {
+                !name.contains('/') && name.to_ascii_lowercase().starts_with("readme")
+            })
+            .map_or(path, |(_, file)| file.clone())
     }
 
     /// The read-only view of a file; a double-click on an editable one opens
@@ -1041,6 +1135,19 @@ impl RepoView {
         }
         file_edit::open(self, path, line, window, cx);
     }
+}
+
+/// Readies `open` for its render when it is a rendered Markdown file
+/// (theme, heading a link led to); whether it is one.
+fn prepare_markdown(open: &mut OpenFile, cx: &mut App) -> bool {
+    let Content::Markdown(doc) = &mut open.content else {
+        return false;
+    };
+    if let Some(anchor) = open.anchor.take() {
+        doc.scroll_to(anchor, cx);
+    }
+    doc.prepare(cx);
+    true
 }
 
 /// The open file's path, in its header: it keeps some room, the hint
