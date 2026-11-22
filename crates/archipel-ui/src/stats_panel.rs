@@ -5,9 +5,10 @@
 //!
 //! Opened from the dashboard and the tree view (toolbar **Statistics…**, the
 //! row menu and the tree's hover buttons). Everything is read in the
-//! background when it opens; closing it cancels the reads.
+//! background when it opens; closing it cancels the reads. The language
+//! breakdown can be narrowed to some folders, ticked in a folder tree.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,8 +16,8 @@ use std::time::Duration;
 
 use archipel_app::dashboard::exact_time;
 use archipel_app::insights::{
-    AdviceLevel, FILE_BUCKETS, HUGE_LINES, Insights, LINE_BUCKETS, LanguageShare, RECENT_DAYS,
-    TINY_LINES, human_bytes,
+    AdviceLevel, FILE_BUCKETS, FolderFilter, FolderNode, FolderState, HUGE_LINES, Insights,
+    LINE_BUCKETS, LanguageShare, RECENT_DAYS, TINY_LINES, human_bytes,
 };
 use archipel_app::{App as Core, InsightsReport};
 use archipel_model::{CancelToken, RepoId, Timestamp};
@@ -68,6 +69,17 @@ pub struct StatsPanel {
     /// Series index per contributor, from the project order, so a
     /// person keeps their color from one repo to another.
     people: HashMap<String, u32>,
+    /// The source folders of each repo, by repo name.
+    folders: HashMap<String, FolderNode>,
+    /// Whether the folder tree is shown.
+    picking: bool,
+    /// Folders (repo, path) opened or closed against their default (a
+    /// repo root is open when it is the only repo shown).
+    toggled: HashSet<(String, String)>,
+    /// The folders the languages count.
+    filter: FolderFilter,
+    /// The statistics shown, languages filtered, for (shown, filter).
+    filtered: Option<((Option<usize>, FolderFilter), Insights)>,
 }
 
 impl EventEmitter<StatsPanelEvent> for StatsPanel {}
@@ -97,6 +109,11 @@ impl StatsPanel {
             shown: None,
             focus,
             people: HashMap::new(),
+            folders: HashMap::new(),
+            picking: false,
+            toggled: HashSet::new(),
+            filter: FolderFilter::default(),
+            filtered: None,
         };
         panel.load(core, cx);
         panel
@@ -142,6 +159,12 @@ impl StatsPanel {
                     .enumerate()
                     .map(|(i, c)| (c.key.clone(), u32::try_from(i).unwrap_or(0) % SERIES))
                     .collect();
+                p.folders = report
+                    .project
+                    .repo_languages
+                    .iter()
+                    .map(|r| (r.repo.clone(), r.folders()))
+                    .collect();
                 p.shown = match (p.focus, report.repos.len()) {
                     (_, 1) => Some(0),
                     (Some(id), _) => report.repos.iter().position(|r| r.id == id),
@@ -160,6 +183,17 @@ impl StatsPanel {
             Some(i) => &report.repos.get(i)?.insights,
             None => &report.project,
         })
+    }
+
+    /// The statistics shown, their languages narrowed by the path filter.
+    fn filtered_insights(&mut self) -> Option<Insights> {
+        let key = (self.shown, self.filter.clone());
+        if self.filtered.as_ref().is_none_or(|(k, _)| *k != key) {
+            let mut s = self.insights()?.clone();
+            s.filter_languages(&self.filter);
+            self.filtered = Some((key, s));
+        }
+        self.filtered.as_ref().map(|(_, s)| s.clone())
     }
 
     fn person_color(&self, key: &str, cx: &App) -> Hsla {
@@ -414,8 +448,191 @@ impl StatsPanel {
         )
     }
 
+    /// The rows of a folder and, when open, of its subfolders.
+    #[allow(clippy::cast_precision_loss)] // indent
+    fn folder_rows(
+        &self,
+        repo: &str,
+        node: &FolderNode,
+        depth: usize,
+        single: bool,
+        rows: &mut Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (repo.to_owned(), node.path.clone());
+        let open = (node.path.is_empty() && single) != self.toggled.contains(&key);
+        let state = self.filter.state(repo, &node.path);
+        let label = if node.path.is_empty() {
+            repo.to_owned()
+        } else {
+            node.name.clone()
+        };
+        let id = format!("{repo}/{}", node.path);
+        let has_children = !node.children.is_empty();
+        let toggle_open = key.clone();
+        let (tick_repo, tick_path) = key;
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .h(px(22.0))
+                .pl(px(depth as f32 * 16.0))
+                .pr_2()
+                .rounded(radius(cx))
+                .hover(|s| s.bg(color(cx, T::BgHover)))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("st-fold-open-{id}")))
+                        .flex_none()
+                        .w(px(14.0))
+                        .text_color(color(cx, T::FgMuted))
+                        .when(has_children, |d| {
+                            d.cursor_pointer()
+                                .child(if open { "▾" } else { "▸" })
+                                .on_click(cx.listener(move |p, _, _, cx| {
+                                    if !p.toggled.remove(&toggle_open) {
+                                        p.toggled.insert(toggle_open.clone());
+                                    }
+                                    cx.notify();
+                                }))
+                        }),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("st-fold-tick-{id}")))
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .when(state == FolderState::None, |d| {
+                            d.text_color(color(cx, T::FgMuted))
+                        })
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(color(
+                                    cx,
+                                    if state == FolderState::None {
+                                        T::FgMuted
+                                    } else {
+                                        T::AccentText
+                                    },
+                                ))
+                                .child(match state {
+                                    FolderState::All => "☑",
+                                    FolderState::Some => "▣",
+                                    FolderState::None => "☐",
+                                }),
+                        )
+                        .child(div().truncate().child(label))
+                        .on_click(cx.listener(move |p, _, _, cx| {
+                            p.filter.toggle(&tick_repo, &tick_path);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(color(cx, T::FgMuted))
+                        .child(format!(
+                            "{} lines · {} files",
+                            thousands(node.lines),
+                            thousands(node.files)
+                        )),
+                )
+                .into_any_element(),
+        );
+        if open {
+            for child in &node.children {
+                self.folder_rows(repo, child, depth + 1, single, rows, cx);
+            }
+        }
+    }
+
+    /// The folder picker of the languages: a button showing the folder
+    /// tree, what is left out, and a reset.
+    fn render_folders(&self, s: &Insights, cx: &mut Context<Self>) -> Div {
+        let repos: Vec<String> = s
+            .repos
+            .iter()
+            .map(|(r, _)| r.clone())
+            .filter(|r| self.folders.contains_key(r))
+            .collect();
+        let narrowed = repos
+            .iter()
+            .any(|r| self.filter.state(r, "") != FolderState::All);
+        let mut bar = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                button(
+                    "st-folders",
+                    if self.picking {
+                        "Hide folders"
+                    } else {
+                        "Choose folders…"
+                    },
+                    cx,
+                )
+                .on_click(cx.listener(|p, _, _, cx| {
+                    p.picking = !p.picking;
+                    cx.notify();
+                })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(color(cx, T::FgMuted))
+                    .child(if narrowed {
+                        "Counting the folders ticked only."
+                    } else {
+                        "Counting every folder."
+                    }),
+            );
+        if narrowed {
+            let clear = repos.clone();
+            bar = bar.child(button("st-folders-all", "Count every folder", cx).on_click(
+                cx.listener(move |p, _, _, cx| {
+                    for r in &clear {
+                        p.filter.clear(r);
+                    }
+                    cx.notify();
+                }),
+            ));
+        }
+        let mut out = div().flex().flex_col().gap_2().child(bar);
+        if self.picking {
+            let single = repos.len() == 1;
+            let mut rows = Vec::new();
+            for r in &repos {
+                if let Some(node) = self.folders.get(r) {
+                    self.folder_rows(r, node, 0, single, &mut rows, cx);
+                }
+            }
+            out = out.child(
+                div()
+                    .id("st-folder-tree")
+                    .max_h(px(320.0))
+                    .overflow_y_scrollbar()
+                    .p_1()
+                    .border_1()
+                    .border_color(color(cx, T::Border))
+                    .rounded(radius(cx))
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            );
+        }
+        out
+    }
+
     #[allow(clippy::cast_precision_loss)] // shares
-    fn render_languages(&self, s: &Insights, cx: &App) -> Div {
+    fn render_languages(&self, s: &Insights, cx: &mut Context<Self>) -> Div {
         let card = card(
             "Languages",
             "Share of each language in the code of the walked branch, by lines and by files \
@@ -425,8 +642,19 @@ impl StatsPanel {
         if s.repo_languages.is_empty() {
             return card.child(hint("The files could not be read.", cx));
         }
+        let card = card.child(self.render_folders(s, cx));
+        let (filtered_files, filtered_lines) = s.repo_languages.iter().fold((0, 0), |(f, l), r| {
+            (f + r.filtered_files, l + r.filtered_lines)
+        });
         if s.languages.is_empty() {
-            return card.child(hint("No source file in a known language.", cx));
+            return card.child(hint(
+                if filtered_files > 0 {
+                    "No source file in the folders ticked."
+                } else {
+                    "No source file in a known language."
+                },
+                cx,
+            ));
         }
         let muted = color(cx, T::FgSubtle);
         let (shown, other) = fold_languages(&s.languages);
@@ -446,6 +674,7 @@ impl StatsPanel {
                 .text_xs()
                 .text_color(color(cx, T::FgSubtle))
                 .child(div().flex_1().child("LANGUAGE"))
+                .child(div().w(px(90.0)).flex().justify_end().child("LINES"))
                 .child(div().w(px(150.0)).child("SHARE OF LINES"))
                 .child(div().w(px(150.0)).child("SHARE OF FILES"))
                 .into_any_element(),
@@ -477,6 +706,14 @@ impl StatsPanel {
                             .gap_2()
                             .child(swatch(fill(l)))
                             .child(div().truncate().child(label)),
+                    )
+                    .child(
+                        div()
+                            .w(px(90.0))
+                            .flex()
+                            .justify_end()
+                            .text_color(color(cx, T::FgMuted))
+                            .child(thousands(l.lines)),
                     )
                     .child(share_bar(l.lines as f32 / lines, fill(l), cx))
                     .child(share_bar(l.files as f32 / files, fill(l).opacity(0.55), cx))
@@ -534,9 +771,17 @@ impl StatsPanel {
         });
         card.child(hint(
             &format!(
-                "{} lines in {} files.{}",
+                "{} lines in {} files.{}{}",
                 thousands(s.languages.iter().map(|l| l.lines).sum()),
                 thousands(s.languages.iter().map(|l| l.files).sum()),
+                match filtered_files {
+                    0 => String::new(),
+                    n => format!(
+                        " {} files in folders left out ({} lines).",
+                        thousands(n),
+                        thousands(filtered_lines)
+                    ),
+                },
                 match excluded_files {
                     0 => String::new(),
                     n => format!(
@@ -1164,6 +1409,7 @@ impl Render for StatsPanel {
                 exact_time(Timestamp::now())
             )
         });
+        let shown = self.filtered_insights();
         let mut body = div()
             .id("st-body")
             .flex_1()
@@ -1173,7 +1419,7 @@ impl Render for StatsPanel {
             .flex_col()
             .gap_4()
             .pr_2();
-        match self.insights() {
+        match shown {
             None => {
                 let (done, total) = (
                     self.progress.done.load(Ordering::Relaxed),
@@ -1210,7 +1456,6 @@ impl Render for StatsPanel {
                 body = body.child(hint("No commit to look at.", cx));
             }
             Some(s) => {
-                let s = s.clone();
                 body = body
                     .child(self.render_kpis(&s, cx))
                     .child(self.render_contribution(&s, cx))

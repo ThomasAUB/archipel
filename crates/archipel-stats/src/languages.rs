@@ -8,8 +8,12 @@
 //! files. The `linguist-generated`, `linguist-vendored`,
 //! `linguist-documentation` and `linguist-language` attributes override
 //! these rules, as on GitHub.
+//!
+//! A [`FolderFilter`] narrows the count to some folders (only `src`, without
+//! `tests`…), ticked in the [`FolderNode`] tree of the statistics panel.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use archipel_model::stats::TreeFile;
 
@@ -289,6 +293,172 @@ pub fn is_excluded(path: &str) -> bool {
         || name.contains(".generated.")
 }
 
+/// Folders left in or out of the count, per repository, as ticked in a
+/// folder tree. A file counts as its nearest folder set says (the
+/// repository root is the folder `""`), and counts when none is set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FolderFilter {
+    /// Per repository: folder → counted. Never holds a folder set the way
+    /// its parent already is.
+    set: BTreeMap<String, BTreeMap<String, bool>>,
+}
+
+/// How much of a folder is counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderState {
+    /// Everything below it.
+    All,
+    /// Some subfolders, not all.
+    Some,
+    /// Nothing below it.
+    None,
+}
+
+/// The folder holding `path` (`""` for the root and what is at the root).
+fn parent(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(p, _)| p)
+}
+
+/// Whether `path` is strictly below `folder`.
+fn is_below(path: &str, folder: &str) -> bool {
+    if folder.is_empty() {
+        !path.is_empty()
+    } else {
+        path.strip_prefix(folder)
+            .is_some_and(|rest| rest.starts_with('/'))
+    }
+}
+
+/// Whether `path` counts by the folders set in one repository.
+fn keeps_in(set: Option<&BTreeMap<String, bool>>, path: &str) -> bool {
+    let Some(set) = set else {
+        return true;
+    };
+    let mut p = path;
+    loop {
+        if let Some(v) = set.get(p) {
+            return *v;
+        }
+        if p.is_empty() {
+            return true;
+        }
+        p = parent(p);
+    }
+}
+
+impl FolderFilter {
+    /// Whether it counts every file.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
+    /// Whether the file or folder at `path` in `repo` counts.
+    #[must_use]
+    pub fn keeps(&self, repo: &str, path: &str) -> bool {
+        keeps_in(self.set.get(repo), path)
+    }
+
+    /// How much of `folder` in `repo` counts.
+    #[must_use]
+    pub fn state(&self, repo: &str, folder: &str) -> FolderState {
+        let set = self.set.get(repo);
+        let on = keeps_in(set, folder);
+        let mixed = set.is_some_and(|set| set.iter().any(|(k, v)| *v != on && is_below(k, folder)));
+        match (mixed, on) {
+            (true, _) => FolderState::Some,
+            (false, true) => FolderState::All,
+            (false, false) => FolderState::None,
+        }
+    }
+
+    /// Ticks `folder` in `repo` (with everything below it) when it is not
+    /// wholly counted, unticks it otherwise.
+    pub fn toggle(&mut self, repo: &str, folder: &str) {
+        let tick = self.state(repo, folder) != FolderState::All;
+        let set = self.set.entry(repo.to_owned()).or_default();
+        set.retain(|k, _| k != folder && !is_below(k, folder));
+        if keeps_in(Some(set), folder) != tick {
+            set.insert(folder.to_owned(), tick);
+        }
+        if set.is_empty() {
+            self.set.remove(repo);
+        }
+    }
+
+    /// Counts every folder of `repo` again.
+    pub fn clear(&mut self, repo: &str) {
+        self.set.remove(repo);
+    }
+}
+
+/// A folder holding source files, with the lines of those below it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FolderNode {
+    /// Folder name (`""` for the root).
+    pub name: String,
+    /// Path in the tree (`""` for the root).
+    pub path: String,
+    /// Lines of the source files below it.
+    pub lines: u64,
+    /// Number of those files.
+    pub files: u64,
+    /// Subfolders holding source files, by name.
+    pub children: Vec<FolderNode>,
+}
+
+#[derive(Default)]
+struct FolderBuild {
+    lines: u64,
+    files: u64,
+    children: BTreeMap<String, FolderBuild>,
+}
+
+impl FolderBuild {
+    fn finish(self, name: String, path: String) -> FolderNode {
+        let children = self
+            .children
+            .into_iter()
+            .map(|(n, b)| {
+                let p = if path.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{path}/{n}")
+                };
+                b.finish(n, p)
+            })
+            .collect();
+        FolderNode {
+            name,
+            path,
+            lines: self.lines,
+            files: self.files,
+            children,
+        }
+    }
+}
+
+/// The language of a file: its `linguist-language`, or else from its name.
+fn language_of(f: &TreeFile) -> Option<Language> {
+    match &f.language {
+        Some(name) => Some(Language {
+            name: BY_EXTENSION
+                .iter()
+                .chain(BY_NAME)
+                .map(|(_, l)| l.name)
+                .find(|n| n.eq_ignore_ascii_case(name))
+                .unwrap_or(""),
+            color: color_of(name),
+        }),
+        None => detect(&f.path),
+    }
+}
+
+/// Whether a file is left out as vendored or generated.
+fn is_left_out(f: &TreeFile) -> bool {
+    f.excluded.unwrap_or_else(|| is_excluded(&f.path))
+}
+
 /// The share of one language.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LanguageShare {
@@ -313,6 +483,12 @@ pub struct RepoLanguages {
     pub excluded_files: u64,
     /// Lines of those files.
     pub excluded_lines: u64,
+    /// Files of a known language left out by the [`FolderFilter`].
+    pub filtered_files: u64,
+    /// Lines of those files.
+    pub filtered_lines: u64,
+    /// The files of the tree, to count again with another filter.
+    tree: Arc<[TreeFile]>,
 }
 
 impl RepoLanguages {
@@ -327,6 +503,42 @@ impl RepoLanguages {
     pub fn files(&self) -> u64 {
         self.languages.iter().map(|l| l.files).sum()
     }
+
+    /// The breakdown of the same tree, counting only the files `filter`
+    /// keeps.
+    #[must_use]
+    pub fn filtered(&self, filter: &FolderFilter) -> Self {
+        breakdown_filtered(&self.repo, &self.tree, filter)
+    }
+
+    /// The folders holding the files counted without a filter (of a known
+    /// language, neither vendored nor generated), from the root.
+    #[must_use]
+    pub fn folders(&self) -> FolderNode {
+        let mut root = FolderBuild::default();
+        for f in self.tree.iter() {
+            if language_of(f).is_none() || is_left_out(f) {
+                continue;
+            }
+            let mut node = &mut root;
+            node.lines += f.lines;
+            node.files += 1;
+            for dir in f
+                .path
+                .split('/')
+                .rev()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                node = node.children.entry(dir.to_owned()).or_default();
+                node.lines += f.lines;
+                node.files += 1;
+            }
+        }
+        root.finish(String::new(), String::new())
+    }
 }
 
 /// The language breakdown of one repository's tree.
@@ -336,30 +548,31 @@ impl RepoLanguages {
 /// otherwise.
 #[must_use]
 pub fn breakdown(repo: &str, files: &[TreeFile]) -> RepoLanguages {
+    breakdown_filtered(repo, &Arc::from(files), &FolderFilter::default())
+}
+
+/// The language breakdown of one repository's tree, counting only the files
+/// `filter` keeps (see [`breakdown`]).
+fn breakdown_filtered(repo: &str, files: &Arc<[TreeFile]>, filter: &FolderFilter) -> RepoLanguages {
     let mut out = RepoLanguages {
         repo: repo.to_owned(),
+        tree: files.clone(),
         ..RepoLanguages::default()
     };
+    let set = filter.set.get(repo);
     let mut kept: Vec<(Language, &TreeFile)> = Vec::new();
-    for f in files {
-        let language = match &f.language {
-            Some(name) => Some(Language {
-                name: BY_EXTENSION
-                    .iter()
-                    .chain(BY_NAME)
-                    .map(|(_, l)| l.name)
-                    .find(|n| n.eq_ignore_ascii_case(name))
-                    .unwrap_or(""),
-                color: color_of(name),
-            }),
-            None => detect(&f.path),
-        };
-        let Some(language) = language else {
+    for f in files.iter() {
+        let Some(language) = language_of(f) else {
             continue;
         };
-        if f.excluded.unwrap_or_else(|| is_excluded(&f.path)) {
+        if is_left_out(f) {
             out.excluded_files += 1;
             out.excluded_lines += f.lines;
+            continue;
+        }
+        if !keeps_in(set, &f.path) {
+            out.filtered_files += 1;
+            out.filtered_lines += f.lines;
             continue;
         }
         kept.push((language, f));
@@ -538,6 +751,103 @@ mod tests {
         assert_eq!(names, ["Go", "Python", "Brainfuck"]);
         assert_eq!(r.languages[2].color, UNKNOWN_COLOR);
         assert_eq!(r.excluded_files, 1);
+    }
+
+    #[test]
+    fn folder_ticks() {
+        use FolderState::{All, None, Some};
+        let mut f = FolderFilter::default();
+        assert!(f.is_empty());
+        assert!(f.keeps("app", "tests/a.rs"));
+        // Untick a folder: what is below it is left out.
+        f.toggle("app", "tests");
+        assert!(!f.keeps("app", "tests/a.rs"));
+        assert!(!f.keeps("app", "tests/deep/b.rs"));
+        assert!(f.keeps("app", "tests_util.rs"));
+        assert!(f.keeps("lib", "tests/a.rs"));
+        assert_eq!(f.state("app", ""), Some);
+        assert_eq!(f.state("app", "tests"), None);
+        assert_eq!(f.state("app", "tests/deep"), None);
+        assert_eq!(f.state("app", "src"), All);
+        // Only src: untick the root (a partly ticked folder ticks whole
+        // first), tick src back.
+        f.toggle("app", "");
+        assert_eq!(f.state("app", ""), All);
+        f.toggle("app", "");
+        assert_eq!(f.state("app", ""), None);
+        f.toggle("app", "src");
+        assert!(f.keeps("app", "src/main.rs"));
+        assert!(!f.keeps("app", "build.rs"));
+        assert!(!f.keeps("app", "tests/a.rs"));
+        assert_eq!(f.state("app", ""), Some);
+        // A mixed folder ticks whole; ticking back what the parent is
+        // leaves nothing set.
+        f.toggle("app", "");
+        assert_eq!(f.state("app", ""), All);
+        assert!(f.is_empty());
+        f.toggle("app", "src");
+        f.clear("app");
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn folder_tree() {
+        let files = [
+            file("src/main.rs", 300),
+            file("src/ui/view.rs", 20),
+            file("tests/it.rs", 50),
+            file("docs/guide.md", 900),
+            file("vendor/x.c", 40),
+            file("build.rs", 5),
+        ];
+        let root = breakdown("app", &files).folders();
+        assert_eq!((root.lines, root.files), (375, 4));
+        let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["src", "tests"]);
+        let src = &root.children[0];
+        assert_eq!((src.path.as_str(), src.lines, src.files), ("src", 320, 2));
+        assert_eq!(src.children[0].path, "src/ui");
+        assert_eq!(src.children[0].lines, 20);
+    }
+
+    #[test]
+    fn filtered_breakdown() {
+        let files = [
+            file("src/main.rs", 300),
+            file("src/a.h", 10),
+            file("tests/it.rs", 50),
+            file("tests/fixture.cpp", 900),
+            file("vendor/x.c", 40),
+            file("README.md", 500),
+        ];
+        let all = breakdown("app", &files);
+        assert_eq!(all.lines(), 1260);
+        let mut filter = FolderFilter::default();
+        filter.toggle("app", "tests");
+        let r = all.filtered(&filter);
+        let names: Vec<&str> = r.languages.iter().map(|l| l.name.as_str()).collect();
+        // The header follows the sources counted: no C++ left, so C.
+        assert_eq!(names, ["Rust", "C"]);
+        assert_eq!(r.lines(), 310);
+        assert_eq!((r.filtered_files, r.filtered_lines), (2, 950));
+        assert_eq!((r.excluded_files, r.excluded_lines), (1, 40));
+        // Filters do not stack: each starts from the whole tree.
+        let mut only = FolderFilter::default();
+        only.toggle("app", "");
+        only.toggle("app", "tests");
+        let only = r.filtered(&only);
+        assert_eq!(only.lines(), 950);
+        assert_eq!(only.filtered(&FolderFilter::default()), all);
+        // Another repository's folders change nothing.
+        assert_eq!(
+            all.filtered(&{
+                let mut f = FolderFilter::default();
+                f.toggle("other", "src");
+                f
+            })
+            .lines(),
+            all.lines()
+        );
     }
 
     #[test]
