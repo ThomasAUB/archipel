@@ -183,6 +183,8 @@ fn measure(scenario: &'static str, value: f64, unit: &'static str, target: Optio
 
 const BIG: &str = "bench-20";
 const SMALL: &str = "bench-5";
+/// Timed dashboard refreshes; the median is reported.
+const DASHBOARD_RUNS: usize = 5;
 
 /// First session: creates the projects, then times a fresh dashboard.
 fn first_session(home: &Path, fx: &Fixtures, out: &mut Vec<Measure>) -> Result<()> {
@@ -198,13 +200,19 @@ fn first_session(home: &Path, fx: &Fixtures, out: &mut Vec<Measure>) -> Result<(
     )?;
     app.open_project(&big)?;
     wait_fresh(app)?;
-    // Warm OS cache, recompute everything (spec < 500 ms).
-    let started = Instant::now();
-    app.refresh_all();
-    wait_fresh(app)?;
+    // Warm OS cache, recompute everything (spec < 500 ms). The median of a
+    // few runs: one sample swings by 2x on shared CI runners.
+    let mut samples = Vec::with_capacity(DASHBOARD_RUNS);
+    for _ in 0..DASHBOARD_RUNS {
+        let started = Instant::now();
+        app.refresh_all();
+        wait_fresh(app)?;
+        samples.push(started.elapsed());
+    }
+    samples.sort_unstable();
     out.push(measure(
         "dashboard_20_repos_fresh",
-        ms(started.elapsed()),
+        ms(samples[DASHBOARD_RUNS / 2]),
         "ms",
         Some(500.0),
     ));
