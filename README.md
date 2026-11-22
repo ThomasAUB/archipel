@@ -33,6 +33,24 @@ that apply to all selected repos.
 
 ![Action palette](docs/screenshots/palette.png)
 
+**Statistics.** Run *Statistics…* from the toolbar, a repo's menu or the
+action palette for charts on the whole project or a single repo. The
+snapshots below are Archipel's own history.
+
+Key figures, contribution per author, weekly activity and languages:
+
+![Statistics: key figures, contribution, activity and languages](docs/screenshots/stats-overview.png)
+
+Commit sizes (with the largest commits and streaks of tiny ones), churn
+against age, and lead time from a branch's first commit to its merge:
+
+![Statistics: commit size, churn against age and lead time to merge](docs/screenshots/stats-commits.png)
+
+Tag cadence with unreleased work, and the weight of each Git directory with
+its largest blobs:
+
+![Statistics: tags and releases, repository weight](docs/screenshots/stats-releases.png)
+
 ## Try it
 
 ### Download
