@@ -405,6 +405,11 @@ impl Render for TextTooltip {
 /// A virtualized list filling its parent, with a vertical scrollbar while
 /// its rows overflow. It scrolls through the handle given with
 /// [`ScrollList::handle`], else through one kept under `id`.
+///
+/// `id` also scopes the scrollbar: its hover and drag state is keyed by
+/// where it is built, here, so two lists without an `id`-carrying ancestor
+/// to tell them apart (the refs pane and the commit details) would share
+/// it, and dragging one thumb would move the other.
 #[derive(IntoElement)]
 pub struct ScrollList {
     id: ElementId,
@@ -432,11 +437,12 @@ impl RenderOnce for ScrollList {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let handle = self.handle.unwrap_or_else(|| {
             window
-                .use_keyed_state(self.id, cx, |_, _| UniformListScrollHandle::new())
+                .use_keyed_state(self.id.clone(), cx, |_, _| UniformListScrollHandle::new())
                 .read(cx)
                 .clone()
         });
         div()
+            .id(self.id)
             .relative()
             .flex_1()
             .flex()

@@ -238,6 +238,8 @@ pub struct RepoView {
     /// Shown instead of checking out a branch checked out elsewhere.
     worktree_prompt: Option<worktrees::WorktreePrompt>,
     scroll: UniformListScrollHandle,
+    /// The refs pane's list, kept across renders as the graph's is.
+    refs_scroll: UniformListScrollHandle,
     focus: FocusHandle,
 }
 
@@ -312,6 +314,7 @@ impl RepoView {
             worktree_heads: worktrees::WorktreeHeads::new(),
             worktree_prompt: None,
             scroll: UniformListScrollHandle::new(),
+            refs_scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
         };
         view.load_graph(cx);
