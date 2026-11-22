@@ -264,17 +264,28 @@ impl Workspace {
             )
             .child(section("REPOSITORIES", cx))
             .child(
+                // The scrollbar hangs on this frame, not on the list: drawn
+                // inside the scrolling element, it would be laid out with
+                // the rows and scroll away with them.
                 div()
-                    .id("side-repos")
+                    .relative()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.sidebar_scroll)
-                    .vertical_scrollbar(&self.sidebar_scroll)
-                    // The scrollbar is drawn over the list: the right
-                    // gutter keeps the row highlights out from under it.
-                    .pl_1()
-                    .pr_3()
-                    .children(repos),
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("side-repos")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.sidebar_scroll)
+                            // The scrollbar is drawn over the list: the right
+                            // gutter keeps the row highlights out from under it.
+                            .pl_1()
+                            .pr_3()
+                            .children(repos),
+                    )
+                    .vertical_scrollbar(&self.sidebar_scroll),
             )
             .child(
                 div()
