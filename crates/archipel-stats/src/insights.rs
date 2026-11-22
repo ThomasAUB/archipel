@@ -15,7 +15,7 @@ use archipel_model::refs::TagInfo;
 use archipel_model::stats::{CommitRecord, RepoStorage, TreeFile};
 use archipel_model::{Oid, Timestamp};
 
-use crate::languages::{self, LanguageShare, RepoLanguages};
+use crate::languages::{self, FolderFilter, LanguageShare, RepoLanguages};
 
 const DAY: i64 = 86_400;
 
@@ -930,10 +930,26 @@ impl Insights {
         out.merges_lead.sort_by_key(|m| m.merged_at);
         out.weights
             .sort_by_key(|w| Reverse(w.storage.git_dir_bytes));
-        out.languages = languages::merge(&out.repo_languages);
-        out.repo_languages
-            .sort_by(|a, b| b.lines().cmp(&a.lines()).then_with(|| a.repo.cmp(&b.repo)));
+        out.set_repo_languages(out.repo_languages.clone());
         out
+    }
+
+    /// Counts the languages again, only in the files `filter` keeps (an
+    /// empty filter counts them all). The other statistics are left as
+    /// they are.
+    pub fn filter_languages(&mut self, filter: &FolderFilter) {
+        let repos = self
+            .repo_languages
+            .iter()
+            .map(|r| r.filtered(filter))
+            .collect();
+        self.set_repo_languages(repos);
+    }
+
+    fn set_repo_languages(&mut self, mut repos: Vec<RepoLanguages>) {
+        repos.sort_by(|a, b| b.lines().cmp(&a.lines()).then_with(|| a.repo.cmp(&b.repo)));
+        self.languages = languages::merge(&repos);
+        self.repo_languages = repos;
     }
 
     /// Median and 90th percentile of the lead time to merge, in seconds.
@@ -1094,6 +1110,19 @@ mod tests {
         assert_eq!(project.repo_languages[0].repo, "b");
         let one = Insights::build(&[&a], config);
         assert_eq!(one.languages[0].name, "Rust");
+        let mut only_src = project.clone();
+        let mut filter = FolderFilter::default();
+        for repo in ["r", "b"] {
+            filter.toggle(repo, "");
+            filter.toggle(repo, "src");
+        }
+        only_src.filter_languages(&filter);
+        assert_eq!(only_src.languages.len(), 1);
+        assert_eq!(only_src.languages[0].name, "Rust");
+        assert_eq!(only_src.repo_languages[0].repo, "r");
+        assert_eq!(only_src.repo_languages[1].filtered_files, 1);
+        only_src.filter_languages(&FolderFilter::default());
+        assert_eq!(only_src.languages, project.languages);
     }
 
     #[test]
