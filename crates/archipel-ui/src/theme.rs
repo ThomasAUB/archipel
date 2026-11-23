@@ -474,6 +474,12 @@ pub fn row_height(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.spacing().row_height)
 }
 
+/// Row height of code listings (the diff view): tighter than
+/// [`row_height`], so more lines fit on screen.
+pub fn code_row_height(cx: &App) -> Pixels {
+    px((cx.global::<UiTheme>().theme.spacing().row_height * 0.75).round())
+}
+
 /// Corner radius from the theme.
 pub fn radius(cx: &App) -> Pixels {
     px(cx.global::<UiTheme>().theme.radius)

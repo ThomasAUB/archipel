@@ -40,7 +40,7 @@ use crate::image_view::image_format;
 use crate::merge_view;
 use crate::staging::{Staging, arm_discard};
 use crate::syntax::{self, LineHighlighter, Spans};
-use crate::theme::{color, mono_font, row_height};
+use crate::theme::{code_row_height, color, mono_font};
 use crate::widgets::{button, context_menu, menu_item, popup_at, scroll_list, unmodified};
 
 mod select;
@@ -527,7 +527,7 @@ impl RenderOnce for SelectableList {
                     if !doc.text_selection().dragging {
                         return;
                     }
-                    let row_h = row_height(cx);
+                    let row_h = code_row_height(cx);
                     let moved = doc.clone();
                     window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
                         if phase != DispatchPhase::Bubble {
@@ -725,7 +725,8 @@ fn render_diff_row<V: Staging>(
 ) -> AnyElement {
     let base = div()
         .w_full()
-        .h(row_height(cx))
+        .h(code_row_height(cx))
+        .line_height(code_row_height(cx))
         .flex()
         .items_center()
         .px_2()
@@ -837,6 +838,9 @@ fn render_hunk_header<V: Staging>(
                 label,
                 cx,
             )
+            // Slim enough for the diff's tight rows.
+            .py_0()
+            .line_height(code_row_height(cx) - px(4.0))
             // The patch is built on click, not on every frame.
             .on_click(cx.listener(move |v: &mut V, _, _, cx| {
                 let all = (0..doc.files[f].hunks[h].lines.len()).collect();
@@ -922,7 +926,8 @@ fn diff_line_row(
 ) -> (Div, TextLayout) {
     let base = div()
         .w_full()
-        .h(row_height(cx))
+        .h(code_row_height(cx))
+        .line_height(code_row_height(cx))
         .flex()
         .items_center()
         .whitespace_nowrap()
@@ -987,7 +992,7 @@ fn diff_line_row(
                 div()
                     .flex_none()
                     .w(px(6.0))
-                    .h(row_height(cx) * 0.7)
+                    .h(code_row_height(cx) * 0.7)
                     .bg(sel_bg),
             )
         });
