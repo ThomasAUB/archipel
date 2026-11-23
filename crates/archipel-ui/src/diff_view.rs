@@ -7,7 +7,9 @@
 //! unstaged diff names the file's line ending, with a button converting
 //! it to the other (LF ↔ CRLF). Lines are syntax highlighted after the
 //! file's extension (see [`crate::syntax`]). A one-file diff of an image
-//! shows the images instead (see [`crate::image_view::compare`]).
+//! shows the images instead (see [`crate::image_view::compare`]). **Full
+//! file** shows the whole file, the unchanged lines around the hunks too
+//! (see [`full`]).
 //!
 //! Text is selected with the mouse (drag, double-click a word, triple-click
 //! a line, Shift+click extends) and copied with Ctrl+C or the right-click
@@ -30,8 +32,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, DispatchPhase, Div, Entity,
     EntityId, HighlightStyle, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Stateful, StyledText, TextLayout,
-    UniformList, UniformListScrollHandle, Window, canvas, div, point, px, uniform_list,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy, SharedString, Stateful,
+    StyledText, TextLayout, UniformList, UniformListScrollHandle, Window, canvas, div, point, px,
+    uniform_list,
 };
 
 use crate::file_edit::{self, LineEnding};
@@ -43,6 +46,7 @@ use crate::syntax::{self, LineHighlighter, Spans};
 use crate::theme::{code_row_height, color, mono_font};
 use crate::widgets::{button, context_menu, menu_item, popup_at, scroll_list, unmodified};
 
+mod full;
 mod select;
 
 use select::{Caret, TextSelection};
@@ -58,6 +62,22 @@ pub(crate) enum DiffRow {
     Hunk(usize, usize),
     /// Diff line: file, hunk, line.
     Line(usize, usize, usize),
+    /// An unchanged line outside the hunks, shown with the whole file:
+    /// gap, line (see [`full`]).
+    Gap(usize, usize),
+}
+
+/// A run of unchanged lines of one file, outside its hunks.
+struct Gap {
+    file: usize,
+    lines: Vec<DiffLine>,
+}
+
+/// A run of lines highlighted in one go: a hunk (file, hunk) or a gap.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Block {
+    Hunk(usize, usize),
+    Gap(usize),
 }
 
 /// The commits a commit diff compares, to read its files' versions:
@@ -86,6 +106,12 @@ pub(crate) struct DiffDoc {
     /// For a commit diff, the commits it compares.
     pub(crate) revs: Option<Revs>,
     rows: Vec<DiffRow>,
+    /// The unchanged lines around the hunks, when the doc shows whole
+    /// files.
+    gaps: Vec<Gap>,
+    /// The row to scroll to when first shown (a whole file: its first
+    /// change), taken once.
+    scroll_to: Mutex<Option<usize>>,
     /// Digits of the largest line number, so the gutter has one width.
     lineno_width: usize,
     /// Per file, the line ending of its new side (from its added and
@@ -100,9 +126,9 @@ pub(crate) struct DiffDoc {
     menu: Mutex<Option<(Point<Pixels>, usize)>>,
     /// Where the list was last drawn, for drags past its edges.
     view: Mutex<Option<Bounds<Pixels>>>,
-    /// Syntax colors, per `(file, hunk)`, computed as the hunk's lines are
-    /// first shown; `None` for a file shown as plain text.
-    colors: Mutex<HashMap<(usize, usize), Option<HunkColors>>>,
+    /// Syntax colors, per hunk or gap, computed as its lines are first
+    /// shown; `None` for a file shown as plain text.
+    colors: Mutex<HashMap<Block, Option<HunkColors>>>,
 }
 
 /// The syntax colors of one hunk, as far as its lines were highlighted.
@@ -212,9 +238,31 @@ impl PartAction {
 
 impl DiffDoc {
     pub(crate) fn new(files: Vec<FileDiff>) -> Self {
+        Self::with_gaps(files, Vec::new())
+    }
+
+    /// The diff of `files` showing whole files: per file, the unchanged
+    /// lines around its hunks (`None`, or missing: the changes only).
+    fn with_gaps(files: Vec<FileDiff>, gaps: Vec<Option<full::Gaps>>) -> Self {
         let mut rows = Vec::new();
+        let mut runs = Vec::new();
         let mut max_lineno = 0;
+        let mut first_change = None;
+        let mut gaps = gaps.into_iter();
         for (f, file) in files.iter().enumerate() {
+            let mut file_gaps = gaps
+                .next()
+                .flatten()
+                .unwrap_or_default()
+                .into_iter()
+                .peekable();
+            let mut push_gaps = |before: usize, rows: &mut Vec<DiffRow>, runs: &mut Vec<Gap>| {
+                while let Some((_, lines)) = file_gaps.next_if(|(at, _)| *at <= before) {
+                    let g = runs.len();
+                    rows.extend((0..lines.len()).map(|l| DiffRow::Gap(g, l)));
+                    runs.push(Gap { file: f, lines });
+                }
+            };
             rows.push(DiffRow::File(f));
             if file.binary {
                 rows.push(DiffRow::Note(if is_image(file.display_path()) {
@@ -229,6 +277,10 @@ impl DiffDoc {
                 continue;
             }
             for (h, hunk) in file.hunks.iter().enumerate() {
+                push_gaps(h, &mut rows, &mut runs);
+                if first_change.is_none() {
+                    first_change = Some(rows.len());
+                }
                 rows.push(DiffRow::Hunk(f, h));
                 rows.extend((0..hunk.lines.len()).map(|l| DiffRow::Line(f, h, l)));
                 max_lineno = hunk
@@ -238,7 +290,17 @@ impl DiffDoc {
                     .flatten()
                     .fold(max_lineno, u32::max);
             }
+            push_gaps(usize::MAX, &mut rows, &mut runs);
         }
+        max_lineno = runs
+            .iter()
+            .filter_map(|g| g.lines.last())
+            .flat_map(|l| [l.old_lineno, l.new_lineno])
+            .flatten()
+            .fold(max_lineno, u32::max);
+        let scroll_to = first_change
+            .filter(|_| !runs.is_empty())
+            .map(|r| r.saturating_sub(3));
         let endings = files
             .iter()
             .map(|f| {
@@ -251,6 +313,9 @@ impl DiffDoc {
             files,
             revs: None,
             rows,
+            gaps: runs,
+            // A few lines before the first change stay in sight.
+            scroll_to: Mutex::new(scroll_to),
             lineno_width: max_lineno.to_string().len(),
             endings,
             selection: Mutex::default(),
@@ -267,11 +332,20 @@ impl DiffDoc {
         self
     }
 
-    /// The syntax colors of line `l` of hunk `h` of file `f`. A hunk is
-    /// highlighted from its first line up to the one asked, once.
-    fn spans(&self, f: usize, h: usize, l: usize) -> Spans {
+    /// The lines of `block`, with the file they belong to.
+    fn block_lines(&self, block: Block) -> (usize, &[DiffLine]) {
+        match block {
+            Block::Hunk(f, h) => (f, &self.files[f].hunks[h].lines),
+            Block::Gap(g) => (self.gaps[g].file, &self.gaps[g].lines),
+        }
+    }
+
+    /// The syntax colors of line `l` of `block`. A block is highlighted
+    /// from its first line up to the one asked, once.
+    fn spans(&self, block: Block, l: usize) -> Spans {
+        let (f, lines) = self.block_lines(block);
         let mut colors = self.colors.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = colors.entry((f, h)).or_insert_with(|| {
+        let entry = colors.entry(block).or_insert_with(|| {
             syntax::find(self.files[f].display_path()).map(|s| HunkColors {
                 old: LineHighlighter::new(s),
                 new: LineHighlighter::new(s),
@@ -281,7 +355,6 @@ impl DiffDoc {
         let Some(hunk) = entry else {
             return Spans::new();
         };
-        let lines = &self.files[f].hunks[h].lines;
         while hunk.lines.len() <= l {
             let Some(line) = lines.get(hunk.lines.len()) else {
                 return Spans::new();
@@ -298,6 +371,14 @@ impl DiffDoc {
             hunk.lines.push(spans);
         }
         hunk.lines[l].clone()
+    }
+
+    /// The row to scroll to as the doc is first shown, once.
+    fn take_scroll_to(&self) -> Option<usize> {
+        self.scroll_to
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     fn selection(&self) -> std::sync::MutexGuard<'_, LineSelection> {
@@ -515,6 +596,9 @@ impl RenderOnce for SelectableList {
                 .clone()
         });
         let (doc, view) = (self.doc, self.view);
+        if let Some(row) = doc.take_scroll_to() {
+            handle.scroll_to_item(row, ScrollStrategy::Top);
+        }
         let menu = doc
             .menu()
             .map(|(at, row)| render_menu(&doc, at, row, view, cx));
@@ -677,7 +761,7 @@ fn render_menu(
 /// drops the selected text. Whether the key was used.
 pub(crate) fn on_key<V: Staging>(
     v: &mut V,
-    doc: &DiffDoc,
+    doc: &Arc<DiffDoc>,
     e: &KeyDownEvent,
     cx: &mut Context<V>,
 ) -> bool {
@@ -685,6 +769,7 @@ pub(crate) fn on_key<V: Staging>(
     if v.panel().edit.is_some() || v.panel().merge.is_some() {
         return false;
     }
+    let doc = &full::cached(v, doc);
     let m = e.keystroke.modifiers;
     let used = match e.keystroke.key.as_str() {
         "c" if (m.control || m.platform) && !m.alt => {
@@ -755,50 +840,74 @@ fn render_diff_row<V: Staging>(
             .child(note)
             .into_any_element(),
         DiffRow::Hunk(f, h) => render_hunk_header(base, doc, index, (f, h), side, armed, cx),
-        DiffRow::Line(f, h, l) => {
-            let line = &doc.files[f].hunks[h].lines[l];
-            let selectable = side.is_some() && line.origin != LineOrigin::Context;
-            let selected = selectable && doc.is_selected(f, h, l);
-            let spans = doc.spans(f, h, l);
-            let text = doc
-                .text_selection()
-                .on_row(index, doc.row_text(index).len());
-            let (row, layout) = diff_line_row(line, &spans, doc.lineno_width, selected, text, cx);
-            let editable = side.is_some() && doc.editable(f);
-            let row = text_handlers(
-                row.id(SharedString::from(format!("diff-line-{index}"))),
-                doc,
-                index,
-                layout,
-                editable,
-                cx,
-            );
-            if !selectable && !editable {
-                return row.into_any_element();
-            }
-            let doc = doc.clone();
-            row.when(selectable, Styled::cursor_pointer)
-                .on_click(cx.listener(move |v: &mut V, e: &ClickEvent, window, cx| {
-                    // A drag (or Shift+click) selected text: no click.
-                    if doc.text_selection().dragged {
-                        return;
-                    }
-                    if editable && e.click_count() >= 2 {
-                        // The first click of the two selected the line.
-                        doc.clear_selection();
-                        let file = doc.files[f].display_path().to_owned();
-                        file_edit::open(v, file, doc.new_line_at(f, h, l), window, cx);
-                        return;
-                    }
-                    if selectable {
-                        let m = e.modifiers();
-                        doc.click_line(index, m.control || m.platform, m.shift);
-                        cx.notify();
-                    }
-                }))
-                .into_any_element()
-        }
+        DiffRow::Line(..) | DiffRow::Gap(..) => render_line_row(doc, index, row, side, cx),
     }
+}
+
+/// A diff line's row, or an unchanged line's around the hunks: changed
+/// lines can be picked on a working copy, and any line edited there.
+fn render_line_row<V: Staging>(
+    doc: &Arc<DiffDoc>,
+    index: usize,
+    row: DiffRow,
+    side: Option<DiffSide>,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let (block, l) = match row {
+        DiffRow::Line(f, h, l) => (Block::Hunk(f, h), l),
+        DiffRow::Gap(g, l) => (Block::Gap(g), l),
+        _ => return div().into_any_element(),
+    };
+    let (f, lines) = doc.block_lines(block);
+    let line = &lines[l];
+    let picked = match block {
+        Block::Hunk(_, h) if line.origin != LineOrigin::Context => Some(h),
+        _ => None,
+    };
+    let edit_at = match block {
+        Block::Hunk(_, h) => doc.new_line_at(f, h, l),
+        Block::Gap(_) => line.new_lineno.unwrap_or(1),
+    };
+    let selectable = side.is_some() && picked.is_some();
+    let selected = picked.is_some_and(|h| selectable && doc.is_selected(f, h, l));
+    let spans = doc.spans(block, l);
+    let text = doc
+        .text_selection()
+        .on_row(index, doc.row_text(index).len());
+    let (row, layout) = diff_line_row(line, &spans, doc.lineno_width, selected, text, cx);
+    let editable = side.is_some() && doc.editable(f);
+    let row = text_handlers(
+        row.id(SharedString::from(format!("diff-line-{index}"))),
+        doc,
+        index,
+        layout,
+        editable,
+        cx,
+    );
+    if !selectable && !editable {
+        return row.into_any_element();
+    }
+    let doc = doc.clone();
+    row.when(selectable, Styled::cursor_pointer)
+        .on_click(cx.listener(move |v: &mut V, e: &ClickEvent, window, cx| {
+            // A drag (or Shift+click) selected text: no click.
+            if doc.text_selection().dragged {
+                return;
+            }
+            if editable && e.click_count() >= 2 {
+                // The first click of the two selected the line.
+                doc.clear_selection();
+                let file = doc.files[f].display_path().to_owned();
+                file_edit::open(v, file, edit_at, window, cx);
+                return;
+            }
+            if selectable {
+                let m = e.modifiers();
+                doc.click_line(index, m.control || m.platform, m.shift);
+                cx.notify();
+            }
+        }))
+        .into_any_element()
 }
 
 /// A hunk's header row: its range and function, with the stage /
@@ -1021,6 +1130,7 @@ pub(crate) fn render_open<V: Staging>(
     // A working-copy diff is titled with its file.
     let editing = file_edit::current(v, side.map(|_| title.as_str()), cx);
     let (image, svg) = image_part(v, side, doc.as_ref(), editing, cx);
+    let (id, doc, full_file) = whole_file(v, id, doc, side, !editing && image.is_none(), cx);
     let keys = keys_hint(side, image.is_some());
     let selection = side.filter(|_| !editing).zip(
         doc.as_ref()
@@ -1086,6 +1196,7 @@ pub(crate) fn render_open<V: Staging>(
             header.child(selection_bar(v, side, &doc, f, picks, cx))
         })
         .when_some(svg, |header, shown| header.child(svg_button(shown, cx)))
+        .when_some(full_file, |h, on| h.child(full_file_button(on, cx)))
         .when_some(endings, |header, endings| {
             header.child(endings_bar(title.clone(), endings, cx))
         })
@@ -1116,6 +1227,32 @@ pub(crate) fn render_open<V: Staging>(
         .child(header)
         .child(body)
         .into_any_element()
+}
+
+/// The whole file in place of the changes only, when asked and `offered`
+/// (a text diff shown as lines): the list's id (each mode keeps its own
+/// scroll), the doc to show, and whether the whole file shows (`None`: no
+/// toggle).
+fn whole_file<V: Staging>(
+    v: &mut V,
+    id: SharedString,
+    doc: Option<Arc<DiffDoc>>,
+    side: Option<DiffSide>,
+    offered: bool,
+    cx: &mut Context<V>,
+) -> (SharedString, Option<Arc<DiffDoc>>, Option<bool>) {
+    let Some(base) = doc.clone().filter(|d| offered && full::offered(d)) else {
+        return (id, doc, None);
+    };
+    if !v.panel().full_file {
+        return (id, Some(base), Some(false));
+    }
+    let shown = full::shown(v, &base, side, cx);
+    (
+        SharedString::from(format!("{id}-full")),
+        Some(shown),
+        Some(true),
+    )
 }
 
 /// The keys and clicks an open diff takes, in its header.
@@ -1196,6 +1333,18 @@ fn svg_button<V: Staging>(shown: bool, cx: &mut Context<V>) -> Stateful<Div> {
     button("diff-svg-images", label, cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
         let panel = v.panel();
         panel.svg_images = !panel.svg_images;
+        cx.notify();
+    }))
+}
+
+/// The button showing the whole file or the changes only (`on`: the
+/// whole file).
+fn full_file_button<V: Staging>(on: bool, cx: &mut Context<V>) -> Stateful<Div> {
+    let label = if on { "Changes only" } else { "Full file" };
+    button("diff-full-file", label, cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
+        let panel = v.panel();
+        panel.full_file = !panel.full_file;
+        panel.full = None;
         cx.notify();
     }))
 }

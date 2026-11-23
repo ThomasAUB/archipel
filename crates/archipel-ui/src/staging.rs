@@ -29,6 +29,7 @@ use gpui_kit::{
 };
 
 use crate::armed::Armed;
+use crate::diff_view::DiffDoc;
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
 use crate::ignore::{self, IgnoreDialog};
@@ -106,6 +107,11 @@ pub struct Panel {
     pub(crate) image: Option<Entity<ImageDiff>>,
     /// SVG diffs show the images, not the text.
     pub(crate) svg_images: bool,
+    /// Diffs show the whole file: the unchanged lines around the hunks.
+    pub(crate) full_file: bool,
+    /// The whole-file version of the open diff: the diff it is read for,
+    /// and it once read.
+    pub(crate) full: Option<(Arc<DiffDoc>, Option<Arc<DiffDoc>>)>,
     /// The dialog adding a file to the `.gitignore`, while open.
     pub(crate) ignore: Option<IgnoreDialog>,
     /// The force push armed by Push on a branch behind its upstream
@@ -166,6 +172,8 @@ impl Panel {
             merge: None,
             image: None,
             svg_images: false,
+            full_file: false,
+            full: None,
             ignore: None,
             force_push: Armed::default(),
             push_choice: None,
