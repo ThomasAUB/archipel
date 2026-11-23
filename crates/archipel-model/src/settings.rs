@@ -118,7 +118,8 @@ pub struct Settings {
     pub ci_poll_secs: u64,
     /// Base interval of the background fetch, in seconds; 0 disables it.
     /// Repos are fetched one at a time, spread over the interval; a repo
-    /// whose fetches bring nothing is fetched less and less often. Default 600.
+    /// whose fetches bring nothing is fetched less and less often, unless it
+    /// is open or selected. Default 600.
     pub auto_fetch_secs: u64,
     /// Interval between two checks for a new Archipel release, in hours;
     /// 0 disables the check. Default 24.
