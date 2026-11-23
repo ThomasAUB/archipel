@@ -83,6 +83,7 @@ impl DiffDoc {
     pub(crate) fn line_at(&self, row: usize) -> Option<&DiffLine> {
         match *self.rows.get(row)? {
             DiffRow::Line(f, h, l) => Some(&self.files[f].hunks[h].lines[l]),
+            DiffRow::Gap(g, l) => Some(&self.gaps[g].lines[l]),
             _ => None,
         }
     }
@@ -241,7 +242,8 @@ impl DiffDoc {
         for row in rows {
             match self.rows[row] {
                 DiffRow::File(f) => self.push_file_header(&mut out, f),
-                DiffRow::Note(_) => {}
+                // Outside the hunks: no part of a patch.
+                DiffRow::Note(_) | DiffRow::Gap(..) => {}
                 DiffRow::Hunk(f, h) => self.push_hunk_header(&mut out, f, h),
                 DiffRow::Line(f, h, l) => {
                     let line = &self.files[f].hunks[h].lines[l];
