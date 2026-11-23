@@ -127,7 +127,7 @@ fn render_selected(lines: Vec<(DiffLine, Selected)>) -> (HeadlessAppContext, Sho
     let scale = cx
         .update_window(handle, |_, window, _| window.scale_factor())
         .unwrap();
-    let row_height = cx.update(|cx| f32::from(crate::theme::row_height(cx)));
+    let row_height = cx.update(|cx| f32::from(crate::theme::code_row_height(cx)));
     let image = cx
         .capture_screenshot(handle)
         .expect("offscreen rendering must be available");
