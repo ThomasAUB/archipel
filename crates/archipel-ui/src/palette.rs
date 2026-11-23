@@ -2,14 +2,19 @@
 //! one-line prompt (branch or tag name), optionally with suggestions
 //! (category name).
 
+use std::collections::HashSet;
+
 use archipel_app::fuzzy;
 use archipel_theme::ColorToken as T;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, EventEmitter, KeyDownEvent, SharedString, Subscription, Window, div, px};
+use gpui_kit::{
+    Context, EventEmitter, KeyDownEvent, SharedString, Subscription, Window, div, px, svg,
+};
 
 use crate::theme::{color, radius};
-use crate::widgets::{ListMove, list_row};
+use crate::widgets::{ListMove, TextTooltip, list_row};
 
 /// One entry of the palette.
 #[derive(Clone, Debug)]
@@ -26,6 +31,9 @@ pub struct PaletteItem {
 pub enum PaletteEvent {
     /// An item (its id) or, in prompt mode, the typed text.
     Confirmed(String),
+    /// The remove button of a removable item (its id) was clicked: the item
+    /// is gone from the palette, which stays open.
+    Removed(String),
     /// Escape.
     Dismissed,
 }
@@ -43,6 +51,8 @@ pub struct Palette {
     prompt: bool,
     /// The selection was moved with the arrow keys since the last edit.
     moved: bool,
+    /// Ids of the items that show a remove button when hovered.
+    removable: HashSet<String>,
     _subscription: Subscription,
 }
 
@@ -86,8 +96,26 @@ impl Palette {
             selected: 0,
             prompt,
             moved: false,
+            removable: HashSet::new(),
             _subscription: subscription,
         }
+    }
+
+    /// Lets the items of `ids` be removed from the palette (a discreet ×
+    /// shown when the row is hovered), reported as [`PaletteEvent::Removed`].
+    pub fn set_removable(&mut self, ids: HashSet<String>, cx: &mut Context<Self>) {
+        self.removable = ids;
+        cx.notify();
+    }
+
+    /// Drops item `id` and reports it to the owner.
+    fn remove(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.items.retain(|i| i.id != id);
+        self.removable.remove(id);
+        let count = self.matches(cx).len();
+        self.selected = self.selected.min(count.saturating_sub(1));
+        cx.emit(PaletteEvent::Removed(id.to_owned()));
+        cx.notify();
     }
 
     /// Puts `text` in the field (a prompt starting from the current value).
@@ -149,6 +177,9 @@ impl Render for Palette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let matches = self.matches(cx);
         let first = self.selected.saturating_sub(VISIBLE_ITEMS - 1);
+        // Every row keeps the slot of the remove button when any item has
+        // one, so the details stay aligned.
+        let with_remove = !self.removable.is_empty();
         let rows = matches
             .into_iter()
             .enumerate()
@@ -156,12 +187,33 @@ impl Render for Palette {
             .take(VISIBLE_ITEMS)
             .map(|(i, item)| {
                 let id = item.id.clone();
+                let group = SharedString::from(format!("palette-row-{i}"));
+                let remove = self.removable.contains(&item.id).then(|| {
+                    let id = item.id.clone();
+                    let hover = color(cx, T::FgDefault);
+                    div()
+                        .id(SharedString::from(format!("palette-remove-{i}")))
+                        .flex_none()
+                        .text_color(color(cx, T::FgSubtle))
+                        .opacity(0.0)
+                        .group_hover(group.clone(), |s| s.opacity(1.0))
+                        .hover(move |s| s.text_color(hover))
+                        .tooltip(|_, cx| TextTooltip::view(&["Remove from the list".into()], cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // Not a click on the row: that would open it.
+                            cx.stop_propagation();
+                            this.remove(&id, cx);
+                        }))
+                        .child(svg().path(IconName::Close.path()).size(px(12.0)))
+                });
                 list_row(
                     SharedString::from(format!("palette-item-{i}")),
                     i == self.selected,
                     cx,
                 )
+                .group(group)
                 .flex()
+                .items_center()
                 .justify_between()
                 .gap_4()
                 .px_3()
@@ -179,10 +231,20 @@ impl Render for Palette {
                 .child(
                     div()
                         .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(color(cx, T::FgMuted))
-                        .child(item.detail),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(color(cx, T::FgMuted))
+                                .child(item.detail),
+                        )
+                        .when(with_remove, |d| {
+                            d.child(div().flex_none().w(px(12.0)).children(remove))
+                        }),
                 )
             });
         div()

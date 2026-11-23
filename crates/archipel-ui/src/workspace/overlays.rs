@@ -1,6 +1,8 @@
 //! Overlays over the whole window: palettes (project switcher, actions,
 //! prompts), the commit, forge, branches and statistics panels.
 
+use std::collections::HashSet;
+
 use archipel_app::Command;
 use archipel_app::forge::pick_remote;
 use archipel_model::ports::{MergeToolInfo, RemoteInfo};
@@ -121,8 +123,10 @@ impl Workspace {
 
     /// Items of the project switcher: the projects of the other windows
     /// (most recently active first, so Enter goes back to the previous one),
-    /// new and open, then every other project, this window's last.
-    fn project_items(&self, window: &Window, cx: &App) -> Vec<PaletteItem> {
+    /// new and open, then every other project, this window's last. Also
+    /// the projects that can be removed from the list: those open in no
+    /// window.
+    fn project_items(&self, window: &Window, cx: &App) -> (Vec<PaletteItem>, HashSet<String>) {
         let actions = vec![
             PaletteItem {
                 id: "+folder".into(),
@@ -140,6 +144,7 @@ impl Workspace {
         let mut windows = Vec::new();
         let mut others = Vec::new();
         let mut this = Vec::new();
+        let mut removable = HashSet::new();
         for p in self.core.projects().unwrap_or_default() {
             let ProjectLocation::SharedFile(file) = &p.location;
             let mut detail = file.display().to_string();
@@ -147,6 +152,8 @@ impl Workspace {
                 detail = format!("this window · {detail}");
             } else if crate::windows::is_open(window, cx, &p.id) {
                 detail = format!("open in another window · {detail}");
+            } else {
+                removable.insert(p.id.0.clone());
             }
             let label = match self
                 .core
@@ -171,13 +178,14 @@ impl Workspace {
             }
         }
         windows.sort_by_key(|(r, _)| *r);
-        windows
+        let items = windows
             .into_iter()
             .map(|(_, item)| item)
             .chain(actions)
             .chain(others)
             .chain(this)
-            .collect()
+            .collect();
+        (items, removable)
     }
 
     /// Items of the action palette: the actions available, with their keys.
@@ -209,7 +217,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let (title, items, prompt) = match &kind {
-            PaletteKind::Projects => ("Switch project", self.project_items(window, cx), false),
+            PaletteKind::Projects => {
+                let (items, removable) = self.project_items(window, cx);
+                self.show_palette(kind, "Switch project", items, false, window, cx);
+                if let Some((Overlay::Palette(palette), _)) = &self.overlay {
+                    palette.update(cx, |p, cx| p.set_removable(removable, cx));
+                }
+                return;
+            }
             PaletteKind::Actions => ("Actions", self.action_items(), false),
             PaletteKind::Checkout => (
                 "Check out branch on selected repos (all when none)",
@@ -406,11 +421,14 @@ impl Workspace {
         let sub = cx.subscribe_in(
             &palette,
             window,
-            move |this: &mut Self, _, event: &PaletteEvent, window, cx| {
-                this.close_overlay(window, cx);
-                if let PaletteEvent::Confirmed(value) = event {
+            move |this: &mut Self, _, event: &PaletteEvent, window, cx| match event {
+                // The palette stays open.
+                PaletteEvent::Removed(id) => this.on_palette_remove(&kind, id, cx),
+                PaletteEvent::Confirmed(value) => {
+                    this.close_overlay(window, cx);
                     this.on_palette(kind.clone(), value.clone(), window, cx);
                 }
+                PaletteEvent::Dismissed => this.close_overlay(window, cx),
             },
         );
         self.show_overlay(Overlay::Palette(palette), sub, cx);
@@ -435,6 +453,17 @@ impl Workspace {
         self.overlay = None;
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// An item removed from the palette of `kind`: a project taken off the
+    /// switcher (its files stay).
+    fn on_palette_remove(&mut self, kind: &PaletteKind, id: &str, cx: &mut Context<Self>) {
+        if *kind == PaletteKind::Projects
+            && let Err(e) = self.core.remove_project(&ProjectId(id.to_owned()))
+        {
+            self.notice = Some(format!("cannot remove the project: {e}"));
+            cx.notify();
+        }
     }
 
     fn on_palette(
