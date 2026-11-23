@@ -171,8 +171,10 @@ impl App {
 
     /// Called when the window regains focus: when the worktree of some
     /// shown repo is not fully watched (degraded mode), refreshes every
-    /// shown repo; then refreshes stale forge statuses.
+    /// shown repo; then refreshes stale forge statuses and fetches the shown
+    /// repos not fetched lately.
     pub fn on_focus(&self) {
+        self.auto_fetch_focus();
         let stale: Vec<RepoId> = lock(&self.session)
             .as_ref()
             .map(|s| {

@@ -4,23 +4,30 @@
 //! * One repo at a time, spread over the interval
 //!   ([`Settings::auto_fetch_secs`](archipel_model::settings::Settings)),
 //!   repos shown in a tab or selected first.
+//! * Shown repos (in a tab or selected) never wait longer than the base
+//!   interval, and the window getting focus fetches those whose last fetch
+//!   is older than [`FOCUS_STALE`].
 //! * Runs as [`OpClass::Background`]: skipped when the repo is busy and
 //!   cancelled as soon as the user writes to it; never in the drawer.
 //! * Per-repo back-off: a fetch that brings nothing doubles the repo's
 //!   interval (up to [`MAX_BACKOFF`] times the base), one that brings
 //!   something resets it; a failing repo (offline, credentials) waits the
-//!   longest interval. A manual fetch resets the repos it covers.
+//!   longest interval. A manual fetch resets the repos it covers. Shown
+//!   repos are exempt.
 //! * A fetch that brings nothing only updates the "last fetch" time; one that
 //!   moves refs refreshes the repo.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use tokio::sync::Notify;
 
 use archipel_model::ui_state::TabState;
 use archipel_model::{ProjectId, RepoId, Timestamp};
 use archipel_ops::{OpClass, OpError, OpHandle, OpSpec};
 
-use super::{App, AppEvent, lock};
+use super::{App, AppEvent, Session, lock};
 use crate::dashboard::RepoStatus;
 
 /// Longest interval, as a multiple of the base one.
@@ -30,6 +37,8 @@ const BUSY_RETRY: Duration = Duration::from_secs(30);
 /// Bounds of the delay between two fetches.
 const MIN_PACE: Duration = Duration::from_secs(2);
 const MAX_PACE: Duration = Duration::from_secs(30);
+/// On focus, a shown repo fetched longer ago than this is fetched right away.
+const FOCUS_STALE: Duration = Duration::from_secs(120);
 
 /// How a background fetch went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +51,21 @@ enum Fetched {
 
 #[derive(Clone, Copy, Debug)]
 struct Slot {
+    /// When the repo is due, back-off included.
     due: Instant,
+    /// When it is due while shown: never later than one base interval.
+    shown_due: Instant,
     interval: Duration,
+}
+
+impl Slot {
+    fn due(&self, shown: bool) -> Instant {
+        if shown {
+            self.due.min(self.shown_due)
+        } else {
+            self.due
+        }
+    }
 }
 
 /// When each repo of the open project is fetched next.
@@ -53,6 +75,8 @@ pub(super) struct AutoFetch {
     started: bool,
     project: Option<ProjectId>,
     slots: HashMap<RepoId, Slot>,
+    /// Wakes the fetch loop early (window focus).
+    wake: Arc<Notify>,
 }
 
 impl AutoFetch {
@@ -62,6 +86,7 @@ impl AutoFetch {
             started: false,
             project: None,
             slots: HashMap::new(),
+            wake: Arc::new(Notify::new()),
         }
     }
 
@@ -90,21 +115,24 @@ impl AutoFetch {
                 let age = last.map_or(base, |t| {
                     Duration::from_secs(u64::try_from(wall.0 - t.0).unwrap_or(0))
                 });
+                let due = now + base.saturating_sub(age);
                 Slot {
-                    due: now + base.saturating_sub(age),
+                    due,
+                    shown_due: due,
                     interval: base,
                 }
             });
         }
     }
 
-    /// The repo to fetch now: the most overdue, `priority` ones first.
-    fn next(&self, now: Instant, priority: &[RepoId]) -> Option<RepoId> {
+    /// The repo to fetch now: the most overdue, `shown` ones first.
+    fn next(&self, now: Instant, shown: &[RepoId]) -> Option<RepoId> {
         self.slots
             .iter()
-            .filter(|(_, s)| s.due <= now)
-            .min_by_key(|(id, s)| (!priority.contains(id), s.due))
-            .map(|(id, _)| *id)
+            .map(|(id, s)| (id, shown.contains(id), s.due(shown.contains(id))))
+            .filter(|(_, _, due)| *due <= now)
+            .min_by_key(|(_, shown, due)| (!shown, *due))
+            .map(|(id, _, _)| *id)
     }
 
     fn record(&mut self, repo: RepoId, fetched: Fetched, now: Instant) {
@@ -115,6 +143,7 @@ impl AutoFetch {
         match fetched {
             Fetched::Busy => {
                 slot.due = now + BUSY_RETRY;
+                slot.shown_due = slot.due;
                 return;
             }
             Fetched::Updated => slot.interval = base,
@@ -122,6 +151,7 @@ impl AutoFetch {
             Fetched::Failed => slot.interval = max,
         }
         slot.due = now + slot.interval;
+        slot.shown_due = now + base;
     }
 
     /// A manual fetch of `repos` (every repo when empty).
@@ -130,6 +160,7 @@ impl AutoFetch {
             if repos.is_empty() || repos.contains(id) {
                 *slot = Slot {
                     due: now + self.base,
+                    shown_due: now + self.base,
                     interval: self.base,
                 };
             }
@@ -142,11 +173,21 @@ impl AutoFetch {
         (self.base / n).clamp(MIN_PACE, MAX_PACE)
     }
 
+    /// The window got focus: `stale` repos are due now.
+    fn focus(&mut self, stale: &[RepoId], now: Instant) {
+        for id in stale {
+            if let Some(slot) = self.slots.get_mut(id) {
+                slot.due = slot.due.min(now);
+                slot.shown_due = slot.shown_due.min(now);
+            }
+        }
+    }
+
     /// Delay until the next repo is due, when none is.
-    fn idle(&self, now: Instant) -> Duration {
+    fn idle(&self, now: Instant, shown: &[RepoId]) -> Duration {
         self.slots
-            .values()
-            .map(|s| s.due.saturating_duration_since(now))
+            .iter()
+            .map(|(id, s)| s.due(shown.contains(id)).saturating_duration_since(now))
             .min()
             .unwrap_or(MAX_PACE)
             .clamp(MIN_PACE, MAX_PACE)
@@ -158,13 +199,14 @@ impl App {
     /// when `auto_fetch_secs` is 0 or already started). Frontends call it;
     /// one-shot tools (CLI) do not.
     pub fn start_auto_fetch(&self) {
-        {
+        let wake = {
             let mut plan = lock(&self.auto_fetch);
             if plan.base.is_zero() || plan.started {
                 return;
             }
             plan.started = true;
-        }
+            plan.wake.clone()
+        };
         let me = self.me.clone();
         self.scheduler.runtime().spawn(async move {
             loop {
@@ -175,7 +217,8 @@ impl App {
                 let (repo, handle) = match next {
                     Ok(next) => next,
                     Err(wait) => {
-                        tokio::time::sleep(wait).await;
+                        // Focus may make a repo due before then.
+                        let _ = tokio::time::timeout(wait, wake.notified()).await;
                         continue;
                     }
                 };
@@ -201,21 +244,12 @@ impl App {
             .filter(|r| !r.hidden && r.parent().is_none())
             .filter_map(|r| r.summary().map(|sum| (r.id, sum.last_fetch)))
             .collect();
-        let priority: Vec<RepoId> =
-            s.ui.tabs
-                .iter()
-                .filter_map(|t| match t {
-                    TabState::Repo(id) => Some(*id),
-                    TabState::Dashboard => None,
-                })
-                .chain(s.ui.selected_repo)
-                .chain(s.ui.selection.iter().copied())
-                .collect();
+        let shown = shown_repos(s);
         let now = Instant::now();
         let mut plan = lock(&self.auto_fetch);
         plan.sync(&s.id, &repos, now, Timestamp::now());
-        let Some(repo) = plan.next(now, &priority) else {
-            return Err(plan.idle(now));
+        let Some(repo) = plan.next(now, &shown) else {
+            return Err(plan.idle(now, &shown));
         };
         let Some(row) = s.rows.iter().find(|r| r.id == repo) else {
             return Err(MIN_PACE);
@@ -259,6 +293,33 @@ impl App {
         plan.pace()
     }
 
+    /// The window got focus: shown repos not fetched for [`FOCUS_STALE`]
+    /// are fetched right away.
+    pub(super) fn auto_fetch_focus(&self) {
+        let stale: Vec<RepoId> = {
+            let guard = lock(&self.session);
+            let Some(s) = guard.as_ref() else { return };
+            let wall = Timestamp::now();
+            let limit = i64::try_from(FOCUS_STALE.as_secs()).unwrap_or(i64::MAX);
+            shown_repos(s)
+                .into_iter()
+                .filter(|id| {
+                    s.rows
+                        .iter()
+                        .find(|r| r.id == *id)
+                        .and_then(|r| r.summary())
+                        .is_some_and(|sum| sum.last_fetch.is_none_or(|t| wall.0 - t.0 >= limit))
+                })
+                .collect()
+        };
+        if stale.is_empty() {
+            return;
+        }
+        let mut plan = lock(&self.auto_fetch);
+        plan.focus(&stale, Instant::now());
+        plan.wake.notify_one();
+    }
+
     /// A manual fetch: the background one starts over for these repos.
     pub(super) fn auto_fetch_reset(&self, repos: &[RepoId]) {
         lock(&self.auto_fetch).reset(repos, Instant::now());
@@ -286,6 +347,25 @@ impl App {
         };
         self.emit(AppEvent::RowsChanged(ids));
     }
+}
+
+/// The repos shown in a tab or selected, as main repos: worktrees share
+/// their repo's refs, so its fetches.
+fn shown_repos(s: &Session) -> Vec<RepoId> {
+    let mut ids: Vec<RepoId> =
+        s.ui.tabs
+            .iter()
+            .filter_map(|t| match t {
+                TabState::Repo(id) => Some(*id),
+                TabState::Dashboard => None,
+            })
+            .chain(s.ui.selected_repo)
+            .chain(s.ui.selection.iter().copied())
+            .map(|id| s.main_of(id))
+            .collect();
+    ids.sort_unstable_by_key(|id| id.0);
+    ids.dedup();
+    ids
 }
 
 #[cfg(test)]
@@ -331,7 +411,7 @@ mod tests {
         p.record(RepoId(1), Fetched::Unchanged, now);
         p.record(RepoId(2), Fetched::Unchanged, now);
         assert_eq!(p.next(now, &[]), None);
-        assert_eq!(p.idle(now), MAX_PACE);
+        assert_eq!(p.idle(now, &[]), MAX_PACE);
     }
 
     #[test]
@@ -369,5 +449,36 @@ mod tests {
         let other = crate::file_project_id(std::path::Path::new("/q/archipel.toml"));
         p.sync(&other, &[(RepoId(7), None)], now, Timestamp(10_000));
         assert_eq!(p.slots.keys().copied().collect::<Vec<_>>(), [RepoId(7)]);
+    }
+
+    #[test]
+    fn shown_repos_never_wait_longer_than_the_base_interval() {
+        let now = Instant::now();
+        let mut p = plan(&[(RepoId(1), None)], now);
+        for _ in 0..5 {
+            p.record(RepoId(1), Fetched::Unchanged, now);
+        }
+        assert_eq!(p.next(now + BASE, &[]), None);
+        assert_eq!(p.next(now + BASE, &[RepoId(1)]), Some(RepoId(1)));
+        assert_eq!(p.idle(now, &[RepoId(1)]), MAX_PACE);
+        p.record(RepoId(1), Fetched::Failed, now);
+        assert_eq!(p.next(now + BASE, &[RepoId(1)]), Some(RepoId(1)));
+        p.record(RepoId(1), Fetched::Busy, now);
+        assert_eq!(p.next(now + BASE / 2, &[RepoId(1)]), Some(RepoId(1)));
+        assert_eq!(p.next(now, &[RepoId(1)]), None);
+    }
+
+    #[test]
+    fn focus_makes_stale_repos_due_now() {
+        let now = Instant::now();
+        let mut p = plan(&[(RepoId(1), None), (RepoId(2), None)], now);
+        p.record(RepoId(1), Fetched::Unchanged, now);
+        p.record(RepoId(2), Fetched::Unchanged, now);
+        let later = now + Duration::from_secs(5);
+        assert_eq!(p.next(later, &[RepoId(1)]), None);
+        p.focus(&[RepoId(1), RepoId(9)], later);
+        assert_eq!(p.next(later, &[RepoId(1)]), Some(RepoId(1)));
+        p.record(RepoId(1), Fetched::Unchanged, later);
+        assert_eq!(p.next(later, &[RepoId(1)]), None);
     }
 }
