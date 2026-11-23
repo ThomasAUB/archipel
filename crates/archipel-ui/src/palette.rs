@@ -10,7 +10,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, EventEmitter, KeyDownEvent, SharedString, Subscription, Window, div, px, svg,
+    Context, Div, EventEmitter, KeyDownEvent, SharedString, Stateful, Subscription, Window, div,
+    px, svg,
 };
 
 use crate::theme::{color, radius};
@@ -154,6 +155,31 @@ impl Palette {
         }
     }
 
+    /// The discreet × of row `i` (item `id`), shown while row `group` is
+    /// hovered.
+    fn remove_button(
+        i: usize,
+        id: String,
+        group: SharedString,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let hover = color(cx, T::FgDefault);
+        div()
+            .id(SharedString::from(format!("palette-remove-{i}")))
+            .flex_none()
+            .text_color(color(cx, T::FgSubtle))
+            .opacity(0.0)
+            .group_hover(group, |s| s.opacity(1.0))
+            .hover(move |s| s.text_color(hover))
+            .tooltip(|_, cx| TextTooltip::view(&["Remove from the list".into()], cx))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // Not a click on the row: that would open it.
+                cx.stop_propagation();
+                this.remove(&id, cx);
+            }))
+            .child(svg().path(IconName::Close.path()).size(px(12.0)))
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let count = self.matches(cx).len();
         match event.keystroke.key.as_str() {
@@ -188,24 +214,10 @@ impl Render for Palette {
             .map(|(i, item)| {
                 let id = item.id.clone();
                 let group = SharedString::from(format!("palette-row-{i}"));
-                let remove = self.removable.contains(&item.id).then(|| {
-                    let id = item.id.clone();
-                    let hover = color(cx, T::FgDefault);
-                    div()
-                        .id(SharedString::from(format!("palette-remove-{i}")))
-                        .flex_none()
-                        .text_color(color(cx, T::FgSubtle))
-                        .opacity(0.0)
-                        .group_hover(group.clone(), |s| s.opacity(1.0))
-                        .hover(move |s| s.text_color(hover))
-                        .tooltip(|_, cx| TextTooltip::view(&["Remove from the list".into()], cx))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            // Not a click on the row: that would open it.
-                            cx.stop_propagation();
-                            this.remove(&id, cx);
-                        }))
-                        .child(svg().path(IconName::Close.path()).size(px(12.0)))
-                });
+                let remove = self
+                    .removable
+                    .contains(&item.id)
+                    .then(|| Self::remove_button(i, item.id.clone(), group.clone(), cx));
                 list_row(
                     SharedString::from(format!("palette-item-{i}")),
                     i == self.selected,
@@ -246,7 +258,8 @@ impl Render for Palette {
                             d.child(div().flex_none().w(px(12.0)).children(remove))
                         }),
                 )
-            });
+            })
+            .collect::<Vec<_>>();
         div()
             .absolute()
             .top(px(60.0))
