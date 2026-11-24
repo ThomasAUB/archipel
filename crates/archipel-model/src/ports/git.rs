@@ -595,6 +595,18 @@ pub trait SubmoduleWriter: Send + Sync {
         progress: &dyn ProgressSink,
         cancel: &CancelToken,
     ) -> Result<(), GitError>;
+
+    /// Removes the submodule at `path` (relative, `/`-separated):
+    /// `git submodule deinit` (refused when its working tree has local
+    /// changes), `git rm` (staging the removal of the gitlink and of its
+    /// `.gitmodules` section), then deletes its repository under
+    /// `$GIT_DIR/modules`, so the path can be added again.
+    fn remove_submodule(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError>;
 }
 
 /// Lists the worktrees of a repository (WORKTREES.md §3).

@@ -123,6 +123,14 @@ pub enum Command {
         /// Where it goes in the parent.
         path: String,
     },
+    /// Remove the submodule at `path` from `parent`: deinit, `git rm` (the
+    /// removal is staged) and delete its repository under `.git/modules`.
+    RemoveSubmodule {
+        /// Repository declaring the submodule.
+        parent: RepoPath,
+        /// Submodule path relative to `parent`, `/`-separated.
+        path: String,
+    },
     /// Project accent color (`#rrggbb`; automatic when `None`), saved in
     /// the project definition.
     SetAccent(Option<String>),

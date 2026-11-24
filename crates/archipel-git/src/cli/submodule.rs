@@ -119,4 +119,81 @@ impl SubmoduleWriter for GitCli {
         .progress(progress);
         self.runner.run(cmd).map(drop)
     }
+
+    fn remove_submodule(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        // Its repository under `$GIT_DIR/modules` is named after the
+        // submodule's name, which `git rm` drops from `.gitmodules`: look it
+        // up first.
+        let module_dir = match self.submodule_name(repo, path)? {
+            Some(name) => {
+                let out = self.runner.run(
+                    Cmd::new(repo.as_path(), CmdKind::Read, &["rev-parse", "--git-path"])
+                        .arg(format!("modules/{name}")),
+                )?;
+                Some(repo.as_path().join(out.stdout_text().trim()))
+            }
+            None => None,
+        };
+        // Without `--force`: Git refuses when the submodule has local changes.
+        self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Write,
+                &["submodule", "deinit", "--"],
+            )
+            .arg(path)
+            .cancel(cancel),
+        )?;
+        self.runner.run(
+            Cmd::new(repo.as_path(), CmdKind::Write, &["rm", "-q", "-f", "--"])
+                .arg(path)
+                .cancel(cancel),
+        )?;
+        if let Some(dir) = module_dir.filter(|d| d.is_dir()) {
+            std::fs::remove_dir_all(&dir).map_err(|e| GitError::Io {
+                path: dir.clone(),
+                message: e.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl GitCli {
+    /// The name, in `.gitmodules`, of the submodule at `path`. `None` when
+    /// none is declared there, or its name could step out of
+    /// `$GIT_DIR/modules` (Git refuses such names too).
+    fn submodule_name(&self, repo: &RepoPath, path: &str) -> Result<Option<String>, GitError> {
+        let out = self.runner.run(
+            Cmd::new(
+                repo.as_path(),
+                CmdKind::Read,
+                &[
+                    "config",
+                    "-z",
+                    "-f",
+                    ".gitmodules",
+                    "--get-regexp",
+                    r"^submodule\..*\.path$",
+                ],
+            )
+            // 1: no match (or no `.gitmodules`).
+            .ok_codes(&[0, 1]),
+        )?;
+        Ok(out
+            .stdout_text()
+            .split('\0')
+            .filter_map(|entry| entry.split_once('\n'))
+            .find(|(_, value)| value.trim_end_matches('/') == path)
+            .and_then(|(key, _)| key.strip_prefix("submodule.")?.strip_suffix(".path"))
+            .filter(|name| {
+                !name.is_empty() && !name.split(['/', '\\']).any(|c| c.is_empty() || c == "..")
+            })
+            .map(str::to_owned))
+    }
 }

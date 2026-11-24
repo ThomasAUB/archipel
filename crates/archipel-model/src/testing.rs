@@ -998,6 +998,18 @@ impl SubmoduleWriter for FakeGit {
         });
         Ok(())
     }
+
+    fn remove_submodule(
+        &self,
+        repo: &RepoPath,
+        path: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        cancel.check()?;
+        self.record("submodule_remove", repo, path)?;
+        self.with_repo(repo, |r| r.submodules.retain(|s| s.name != path));
+        Ok(())
+    }
 }
 
 impl FakeGit {
