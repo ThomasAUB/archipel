@@ -26,6 +26,7 @@ mod armed;
 mod branches_panel;
 mod ci_tooltip;
 mod commit_panel;
+mod conventional;
 mod diff_view;
 mod file_edit;
 mod fonts;

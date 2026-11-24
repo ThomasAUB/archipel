@@ -29,6 +29,7 @@ use gpui_kit::{
 };
 
 use crate::armed::Armed;
+use crate::conventional::{self, Conventional};
 use crate::diff_view::DiffDoc;
 use crate::file_edit::FileEdit;
 use crate::forge_panel::ForgeTab;
@@ -122,6 +123,8 @@ pub struct Panel {
     /// Push on a branch without upstream in a repo with several remotes:
     /// the remote to push it to, picked in the action row.
     push_choice: Option<PushChoice>,
+    /// The Conventional Commits helper of the commit box.
+    pub(crate) conventional: Conventional,
     _subscriptions: [Subscription; 2],
 }
 
@@ -145,8 +148,13 @@ impl Panel {
                 |v: &mut V, _, event: &InputEvent, window, cx| {
                     // Shift+Enter breaks the line, so a body can follow the
                     // subject.
-                    if let InputEvent::PressEnter { shift: false, .. } = event {
-                        commit(v, false, window, cx);
+                    match event {
+                        InputEvent::PressEnter { shift: false, .. } => {
+                            commit(v, false, window, cx);
+                        }
+                        // The lint line follows the message.
+                        InputEvent::Change if v.panel().conventional.enabled() => cx.notify(),
+                        _ => {}
                     }
                 },
             ),
@@ -177,6 +185,7 @@ impl Panel {
             ignore: None,
             force_push: Armed::default(),
             push_choice: None,
+            conventional: Conventional::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -189,6 +198,11 @@ impl Panel {
     /// The last summary of the repo.
     pub fn summary(&self) -> Option<&RepoSummary> {
         self.summary.as_ref()
+    }
+
+    /// The commit message box.
+    pub(crate) fn message(&self) -> &Entity<TextareaState> {
+        &self.message
     }
 }
 
@@ -210,6 +224,7 @@ pub fn on_summary<V: Staging>(v: &mut V, summary: Option<&RepoSummary>, cx: &mut
     if v.panel().branches.is_some() {
         load_branches(v, cx);
     }
+    conventional::refresh(v, cx);
 }
 
 /// A view showing the staging panel.
@@ -1174,7 +1189,7 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
                 .border_color(color(cx, T::Accent))
                 .children(staged_rows),
         )
-        .child(commit_box(&v.panel().message.clone(), amend, cx))
+        .child(commit_box(v, amend, cx))
         .into_any_element()
 }
 
@@ -1296,11 +1311,12 @@ fn file_row<V: Staging>(
     .into_any_element()
 }
 
-fn commit_box<V: Staging>(
-    message: &Entity<TextareaState>,
-    amend: bool,
-    cx: &mut Context<V>,
-) -> AnyElement {
+/// The commit message (with the Conventional Commits chips above it and
+/// its lint line under it, when shown), Amend and the commit buttons.
+fn commit_box<V: Staging>(v: &mut V, amend: bool, cx: &mut Context<V>) -> AnyElement {
+    let message = v.panel().message.clone();
+    let chips = conventional::render_chips(v, cx);
+    let lint = conventional::render_lint(v, cx);
     div()
         .p_2()
         .flex()
@@ -1308,7 +1324,9 @@ fn commit_box<V: Staging>(
         .gap_2()
         .border_t_1()
         .border_color(color(cx, T::BorderSubtle))
-        .child(Textarea::new(message))
+        .children(chips)
+        .child(Textarea::new(&message))
+        .children(lint)
         .child(
             div()
                 .flex()

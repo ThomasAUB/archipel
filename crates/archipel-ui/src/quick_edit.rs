@@ -79,6 +79,7 @@ impl QuickEdit {
             focus: cx.focus_handle(),
         };
         working_copy::load_changes(&mut pane, cx);
+        crate::conventional::refresh(&mut pane, cx);
         pane
     }
 

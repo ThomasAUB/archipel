@@ -8,7 +8,8 @@ use archipel_model::error::ProjectError;
 use archipel_model::ids::RepoPath;
 use archipel_model::ports::project::ProjectSource;
 use archipel_model::project::{
-    MessageTemplateDef, ProjectDef, ProjectLocation, ProjectSettings, RepoEntry,
+    ConventionalCommits, MessageTemplateDef, ProjectDef, ProjectLocation, ProjectSettings,
+    RepoEntry,
 };
 use archipel_project::{FileProjectSource, PROJECT_FILE_NAME};
 
@@ -48,6 +49,8 @@ fn sample(root: &Path) -> ProjectDef {
             accent: Some("#3b82f6".to_owned()),
             background_tint: Some(15),
             icon: Some("🚀".to_owned()),
+            conventional_commits: ConventionalCommits::On,
+            conventional_types: vec!["feat".to_owned(), "deps".to_owned()],
         },
     }
 }

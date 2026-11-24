@@ -22,6 +22,8 @@
 //! background_tint = 15  # % of the accent tinting the window background
 //! icon = "🚀"           # project icon: an emoji, or an image file
 //!                       # relative to this file ("assets/logo.svg")
+//! conventional_commits = "auto"  # commit helper: "auto", "on" or "off"
+//! conventional_types = ["feat", "fix", "deps"]  # default: the usual ones
 //!
 //! [[settings.template]]
 //! name = "fix"
@@ -38,7 +40,9 @@ use std::path::Path;
 
 use archipel_model::error::ProjectError;
 use archipel_model::ids::RepoPath;
-use archipel_model::project::{MessageTemplateDef, ProjectDef, ProjectSettings, RepoEntry};
+use archipel_model::project::{
+    ConventionalCommits, MessageTemplateDef, ProjectDef, ProjectSettings, RepoEntry,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
@@ -85,6 +89,10 @@ struct SettingsV1 {
     background_tint: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
+    #[serde(default, skip_serializing_if = "is_auto")]
+    conventional_commits: ConventionalCommits,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    conventional_types: Vec<String>,
     #[serde(default, rename = "template", skip_serializing_if = "Vec::is_empty")]
     templates: Vec<TemplateV1>,
 }
@@ -104,6 +112,11 @@ struct TemplateV1 {
 #[allow(clippy::trivially_copy_pass_by_ref)] // signature imposed by serde
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // signature imposed by serde
+fn is_auto(value: &ConventionalCommits) -> bool {
+    *value == ConventionalCommits::Auto
 }
 
 /// Parses the text of a project file located at `file` (absolute).
@@ -231,6 +244,13 @@ impl From<SettingsV1> for ProjectSettings {
             accent: raw.accent,
             background_tint: raw.background_tint,
             icon: raw.icon,
+            conventional_commits: raw.conventional_commits,
+            conventional_types: raw
+                .conventional_types
+                .into_iter()
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .collect(),
         }
     }
 }
@@ -244,6 +264,8 @@ impl From<&ProjectSettings> for SettingsV1 {
             accent: settings.accent.clone(),
             background_tint: settings.background_tint,
             icon: settings.icon.clone(),
+            conventional_commits: settings.conventional_commits,
+            conventional_types: settings.conventional_types.clone(),
             templates: settings
                 .message_templates
                 .iter()

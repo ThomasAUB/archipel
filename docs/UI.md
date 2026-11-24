@@ -178,7 +178,9 @@ Repo Toolbar instead (`render_body`). [staging.rs](../crates/archipel-ui/src/sta
 ├─ Staged Files ───────────────────── [Unstage all] ─┤
 │   A src/new.rs                           [-]       │  <- accent color
 ├─ Commit Box ───────────────────────────────────────┤
+│ (feat) (fix) (docs) … (!)   (ui) (app)             │  <- Conventional Chips
 │ [Commit message                               ]    │
+│ ⚠ subject is 80 characters (max 72)                │  <- Conventional Lint
 │ [ ] Amend    [Commit]  /  [Commit and push]        │
 └────────────────────────────────────────────────────┘
 ```
@@ -191,6 +193,8 @@ Repo Toolbar instead (`render_body`). [staging.rs](../crates/archipel-ui/src/sta
 | **Unstaged Files** | Working-tree changes, with Stage all / Discard all and per-file stage / discard. Discard asks for a second click. |
 | **Staged Files** | The "ready to commit" list, in the accent color, with Unstage all. |
 | **Commit Box** | Message input and Commit / Commit and push. |
+| **Conventional Chips** | Above the message, when the Conventional Commits helper shows: type chips, `!` and scope suggestions editing the `type(scope)!: ` header. ([conventional.rs](../crates/archipel-ui/src/conventional.rs)) |
+| **Conventional Lint** | Muted line under the message listing the Conventional Commits rules it breaks; only a warning. |
 
 ### Diff View
 
