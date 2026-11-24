@@ -228,6 +228,7 @@ impl App {
             Command::SetRemoteUrl { repo, remote, url } => {
                 self.set_remote_url(repo, remote, &url)?;
             }
+            Command::AddSubmodule { repo, url, path } => self.add_submodule(repo, &url, &path)?,
             // Every other command is handled by `dispatch`.
             _ => {}
         }

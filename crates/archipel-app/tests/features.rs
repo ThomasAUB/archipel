@@ -664,3 +664,48 @@ fn refresh_reloads_the_project_definition() {
     let rows: Vec<_> = e.app.all_rows().iter().map(|r| r.id).collect();
     assert_eq!(rows, [e.repos[0].id(), e.repos[1].id()]);
 }
+
+#[test]
+fn add_submodule_clones_into_the_repo_and_refuses_paths_outside_it() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let id = e.repos[0].id();
+    for path in ["", "../escape", "a/../b", "C:/abs"] {
+        assert!(
+            e.app
+                .dispatch(Command::AddSubmodule {
+                    repo: id,
+                    url: "https://host/team/lib.git".into(),
+                    path: path.into(),
+                })
+                .is_err(),
+            "{path:?}"
+        );
+    }
+    assert!(
+        e.app
+            .dispatch(Command::AddSubmodule {
+                repo: id,
+                url: "  ".into(),
+                path: "lib".into(),
+            })
+            .is_err()
+    );
+    e.app
+        .dispatch(Command::AddSubmodule {
+            repo: id,
+            url: " https://host/team/lib.git ".into(),
+            path: r"vendor\lib/".into(),
+        })
+        .unwrap();
+    wait_until("added", || {
+        e.git.calls().iter().any(|c| c.op == "submodule_add")
+    });
+    let call = e
+        .git
+        .calls()
+        .into_iter()
+        .find(|c| c.op == "submodule_add")
+        .unwrap();
+    assert_eq!(call.detail, "url=https://host/team/lib.git path=vendor/lib");
+}

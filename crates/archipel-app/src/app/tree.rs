@@ -3,11 +3,11 @@
 
 use std::collections::HashSet;
 
-use archipel_model::requests::SubmoduleUpdate;
+use archipel_model::requests::{SubmoduleAdd, SubmoduleUpdate};
 use archipel_model::{RepoId, RepoPath};
 use archipel_ops::{OpClass, OpError, OpSpec};
 
-use super::{App, AppEvent, lock};
+use super::{App, AppError, AppEvent, lock};
 use crate::deptree::{TreeInput, TreeRow, build_tree};
 
 impl App {
@@ -126,5 +126,62 @@ impl App {
             }
             result.map_err(OpError::from)
         });
+    }
+
+    /// `git submodule add` of `url` at `path` in the working tree of row
+    /// `repo`, on the network queue (it clones). Refused when the URL or the
+    /// path is empty, or the path leaves the working tree.
+    pub(super) fn add_submodule(
+        &self,
+        repo: RepoId,
+        url: &str,
+        path: &str,
+    ) -> Result<(), AppError> {
+        let parent = self
+            .path_of(repo)
+            .ok_or_else(|| AppError::NotFound(repo.to_string()))?;
+        let url = url.trim().to_owned();
+        let path = path.trim().replace('\\', "/");
+        let path = path.trim_matches('/').to_owned();
+        if url.is_empty() {
+            return Err(OpError::Refused("give the URL of the repository to add".into()).into());
+        }
+        if path.is_empty()
+            || path
+                .split('/')
+                .any(|c| c.is_empty() || c == "." || c == "..")
+            || std::path::Path::new(&path).is_absolute()
+            || path.contains(':')
+        {
+            return Err(OpError::Refused(format!(
+                "“{path}” is not a path inside {}",
+                parent.name()
+            ))
+            .into());
+        }
+        let writer = self.services.git.submodule_writer.clone();
+        let me = self.me.clone();
+        let spec = OpSpec::new(
+            Some(parent.id()),
+            OpClass::Network,
+            format!("Add submodule {path}"),
+        );
+        let request = SubmoduleAdd { url, path };
+        let _handle = self.scheduler.submit(spec, move |ctx| {
+            let result = writer.add_submodule(&parent, &request, ctx, ctx.cancel());
+            if let Some(app) = me.upgrade() {
+                if result.is_ok() {
+                    app.emit(AppEvent::Notice(format!(
+                        "Added submodule {} to {}: commit to record it",
+                        request.path,
+                        parent.name()
+                    )));
+                }
+                app.refresh_all();
+                app.load_tree_if_shown();
+            }
+            result.map_err(OpError::from)
+        });
+        Ok(())
     }
 }

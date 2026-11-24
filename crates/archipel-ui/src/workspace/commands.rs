@@ -95,6 +95,11 @@ impl Workspace {
                 self.open_stats_in_focus(window, cx);
             }
             "settings.merge_tool" => self.choose_merge_tool(window, cx),
+            "repo.add_submodule" => {
+                if let Some(id) = self.core.action_context().target_repo() {
+                    self.open_palette(PaletteKind::SubmoduleUrl(id), window, cx);
+                }
+            }
             "settings.appearance" => {
                 let size = window.viewport_size();
                 self.open_menu(Menu::Theme, Point::new(size.width, size.height), cx);

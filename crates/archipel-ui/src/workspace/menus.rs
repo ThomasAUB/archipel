@@ -436,6 +436,14 @@ impl Workspace {
                         }),
                     ),
                 )
+                .child(
+                    menu_item("menu-add-submodule", "Add submodule…", false, cx).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.menu = None;
+                            this.open_palette(PaletteKind::SubmoduleUrl(id), window, cx);
+                        }),
+                    ),
+                )
             })
             .child({
                 let label = if n > 1 {

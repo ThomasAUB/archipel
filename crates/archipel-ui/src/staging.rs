@@ -233,6 +233,8 @@ pub enum StagingEvent {
     /// Ask for a new URL of a remote of this repo: of the remote of this
     /// remote branch (`origin/main`) when given, else as the dashboard does.
     ChangeRemoteUrl(archipel_model::RepoId, Option<String>),
+    /// Ask for the URL and path of a submodule to add to this repo.
+    AddSubmodule(archipel_model::RepoId),
     /// Open the Publish dialog for this branch of this repo, which has no
     /// remote yet.
     Publish(archipel_model::RepoId, std::path::PathBuf, String),
