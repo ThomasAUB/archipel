@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use archipel_model::requests::{FetchRequest, SubmoduleUpdate, TagRequest};
+use archipel_model::requests::{FetchRequest, TagRequest};
 use archipel_model::ui_state::SortDirection;
 use archipel_model::{RepoId, RepoPath};
 use archipel_ops::batch::BatchTarget;
@@ -176,27 +176,10 @@ impl App {
             Command::ToggleTreeNode(key) => {
                 self.update_ui_state(|ui| toggle(&mut ui.collapsed_nodes, key));
             }
-            Command::UpdateSubmodules {
-                parent,
-                paths,
-                init,
-                recursive,
-            } => self.update_submodules(
-                parent,
-                SubmoduleUpdate {
-                    paths,
-                    init,
-                    recursive,
-                },
-            ),
-            Command::OpenSubmodule(path) => {
-                let id = path.id();
-                if !self.all_rows().iter().any(|r| r.id == id) {
-                    self.add_repos(std::slice::from_ref(&path))?;
-                }
-                self.set_hidden(&[id], false);
-                self.dispatch(Command::OpenRepoTab(id))?;
-            }
+            command @ (Command::UpdateSubmodules { .. }
+            | Command::OpenSubmodule(_)
+            | Command::AddSubmodule { .. }
+            | Command::RemoveSubmodule { .. }) => self.dispatch_submodule(command)?,
             Command::SetAccent(accent) => self.set_accent(accent)?,
             Command::SetBackgroundTint(tint) => self.set_background_tint(tint)?,
             Command::SetIcon(icon) => self.set_icon(icon)?,
@@ -228,7 +211,6 @@ impl App {
             Command::SetRemoteUrl { repo, remote, url } => {
                 self.set_remote_url(repo, remote, &url)?;
             }
-            Command::AddSubmodule { repo, url, path } => self.add_submodule(repo, &url, &path)?,
             // Every other command is handled by `dispatch`.
             _ => {}
         }

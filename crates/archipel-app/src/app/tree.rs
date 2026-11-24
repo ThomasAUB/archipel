@@ -8,9 +8,41 @@ use archipel_model::{RepoId, RepoPath};
 use archipel_ops::{OpClass, OpError, OpSpec};
 
 use super::{App, AppError, AppEvent, lock};
+use crate::Command;
 use crate::deptree::{TreeInput, TreeRow, build_tree};
 
 impl App {
+    /// The submodule commands of `dispatch`.
+    pub(super) fn dispatch_submodule(&self, command: Command) -> Result<(), AppError> {
+        match command {
+            Command::UpdateSubmodules {
+                parent,
+                paths,
+                init,
+                recursive,
+            } => self.update_submodules(
+                parent,
+                SubmoduleUpdate {
+                    paths,
+                    init,
+                    recursive,
+                },
+            ),
+            Command::OpenSubmodule(path) => {
+                let id = path.id();
+                if !self.all_rows().iter().any(|r| r.id == id) {
+                    self.add_repos(std::slice::from_ref(&path))?;
+                }
+                self.set_hidden(&[id], false);
+                self.dispatch(Command::OpenRepoTab(id))?;
+            }
+            Command::AddSubmodule { repo, url, path } => self.add_submodule(repo, &url, &path)?,
+            Command::RemoveSubmodule { parent, path } => self.remove_submodule(parent, path),
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The dependency tree of the visible rows (spec §9); empty when the
     /// tree is not shown. Nodes whose submodules are still being read show
     /// without children until [`AppEvent::TreeChanged`].
@@ -183,5 +215,32 @@ impl App {
             result.map_err(OpError::from)
         });
         Ok(())
+    }
+
+    /// Removes the submodule at `path` from `parent` in the background
+    /// (see [`Command::RemoveSubmodule`](crate::Command::RemoveSubmodule)),
+    /// then refreshes the rows and the tree.
+    pub(super) fn remove_submodule(&self, parent: RepoPath, path: String) {
+        let writer = self.services.git.submodule_writer.clone();
+        let me = self.me.clone();
+        let spec = OpSpec::new(
+            Some(parent.id()),
+            OpClass::Write,
+            format!("Remove submodule {path}"),
+        );
+        let _handle = self.scheduler.submit(spec, move |ctx| {
+            let result = writer.remove_submodule(&parent, &path, ctx.cancel());
+            if let Some(app) = me.upgrade() {
+                if result.is_ok() {
+                    app.emit(AppEvent::Notice(format!(
+                        "Removed submodule {path} from {}: commit to record it",
+                        parent.name()
+                    )));
+                }
+                app.refresh_all();
+                app.load_tree_if_shown();
+            }
+            result.map_err(OpError::from)
+        });
     }
 }

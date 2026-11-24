@@ -187,6 +187,7 @@ Show how the repos of a project depend on each other, as a small tree:
 - Compact rendering (indentation + connectors), collapsible nodes; works with the dashboard filters.
 - Actions from a node: init / update a submodule (recursive or not), open it as a repo, add it to the project.
 - **Add submodule…** (repo row menu, action palette, `+` on the Refs Panel SUBMODULES header, which is always shown): asks for the URL, then the path (prefilled with the URL's last component, without `.git`), then runs `git submodule add` on the network queue; the new submodule and `.gitmodules` are staged, left to commit. Paths outside the working tree are refused.
+- **Remove submodule…** (right-click a submodule in the Refs Panel), after a confirmation: `git submodule deinit` (without `--force`, so Git refuses when the submodule has local changes), `git rm` (the gitlink and its `.gitmodules` section; the removal is staged, left to commit), then deletes its clone under `$GIT_DIR/modules/<name>` so the same path can be added again.
 - Later: other dependency sources through the same extension point (e.g. `repo` manifests, package-manager path / git dependencies).
 
 ### 10. Worktrees — P1

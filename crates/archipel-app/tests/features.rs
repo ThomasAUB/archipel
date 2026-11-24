@@ -709,3 +709,27 @@ fn add_submodule_clones_into_the_repo_and_refuses_paths_outside_it() {
         .unwrap();
     assert_eq!(call.detail, "url=https://host/team/lib.git path=vendor/lib");
 }
+
+#[test]
+fn remove_submodule_runs_in_the_parent_and_says_to_commit() {
+    let e = env(&[]);
+    open_fresh(&e);
+    let parent = e.repos[0].clone();
+    e.app
+        .dispatch(Command::RemoveSubmodule {
+            parent: parent.clone(),
+            path: "vendor/lib".into(),
+        })
+        .unwrap();
+    wait_until("removed", || {
+        e.git.calls().iter().any(|c| c.op == "submodule_remove")
+    });
+    let call = e
+        .git
+        .calls()
+        .into_iter()
+        .find(|c| c.op == "submodule_remove")
+        .unwrap();
+    assert_eq!(call.repo, parent.as_path().display().to_string());
+    assert_eq!(call.detail, "vendor/lib");
+}

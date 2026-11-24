@@ -174,3 +174,39 @@ fn add_clones_and_stages_a_new_submodule() {
     assert!(staged.contains(".gitmodules"), "{staged}");
     assert!(staged.contains("vendor/lib"), "{staged}");
 }
+
+#[test]
+fn remove_deinits_unstages_and_forgets_a_submodule() {
+    let (parent, _lib, _) = parent_with_submodule();
+    let cli = GitCli::default();
+    let repo = RepoPath::new(parent.path());
+    let module_dir = parent.path().join(".git/modules/libs/lib");
+    assert!(module_dir.is_dir());
+
+    cli.remove_submodule(&repo, "libs/lib", &CancelToken::new())
+        .unwrap();
+    assert!(cli.submodules(&repo).unwrap().is_empty());
+    assert!(!parent.path().join("libs/lib").exists());
+    assert!(!module_dir.exists());
+    // Staged, ready to commit: the gitlink gone, `.gitmodules` changed.
+    let staged = parent.git(&["diff", "--cached", "--name-status"]).unwrap();
+    assert!(staged.contains("D\tlibs/lib"), "{staged}");
+    assert!(staged.contains(".gitmodules"), "{staged}");
+    let config = parent.git(&["config", "--list", "--local"]).unwrap();
+    assert!(!config.contains("submodule.libs/lib"), "{config}");
+}
+
+#[test]
+fn remove_refuses_a_submodule_with_local_changes() {
+    let (parent, _lib, _) = parent_with_submodule();
+    let cli = GitCli::default();
+    let repo = RepoPath::new(parent.path());
+    std::fs::write(parent.path().join("libs/lib/lib.txt"), "edited\n").unwrap();
+
+    assert!(
+        cli.remove_submodule(&repo, "libs/lib", &CancelToken::new())
+            .is_err()
+    );
+    assert_eq!(cli.submodules(&repo).unwrap().len(), 1);
+    assert!(parent.path().join("libs/lib/lib.txt").exists());
+}

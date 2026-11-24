@@ -89,6 +89,9 @@ pub(super) enum MenuAction {
         name: String,
         init: bool,
     },
+    /// Removes a submodule (path relative to the repo), staging the
+    /// removal.
+    RemoveSubmodule(String),
     Copy(String),
     /// Shows or hides a commit graph column.
     ToggleColumn(GraphColumn),
@@ -121,6 +124,9 @@ impl MenuAction {
             }
             Self::DeleteRemoteTag(name) => Some(format!(
                 "Delete tag {name} on the remote? Others lose it too; the local tag is kept."
+            )),
+            Self::RemoveSubmodule(name) => Some(format!(
+                "Remove submodule {name}? Its folder and its clone under .git/modules are                  deleted (commits never pushed from it are lost); the removal is staged."
             )),
             _ => None,
         }
@@ -453,6 +459,11 @@ fn submodule_entries(sub: &SubmoduleInfo) -> Vec<MenuEntry> {
     }
     out.push(MenuEntry::Separator);
     out.push(item("Copy path", A::Copy(sub.name.clone())));
+    out.push(MenuEntry::Separator);
+    out.push(danger(
+        "Remove submodule…",
+        A::RemoveSubmodule(sub.name.clone()),
+    ));
     out
 }
 
@@ -784,6 +795,16 @@ impl RepoView {
                     cx.notify();
                 }
             }
+            MenuAction::RemoveSubmodule(path) => {
+                let command = archipel_app::Command::RemoveSubmodule {
+                    parent: self.path.clone(),
+                    path,
+                };
+                if let Err(e) = self.core.dispatch(command) {
+                    self.status = Some(e.to_string());
+                    cx.notify();
+                }
+            }
             MenuAction::Copy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                 self.status = Some(format!("Copied {text}"));
@@ -942,6 +963,16 @@ mod tests {
             name: "libs/foo".into(),
             init: true
         }));
+        // Both can be removed, after a confirmation.
+        for sub in [sub(true), sub(false)] {
+            let entries = menu_entries(&MenuTarget::Submodule(sub), None, |_| true);
+            assert!(actions(&entries).contains(&&MenuAction::RemoveSubmodule("libs/foo".into())));
+        }
+        assert!(
+            MenuAction::RemoveSubmodule("libs/foo".into())
+                .confirmation()
+                .is_some()
+        );
     }
 
     #[test]
