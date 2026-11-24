@@ -23,8 +23,8 @@ use crate::journal::RefSnapshot;
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
 use crate::requests::{
     CheckoutTarget, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection, PullMode,
-    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleUpdate,
-    TagRequest,
+    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleAdd,
+    SubmoduleUpdate, TagRequest,
 };
 use crate::stats::{CommitRecord, RepoStorage, TreeFile};
 use crate::submodule::SubmoduleInfo;
@@ -582,6 +582,16 @@ pub trait SubmoduleWriter: Send + Sync {
         &self,
         repo: &RepoPath,
         request: &SubmoduleUpdate,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError>;
+
+    /// `git submodule add`: clones `request.url` at `request.path` and
+    /// stages the new submodule (and `.gitmodules`) for the next commit.
+    fn add_submodule(
+        &self,
+        repo: &RepoPath,
+        request: &SubmoduleAdd,
         progress: &dyn ProgressSink,
         cancel: &CancelToken,
     ) -> Result<(), GitError>;

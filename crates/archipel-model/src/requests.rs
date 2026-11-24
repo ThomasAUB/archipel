@@ -113,6 +113,16 @@ pub struct SubmoduleUpdate {
     pub recursive: bool,
 }
 
+/// A `git submodule add` request (spec §9).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmoduleAdd {
+    /// Repository to clone: a URL, or a path relative to the parent's
+    /// remote (`../other.git`).
+    pub url: String,
+    /// Where it goes, relative to the parent working tree, `/`-separated.
+    pub path: String,
+}
+
 /// Mode of `git reset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResetMode {

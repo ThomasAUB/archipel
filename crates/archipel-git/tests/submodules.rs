@@ -8,7 +8,7 @@ use archipel_git::GitCli;
 use archipel_model::ports::{
     IndexWriter, StatusReader, SubmoduleReader, SubmoduleWriter, WorktreeSnapshots,
 };
-use archipel_model::requests::SubmoduleUpdate;
+use archipel_model::requests::{SubmoduleAdd, SubmoduleUpdate};
 use archipel_model::{CancelToken, NoProgress, Oid, RepoPath};
 
 /// A parent repository with one submodule at `libs/lib`; returns the
@@ -135,4 +135,42 @@ fn discard_drops_changes_inside_a_submodule() {
     assert!(!cli.summary(&repo).unwrap().changes.is_dirty());
     assert_eq!(cli.submodules(&repo).unwrap()[0].checked_out, Some(pinned));
     assert!(!sub_dir.join("new.txt").exists());
+}
+
+#[test]
+fn add_clones_and_stages_a_new_submodule() {
+    let lib = TestRepo::new().unwrap();
+    lib.write(
+        "lib.txt", "v1
+",
+    )
+    .unwrap();
+    let head = Oid::from_hex(&lib.commit_all("lib v1").unwrap()).unwrap();
+    let parent = TestRepo::new().unwrap();
+    parent
+        .write(
+            "app.txt", "app
+",
+        )
+        .unwrap();
+    parent.commit_all("app").unwrap();
+    let cli = GitCli::default();
+    let repo = RepoPath::new(parent.path());
+
+    let request = SubmoduleAdd {
+        url: lib.path().to_string_lossy().into_owned(),
+        path: "vendor/lib".into(),
+    };
+    cli.add_submodule(&repo, &request, &NoProgress, &CancelToken::new())
+        .unwrap();
+    let subs = cli.submodules(&repo).unwrap();
+    assert_eq!(subs.len(), 1);
+    assert_eq!(subs[0].name, "vendor/lib");
+    assert!(subs[0].initialized);
+    assert_eq!(subs[0].checked_out, Some(head));
+    assert!(parent.path().join("vendor/lib/lib.txt").exists());
+    // Staged, ready to commit: `.gitmodules` and the gitlink.
+    let staged = parent.git(&["diff", "--cached", "--name-only"]).unwrap();
+    assert!(staged.contains(".gitmodules"), "{staged}");
+    assert!(staged.contains("vendor/lib"), "{staged}");
 }

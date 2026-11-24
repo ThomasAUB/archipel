@@ -56,6 +56,13 @@ pub(super) enum PaletteKind {
         /// Its URL now (empty: the remote does not exist yet).
         current: String,
     },
+    /// The URL of a submodule to add to this repo.
+    SubmoduleUrl(RepoId),
+    /// Where the submodule at `url` goes in this repo.
+    SubmodulePath {
+        repo: RepoId,
+        url: String,
+    },
     /// A command to run in a terminal of its own on each of these repos
     /// (the selected ones, all when empty).
     RunCommand(Vec<RepoId>),
@@ -357,6 +364,20 @@ impl Workspace {
                 }
                 return;
             }
+            PaletteKind::SubmoduleUrl(repo) => {
+                let name = self.core.row(*repo).map(|r| r.name).unwrap_or_default();
+                let title = format!("Add a submodule to {name}: URL of the repository to clone");
+                return self.show_palette(kind, title, Vec::new(), true, window, cx);
+            }
+            PaletteKind::SubmodulePath { url, .. } => {
+                let path = archipel_model::submodule::default_submodule_path(url);
+                let title = format!("Path of the submodule {url} (relative to the repo)");
+                self.show_palette(kind, title, Vec::new(), true, window, cx);
+                if let Some((Overlay::Palette(palette), _)) = &self.overlay {
+                    palette.update(cx, |p, cx| p.set_query(path, window, cx));
+                }
+                return;
+            }
             PaletteKind::RenameCategory(old) => {
                 // A plain prompt: an empty Enter must not pick (merge into)
                 // another category. Typing an existing name merges into it.
@@ -530,6 +551,22 @@ impl Workspace {
             }
             PaletteKind::MergeTool(_) => {
                 self.set_merge_tool(MergeToolChoice::from_setting(Some(&value)), cx);
+            }
+            PaletteKind::SubmoduleUrl(repo) => {
+                let url = value.trim().to_owned();
+                if !url.is_empty() {
+                    self.open_palette(PaletteKind::SubmodulePath { repo, url }, window, cx);
+                }
+            }
+            PaletteKind::SubmodulePath { repo, url } => {
+                self.dispatch(
+                    Command::AddSubmodule {
+                        repo,
+                        url,
+                        path: value,
+                    },
+                    cx,
+                );
             }
             PaletteKind::RemoteUrl {
                 repo,

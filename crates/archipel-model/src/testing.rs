@@ -31,8 +31,8 @@ use crate::project::{DiscoveredRepo, ProjectDef, ProjectLocation, RegistryEntry,
 use crate::refs::{BranchInfo, RefTip, StashEntry, TagInfo};
 use crate::requests::{
     CheckoutTarget, CommitRequest, DeleteMode, FetchRequest, MergeMode, PatchDirection, PullMode,
-    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleUpdate,
-    TagRequest,
+    PushRequest, ResetMode, SequenceAction, StashApplyMode, StashRequest, SubmoduleAdd,
+    SubmoduleUpdate, TagRequest,
 };
 use crate::stats::{ActivityBucket, Hotspot, StatsDelta};
 use crate::submodule::SubmoduleInfo;
@@ -967,6 +967,34 @@ impl SubmoduleWriter for FakeGit {
                     s.checked_out = s.pinned;
                 }
             }
+        });
+        Ok(())
+    }
+
+    fn add_submodule(
+        &self,
+        repo: &RepoPath,
+        request: &SubmoduleAdd,
+        _p: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        cancel.check()?;
+        self.record(
+            "submodule_add",
+            repo,
+            format!("url={} path={}", request.url, request.path),
+        )?;
+        self.with_repo(repo, |r| {
+            let mut path = repo.as_path().to_path_buf();
+            path.extend(request.path.split('/'));
+            r.submodules.push(SubmoduleInfo {
+                name: request.path.clone(),
+                path: RepoPath::new(path),
+                initialized: true,
+                pinned: None,
+                checked_out: None,
+            });
+            r.submodules.sort_by(|a, b| a.name.cmp(&b.name));
         });
         Ok(())
     }

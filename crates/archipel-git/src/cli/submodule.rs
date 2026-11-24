@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use archipel_model::ports::{SubmoduleReader, SubmoduleWriter};
-use archipel_model::requests::SubmoduleUpdate;
+use archipel_model::requests::{SubmoduleAdd, SubmoduleUpdate};
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::{CancelToken, GitError, ProgressSink, RepoPath};
 
@@ -88,6 +88,35 @@ impl SubmoduleWriter for GitCli {
         if !request.paths.is_empty() {
             cmd = cmd.arg("--").args(request.paths.iter().map(String::as_str));
         }
+        self.runner.run(cmd).map(drop)
+    }
+
+    fn add_submodule(
+        &self,
+        repo: &RepoPath,
+        request: &SubmoduleAdd,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<(), GitError> {
+        // The URL is the one the user typed: a local repository is allowed
+        // (Git refuses the file transport for submodules by default, against
+        // URLs planted in a cloned `.gitmodules`; this clone does not recurse).
+        let cmd = Cmd::new(
+            repo.as_path(),
+            CmdKind::Network,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--progress",
+                "--",
+            ],
+        )
+        .arg(&request.url)
+        .arg(&request.path)
+        .cancel(cancel)
+        .progress(progress);
         self.runner.run(cmd).map(drop)
     }
 }

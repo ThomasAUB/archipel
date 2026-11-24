@@ -113,6 +113,16 @@ pub enum Command {
     },
     /// Open a submodule as a repo tab (adding it to the project if needed).
     OpenSubmodule(RepoPath),
+    /// `git submodule add` in the working tree of row `repo`: clones `url`
+    /// at `path` (relative, `/`-separated) and stages it.
+    AddSubmodule {
+        /// Row of the parent repository (or worktree).
+        repo: RepoId,
+        /// Repository to clone.
+        url: String,
+        /// Where it goes in the parent.
+        path: String,
+    },
     /// Project accent color (`#rrggbb`; automatic when `None`), saved in
     /// the project definition.
     SetAccent(Option<String>),
@@ -443,6 +453,12 @@ impl ActionRegistry {
             "Open repository tab",
             with_repo,
             |c| c.target_repo().map(Command::OpenRepoTab),
+        )));
+        r.register(Arc::new(SimpleAction::new(
+            "repo.add_submodule",
+            "Add submodule…",
+            with_repo,
+            |_| Some(Command::Ui("repo.add_submodule".to_owned())),
         )));
         r.register_merge_tool_actions();
         r.register_terminal_actions();

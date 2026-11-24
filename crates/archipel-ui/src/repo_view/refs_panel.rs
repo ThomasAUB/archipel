@@ -6,10 +6,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use archipel_app::forge::{BranchCiMark, branch_ci_mark};
-use archipel_model::Oid;
 use archipel_model::refs::{RefKind, RefTip};
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::ui_state::UiState;
+use archipel_model::{Oid, RepoId};
 use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -22,6 +22,7 @@ use crate::widgets::{SHORT_OID, TextTooltip, scroll_list};
 
 use super::RepoView;
 use super::menu::{MenuAction, MenuTarget};
+use crate::staging::StagingEvent;
 
 /// One fixed-height row of the refs panel.
 pub(super) enum RefRow {
@@ -111,8 +112,9 @@ impl RepoView {
     }
 
     /// Branches and tags: click jumps to the commit, double click checks
-    /// out. Then the submodules, when any: double click opens one. A click
-    /// on a section header collapses or expands it.
+    /// out. Then the submodules (the header always, with its add button):
+    /// double click opens one. A click on a section header collapses or
+    /// expands it.
     fn render_refs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let refs = Arc::clone(&self.refs);
         let subs = Arc::clone(&self.submodules);
@@ -134,12 +136,10 @@ impl RepoView {
                 shown.push(i);
             }
         }
-        if !subs.is_empty() {
-            let base = refs.rows.len();
-            shown.push(base);
-            if !is_collapsed("SUBMODULES") {
-                shown.extend(base + 1..=base + subs.len());
-            }
+        let base = refs.rows.len();
+        shown.push(base);
+        if !is_collapsed("SUBMODULES") {
+            shown.extend(base + 1..=base + subs.len());
         }
         let list = uniform_list(
             "refs",
@@ -354,6 +354,9 @@ fn render_ref_row(
                 .when(title == "WORKTREES", |d| {
                     d.child(super::worktrees::new_worktree_button(repo, cx))
                 })
+                .when(title == "SUBMODULES", |d| {
+                    d.child(add_submodule_button(repo, cx))
+                })
                 .into_any_element()
         }
         RefRow::Worktree(entry) => super::worktrees::render_worktree_row(i, entry, cx),
@@ -433,6 +436,26 @@ fn render_ci_mark(i: usize, ci: BranchCiMark, cx: &mut Context<RepoView>) -> Any
                 cx.open_url(&url);
             })
         })
+        .into_any_element()
+}
+
+/// The `+` of the SUBMODULES header: asks for a submodule to add.
+fn add_submodule_button(repo: RepoId, cx: &mut Context<RepoView>) -> AnyElement {
+    let hover = color(cx, T::BgHover);
+    div()
+        .id("submodules-add")
+        .ml_auto()
+        .px_1()
+        .rounded(radius(cx))
+        .text_color(color(cx, T::FgMuted))
+        .hover(move |s| s.bg(hover))
+        .cursor_pointer()
+        .tooltip(|_, cx| TextTooltip::view(&["Add submodule…".into()], cx))
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.stop_propagation();
+            cx.emit(StagingEvent::AddSubmodule(repo));
+        }))
+        .child("+")
         .into_any_element()
 }
 
