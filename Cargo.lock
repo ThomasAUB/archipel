@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-app"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-cache",
  "archipel-graph",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-cache"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-model",
  "rusqlite",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-cli"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "archipel-app",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-compose"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-app",
  "archipel-cache",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-fixtures"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-forge"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-model",
  "keyring",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-git"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-fixtures",
  "archipel-model",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-graph"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-cache",
  "archipel-fixtures",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-model"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -422,7 +422,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-ops"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-fixtures",
  "archipel-git",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-project"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-fixtures",
  "archipel-model",
@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-stats"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-cache",
  "archipel-fixtures",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-term"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "alacritty_terminal",
  "archipel-model",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-theme"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-ui"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-app",
  "archipel-compose",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "archipel-watch"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "archipel-fixtures",
  "archipel-model",
@@ -10754,7 +10754,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "regex",
