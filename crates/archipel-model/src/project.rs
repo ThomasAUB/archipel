@@ -52,6 +52,24 @@ pub struct ProjectSettings {
     pub background_tint: Option<u8>,
     /// Project icon / emoji, shared through the project file.
     pub icon: Option<String>,
+    /// When the staging panel helps with Conventional Commits messages
+    /// (type chips, scope suggestions, lint), spec §5.
+    pub conventional_commits: ConventionalCommits,
+    /// The Conventional Commits types offered (empty: the default list).
+    pub conventional_types: Vec<String>,
+}
+
+/// When the Conventional Commits helper shows (`conventional_commits`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConventionalCommits {
+    /// When most recent commits of the repo follow the convention.
+    #[default]
+    Auto,
+    /// Always.
+    On,
+    /// Never.
+    Off,
 }
 
 /// A named commit message template.

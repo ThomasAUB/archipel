@@ -322,6 +322,7 @@ impl RepoView {
         working_copy::load_changes(&mut view, cx);
         view.load_submodules(cx);
         view.load_pull_requests(cx);
+        crate::conventional::refresh(&mut view, cx);
         view
     }
 
