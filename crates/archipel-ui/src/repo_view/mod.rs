@@ -574,6 +574,16 @@ impl Staging for RepoView {
             working_copy::open_worktree_file(self, file, side, cx);
         }
     }
+
+    fn edit_from_commit(
+        &mut self,
+        file: String,
+        line: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_working_file(file, line, window, cx);
+    }
 }
 
 impl WorkingCopy for RepoView {

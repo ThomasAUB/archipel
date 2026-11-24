@@ -845,7 +845,8 @@ fn render_diff_row<V: Staging>(
 }
 
 /// A diff line's row, or an unchanged line's around the hunks: changed
-/// lines can be picked on a working copy, and any line edited there.
+/// lines can be picked on a working copy, and a double-click on any line
+/// edits the file (from a commit's diff, as it is in the working copy).
 fn render_line_row<V: Staging>(
     doc: &Arc<DiffDoc>,
     index: usize,
@@ -875,7 +876,8 @@ fn render_line_row<V: Staging>(
         .text_selection()
         .on_row(index, doc.row_text(index).len());
     let (row, layout) = diff_line_row(line, &spans, doc.lineno_width, selected, text, cx);
-    let editable = side.is_some() && doc.editable(f);
+    // A commit's diff edits the file as it is in the working copy.
+    let editable = doc.editable(f);
     let row = text_handlers(
         row.id(SharedString::from(format!("diff-line-{index}"))),
         doc,
@@ -898,7 +900,11 @@ fn render_line_row<V: Staging>(
                 // The first click of the two selected the line.
                 doc.clear_selection();
                 let file = doc.files[f].display_path().to_owned();
-                file_edit::open(v, file, edit_at, window, cx);
+                if side.is_some() {
+                    file_edit::open(v, file, edit_at, window, cx);
+                } else {
+                    v.edit_from_commit(file, edit_at, window, cx);
+                }
                 return;
             }
             if selectable {
@@ -975,7 +981,7 @@ fn render_hunk_header<V: Staging>(
 /// The mouse on a diff line's row: a press starts selecting text (a
 /// double-click a word, a triple-click the line, Shift extends), a move
 /// with the button held drags the selection, a right-click opens the
-/// menu. On an `editable` working copy a double-click edits instead.
+/// menu. On an `editable` file a double-click edits instead.
 fn text_handlers<V: Staging>(
     row: Stateful<Div>,
     doc: &Arc<DiffDoc>,
@@ -1262,7 +1268,7 @@ fn keys_hint(side: Option<DiffSide>, image: bool) -> &'static str {
     } else if side.is_some() {
         "click lines to select · drag selects text · double-click edits · ↑↓ files · Esc closes"
     } else {
-        "drag selects text · right-click copies · ↑↓ files · Esc closes"
+        "drag selects text · double-click edits · right-click copies · ↑↓ files · Esc closes"
     }
 }
 

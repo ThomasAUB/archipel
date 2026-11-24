@@ -279,6 +279,17 @@ pub trait Staging: Sized + EventEmitter<StagingEvent> + 'static {
         window: &mut Window,
         cx: &mut Context<Self>,
     );
+    /// A double-click on a line of a commit's diff: edits `file` as it is
+    /// in the working copy, at `line` (1-based). A view showing no commits
+    /// ignores it.
+    fn edit_from_commit(
+        &mut self,
+        _file: String,
+        _line: u32,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
 }
 
 /// A file's Discard button: the first click arms it, a second one before

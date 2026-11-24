@@ -1135,6 +1135,29 @@ impl RepoView {
         }
         file_edit::open(self, path, line, window, cx);
     }
+
+    /// Opens the editor on `path` as it is in the working copy, at `line`,
+    /// from a commit's diff (the diff view, or the browser's Change mode):
+    /// the uncommitted-changes row is selected and the file shown in the
+    /// browser, as Edit does from a file opened at a commit.
+    pub(super) fn edit_working_file(
+        &mut self,
+        path: String,
+        line: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.browser.is_none() {
+            self.toggle_browser(window, cx);
+        }
+        if let Some(b) = &mut self.browser {
+            b.mode = FileMode::Content;
+            b.open = Some(path.clone());
+        }
+        // Reopens `path`, from the working copy, in the browser.
+        self.select_wip(cx);
+        file_edit::open(self, path, line, window, cx);
+    }
 }
 
 /// Readies `open` for its render when it is a rendered Markdown file
