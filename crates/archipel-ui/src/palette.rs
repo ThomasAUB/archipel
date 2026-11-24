@@ -164,20 +164,27 @@ impl Palette {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let hover = color(cx, T::FgDefault);
+        // An svg paints with its own text color only (not the parent's).
+        let button = SharedString::from(format!("palette-remove-{i}"));
         div()
-            .id(SharedString::from(format!("palette-remove-{i}")))
+            .id(button.clone())
+            .group(button.clone())
             .flex_none()
-            .text_color(color(cx, T::FgSubtle))
             .opacity(0.0)
             .group_hover(group, |s| s.opacity(1.0))
-            .hover(move |s| s.text_color(hover))
             .tooltip(|_, cx| TextTooltip::view(&["Remove from the list".into()], cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 // Not a click on the row: that would open it.
                 cx.stop_propagation();
                 this.remove(&id, cx);
             }))
-            .child(svg().path(IconName::Close.path()).size(px(12.0)))
+            .child(
+                svg()
+                    .path(IconName::Close.path())
+                    .size(px(12.0))
+                    .text_color(color(cx, T::FgSubtle))
+                    .group_hover(button, move |s| s.text_color(hover)),
+            )
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
