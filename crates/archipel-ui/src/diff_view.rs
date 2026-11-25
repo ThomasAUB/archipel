@@ -1152,7 +1152,9 @@ pub(crate) fn render_open<V: Staging>(
     let endings = side
         .filter(|&s| !editing && s == DiffSide::Unstaged)
         .and(doc.as_ref())
-        .and_then(|d| (d.files.len() == 1 && d.editable(0)).then_some(d.endings[0]))
+        // `then`, not `then_some`: an empty diff (a file just discarded)
+        // has no `endings[0]`.
+        .and_then(|d| (d.files.len() == 1 && d.editable(0)).then(|| d.endings[0]))
         .flatten();
     // A one-file diff of a deleted file says so: all-red lines alone read
     // like an edit that removed everything.
