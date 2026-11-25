@@ -37,7 +37,10 @@ use crate::ignore::{self, IgnoreDialog};
 use crate::image_view::compare::ImageDiff;
 use crate::merge_view::MergeEdit;
 use crate::theme::{color, row_height};
-use crate::widgets::{TextTooltip, button, check, icon_button, list_row, primary_button, section};
+use crate::widgets::{
+    ClickIf as _, Slot as _, TextTooltip, button, check, icon_button, list_row, primary_button,
+    section, steady_button,
+};
 
 /// Height of the branch switcher list before it scrolls.
 const BRANCH_LIST_HEIGHT: f32 = 160.0;
@@ -826,38 +829,57 @@ pub fn small(b: Stateful<Div>) -> Stateful<Div> {
     b.py_0().text_xs()
 }
 
+const PUSH: &str = "Push";
+const FORCE_PUSH: &str = "Force push?";
+
 /// Push, or once armed on a branch behind its upstream a red "Force push?" like the
-/// armed Discard buttons, explained by its tooltip.
+/// armed Discard buttons, explained by its tooltip. As wide either way, so
+/// arming it moves nothing.
 fn push_button<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Stateful<Div> {
     let label = match v.panel().force_push.get() {
         Some(force) => {
             let danger = color(cx, T::StatusError);
             let explanation = force.explanation();
-            button("st-push", "Force push?", cx)
+            steady_button("st-push", FORCE_PUSH, &[PUSH], cx)
                 .text_color(danger)
                 .border_color(danger)
                 .tooltip(move |_, cx| TextTooltip::view(&explanation, cx))
         }
-        None => button("st-push", "Push", cx),
+        None => steady_button("st-push", PUSH, &[FORCE_PUSH], cx),
     };
     small(label).on_click(cx.listener(|v: &mut V, _, window, cx| push(v, window, cx)))
 }
 
 /// The pull request button: the open one of the branch (to review or
-/// merge it), else "Create PR…"; none when the repo is not on a forge.
-fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Option<Stateful<Div>> {
+/// merge it), else "Create PR…", disabled when the repo is not on a
+/// forge. Always there and as wide, so Stash, Undo and Redo after it stay
+/// put from repo to repo.
+fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Stateful<Div> {
+    const CREATE: &str = "Create PR…";
     let id = v.repo_path().id();
-    let forge = v.core().row(id)?.forge;
+    let forge = v.core().row(id).map(|row| row.forge);
     let (label, tab) = match &forge {
-        ForgeStatus::NotOnForge => return None,
-        ForgeStatus::Open(pr) => (format!("PR #{}", pr.number), ForgeTab::Open(vec![id])),
-        _ => ("Create PR…".to_owned(), ForgeTab::Create(vec![id])),
+        None | Some(ForgeStatus::NotOnForge) => (CREATE.to_owned(), None),
+        Some(ForgeStatus::Open(pr)) => {
+            (format!("PR #{}", pr.number), Some(ForgeTab::Open(vec![id])))
+        }
+        Some(_) => (CREATE.to_owned(), Some(ForgeTab::Create(vec![id]))),
     };
-    Some(
-        small(button("st-pr", label, cx)).on_click(cx.listener(move |_: &mut V, _, _, cx| {
-            cx.emit(StagingEvent::OpenForge(tab.clone()));
-        })),
-    )
+    let tooltip = if tab.is_some() {
+        "Review the pull request of the branch, or open one"
+    } else {
+        "No forge known for this repository"
+    };
+    small(steady_button("st-pr", label, &[CREATE, "PR #00000"], cx))
+        .tooltip(move |_, cx| TextTooltip::view(&[tooltip.into()], cx))
+        .on_click_if(
+            tab.is_some(),
+            cx.listener(move |_: &mut V, _, _, cx| {
+                if let Some(tab) = &tab {
+                    cx.emit(StagingEvent::OpenForge(tab.clone()));
+                }
+            }),
+        )
 }
 
 /// Fetch, pull, push, pull request, stash, pop, undo, redo, after `lead`
@@ -892,16 +914,11 @@ pub fn render_actions<V: Staging>(
             a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
         }))
         .child(push_button(v, cx))
-        .children(render_push_choice(v, cx))
-        .children(pull_request_button(v, cx))
+        .child(pull_request_button(v, cx))
         .child(job("st-stash", "Stash", write, cx, |a, p, _| {
             a.stash_push(p, &StashRequest::default()).map(drop)
         }))
-        .when(stashes > 0, |d| {
-            d.child(job("st-pop", "Pop", write, cx, |a, p, _| {
-                a.stash_apply(p, 0, StashApplyMode::Pop)
-            }))
-        })
+        .child(pop_button(stashes > 0, cx))
         .child(
             small(button("st-undo", "Undo", cx)).on_click(
                 cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Undo(id), cx)),
@@ -912,8 +929,26 @@ pub fn render_actions<V: Staging>(
                 cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Redo(id), cx)),
             ),
         )
+        // Last, so coming and going they move no button: the operation in
+        // progress, then the remotes to push to.
         .children(render_in_progress(v, cx))
+        .children(render_push_choice(v, cx))
         .into_any_element()
+}
+
+/// Pop of the last stash, disabled (not removed) without one.
+fn pop_button<V: Staging>(enabled: bool, cx: &mut Context<V>) -> Stateful<Div> {
+    small(button("st-pop", "Pop", cx)).on_click_if(
+        enabled,
+        cx.listener(|v: &mut V, _, _, cx| {
+            v.run_job_as(
+                OpClass::Write,
+                "Pop".into(),
+                cx,
+                Box::new(|a, p, _| a.stash_apply(p, 0, StashApplyMode::Pop)),
+            );
+        }),
+    )
 }
 
 /// The merge / rebase / … in progress, with Continue, Skip (but for a
@@ -957,9 +992,11 @@ fn render_in_progress<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyE
                         SequenceAction::Continue,
                         cx,
                     ))
-                    .when(op != RepoOp::Merge, |d| {
-                        d.child(sequence("st-skip", "Skip", SequenceAction::Skip, cx))
-                    })
+                    // Kept for a merge, unclickable, so Abort stays put.
+                    .child(
+                        sequence("st-skip", "Skip", SequenceAction::Skip, cx)
+                            .shown_if(op != RepoOp::Merge),
+                    )
                     .child(sequence("st-abort", "Abort", SequenceAction::Abort, cx)),
             )
             .into_any_element(),
@@ -1106,11 +1143,11 @@ fn render_files<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElement {
         .child(section(format!("UNSTAGED ({})", unstaged.len()), cx))
         .when(!unstaged_paths.is_empty(), |d| {
             let discard = if armed.as_deref() == Some(ALL_FILES) {
-                button("discard-all", "Discard all?", cx)
+                steady_button("discard-all", "Discard all?", &["Discard all"], cx)
                     .text_color(danger)
                     .border_color(danger)
             } else {
-                button("discard-all", "Discard all", cx)
+                steady_button("discard-all", "Discard all", &["Discard all?"], cx)
             };
             d.child(
                 div()
@@ -1256,20 +1293,9 @@ fn file_row<V: Staging>(
             })
             .child(path),
     )
-    .when(side == DiffSide::Unstaged, |d| {
-        d.child(
-            icon_button(
-                SharedString::from(format!("ignore-{p4}")),
-                IconName::EyeOff,
-                "Add to .gitignore…",
-                cx,
-            )
-            .on_click(cx.listener(move |v: &mut V, _, window, cx| {
-                cx.stop_propagation();
-                ignore::open(v, p4.clone(), tracked, window, cx);
-            })),
-        )
-    })
+    // Discard before the ignore button: armed, its wider "Discard?" grows
+    // into the path, not into the buttons after it; and the ignore button
+    // keeps it apart from Stage so a slip does not hit it.
     .when(side == DiffSide::Unstaged, |d| {
         let id = SharedString::from(format!("discard-{p3}"));
         let discard = if armed == Some(p3.as_str()) {
@@ -1280,14 +1306,24 @@ fn file_row<V: Staging>(
         } else {
             icon_button(id, IconName::Undo2, "Discard (click twice)", cx)
         };
-        // Kept apart from Stage so a slip does not hit it.
+        d.child(discard.on_click(cx.listener(move |v: &mut V, _, _, cx| {
+            cx.stop_propagation();
+            click_discard(v, p3.clone(), cx);
+        })))
+    })
+    .when(side == DiffSide::Unstaged, |d| {
         d.child(
-            discard
-                .mr_3()
-                .on_click(cx.listener(move |v: &mut V, _, _, cx| {
-                    cx.stop_propagation();
-                    click_discard(v, p3.clone(), cx);
-                })),
+            icon_button(
+                SharedString::from(format!("ignore-{p4}")),
+                IconName::EyeOff,
+                "Add to .gitignore…",
+                cx,
+            )
+            .mr_3()
+            .on_click(cx.listener(move |v: &mut V, _, window, cx| {
+                cx.stop_propagation();
+                ignore::open(v, p4.clone(), tracked, window, cx);
+            })),
         )
     })
     .child(

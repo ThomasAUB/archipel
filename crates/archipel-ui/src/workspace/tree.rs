@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, div, px};
 
 use crate::theme::{color, row_height};
-use crate::widgets::{SHORT_OID, TextTooltip, button};
+use crate::widgets::{ClickIf as _, SHORT_OID, Slot as _, TextTooltip, button, steady_button};
 use crate::worktree_dialog::WorktreeStart;
 
 use super::Workspace;
@@ -152,8 +152,11 @@ impl Workspace {
                 match row {
                     Some(row) => {
                         let cells = row_cells(&ext, &self.core, row, now, 1, widths, cx);
-                        let mut actions = Self::row_actions(i, row, cx);
-                        actions.extend(Self::node_actions(i, node, true, opening, cx));
+                        // The overlay is held at the right edge: a
+                        // submodule's update buttons first, so the row's
+                        // own buttons are at the same place on every row.
+                        let mut actions = Self::node_actions(i, node, true, opening, cx);
+                        actions.extend(Self::row_actions(i, row, cx));
                         let group = SharedString::from(format!("tree-row-{i}"));
                         let hover = color(cx, T::BgHover);
                         Self::row_shell(row, selected, cx)
@@ -199,8 +202,10 @@ impl Workspace {
                                 .items_center()
                                 .gap_2()
                                 .overflow_hidden()
-                                .child(Self::node_state(node, cx))
-                                .children(Self::node_actions(i, node, false, opening, cx)),
+                                // The buttons before the state, of any
+                                // width, so they line up from row to row.
+                                .children(Self::node_actions(i, node, false, opening, cx))
+                                .child(Self::node_state(node, cx)),
                         )
                         .into_any_element(),
                 }
@@ -338,29 +343,36 @@ impl Workspace {
             }))
             .into_any_element(),
         ];
-        let lock = if info.locked.is_some() {
-            "Unlock"
+        let (lock, other) = if info.locked.is_some() {
+            ("Unlock", "Lock…")
         } else {
-            "Lock…"
+            ("Lock…", "Unlock")
         };
         out.push(
-            button(SharedString::from(format!("tree-lock-wt-{i}")), lock, cx)
+            steady_button(
+                SharedString::from(format!("tree-lock-wt-{i}")),
+                lock,
+                &[other],
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.lock_or_unlock(id, window, cx);
+            }))
+            .into_any_element(),
+        );
+        // Its room kept where it can't be removed, so Open, Terminal and
+        // Lock stay at the same place on every worktree row.
+        let removable = info.parent.is_some() && info.locked.is_none();
+        out.push(
+            button(SharedString::from(format!("tree-rm-wt-{i}")), "Remove…", cx)
+                .shown_if(removable)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.lock_or_unlock(id, window, cx);
+                    this.open_remove_worktree(id, window, cx);
                 }))
                 .into_any_element(),
         );
-        if info.parent.is_some() && info.locked.is_none() {
-            out.push(
-                button(SharedString::from(format!("tree-rm-wt-{i}")), "Remove…", cx)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.open_remove_worktree(id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
         out
     }
 
@@ -412,20 +424,32 @@ impl Workspace {
         };
         let update = |label: &'static str, init: bool, recursive: bool, cx: &mut Context<Self>| {
             let state = state.clone();
-            button(SharedString::from(format!("tree-{label}-{i}")), label, cx)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.dispatch(
-                        Command::UpdateSubmodules {
-                            parent: state.parent.clone(),
-                            paths: vec![state.rel_path.clone()],
-                            init,
-                            recursive,
-                        },
-                        cx,
-                    );
-                }))
-                .into_any_element()
+            // Init and Update share a slot, as wide either way.
+            let other = match label {
+                "Update" => "Init",
+                "Update all" => "Init all",
+                "Init" => "Update",
+                _ => "Update all",
+            };
+            steady_button(
+                SharedString::from(format!("tree-{label}-{i}")),
+                label,
+                &[other],
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.dispatch(
+                    Command::UpdateSubmodules {
+                        parent: state.parent.clone(),
+                        paths: vec![state.rel_path.clone()],
+                        init,
+                        recursive,
+                    },
+                    cx,
+                );
+            }))
+            .into_any_element()
         };
         let mut out = Vec::new();
         if state.initialized {
@@ -435,18 +459,29 @@ impl Workspace {
                 return out;
             }
             let path = node.path.clone();
-            out.push(if opening == Some(&path) {
-                div()
-                    .text_color(color(cx, T::FgMuted))
-                    .child("Opening…")
-                    .into_any_element()
+            // "Opening…" in the button itself, as wide, so Add to project
+            // stays put.
+            let busy = opening == Some(&path);
+            let (label, other) = if busy {
+                ("Opening…", "Open")
             } else {
-                button(SharedString::from(format!("tree-open-{i}")), "Open", cx)
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                ("Open", "Opening…")
+            };
+            out.push(
+                steady_button(
+                    SharedString::from(format!("tree-open-{i}")),
+                    label,
+                    &[other],
+                    cx,
+                )
+                .on_click_if(
+                    !busy,
+                    cx.listener(move |this, _, _, cx| {
                         this.open_submodule(path.clone(), cx);
-                    }))
-                    .into_any_element()
-            });
+                    }),
+                )
+                .into_any_element(),
+            );
             let path = node.path.clone();
             out.push(
                 button(

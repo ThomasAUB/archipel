@@ -42,7 +42,7 @@ use crate::file_edit::{editable_text, file_bytes, language_of};
 use crate::staging::{Staging, small};
 use crate::syntax::{self, LineHighlighter, Spans};
 use crate::theme::{color, mono_font, row_height};
-use crate::widgets::{button, primary_button, scroll_list};
+use crate::widgets::{Slot as _, button, primary_button, scroll_list};
 
 /// The merge of one conflicted file, kept in the staging panel's state.
 pub(crate) struct MergeEdit {
@@ -1128,15 +1128,12 @@ fn render_toolbar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Div {
         .border_b_1()
         .border_color(color(cx, T::BorderSubtle))
         .text_xs()
+        // The buttons first, each in a slot kept when it doesn't apply, and
+        // the position and summary (of changing width) after them: every
+        // button stays at its place from conflict to conflict.
         .when(total > 0, |d| {
             d.child(tool("merge-prev", "↑", cx, |v, w, cx| step(v, -1, w, cx)))
                 .child(tool("merge-next", "↓", cx, |v, w, cx| step(v, 1, w, cx)))
-                .child(div().child(position))
-                .child(
-                    div()
-                        .text_color(summary_color)
-                        .child(format!("· {summary}")),
-                )
                 .child(div().w_2())
                 .child(tool(
                     "merge-ours",
@@ -1153,19 +1150,22 @@ fn render_toolbar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Div {
                 .child(tool("merge-both", "Both", cx, |v, w, cx| {
                     take(v, Some(Pick::OursThenTheirs), w, cx);
                 }))
-                .when(both, |d| {
-                    d.child(tool("merge-swap", "⇅ Swap order", cx, swap_order))
-                })
-                .when(has_base, |d| {
-                    d.child(tool("merge-base", "Base", cx, |v, w, cx| {
+                .child(tool("merge-swap", "⇅ Swap order", cx, swap_order).shown_if(both))
+                .child(
+                    tool("merge-base", "Base", cx, |v, w, cx| {
                         take(v, Some(Pick::Base), w, cx);
-                    }))
-                })
+                    })
+                    .shown_if(has_base),
+                )
                 .child(tool("merge-none", "None", cx, |v, w, cx| {
                     take(v, None, w, cx);
                 }))
-                .when(open > 1, |d| {
-                    d.child(div().w_2())
+                .child(div().w_2())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
                         .child(div().text_color(muted).child("All left:"))
                         .child(tool("merge-all-ours", "Ours", cx, |v, w, cx| {
                             take_all(v, Pick::Ours, w, cx);
@@ -1173,7 +1173,15 @@ fn render_toolbar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Div {
                         .child(tool("merge-all-theirs", "Theirs", cx, |v, w, cx| {
                             take_all(v, Pick::Theirs, w, cx);
                         }))
-                })
+                        .shown_if(open > 1),
+                )
+                .child(div().w_2())
+                .child(div().child(position))
+                .child(
+                    div()
+                        .text_color(summary_color)
+                        .child(format!("· {summary}")),
+                )
         })
         .when(total == 0 && left == 0, |d| {
             d.child(

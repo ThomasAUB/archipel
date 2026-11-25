@@ -22,8 +22,8 @@ use crate::forecast_badge::pill;
 use crate::quick_edit::{QuickEdit, QuickEditEvent};
 use crate::theme::{color, radius, row_height, staging_surface, text_size, tone};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, check_menu_item, chip, list_row, primary_button,
-    resize_pane, scroll_menu, splitter, unmodified,
+    Pane, PaneDrag, Slot as _, TextTooltip, button, check_menu_item, chip, list_row,
+    primary_button, resize_pane, scroll_menu, splitter, steady_chip, unmodified,
 };
 
 use super::Workspace;
@@ -342,19 +342,22 @@ impl Workspace {
                         this.open_stats_in_focus(window, cx);
                     })),
             )
-            .when(hidden > 0 || ui.show_hidden, |d| {
-                d.child(
-                    chip(
-                        "view-hidden",
-                        format!("Hidden ({hidden})"),
-                        ui.show_hidden,
-                        cx,
-                    )
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.dispatch(Command::ToggleShowHidden, cx)),
-                    ),
+            // Its room kept while nothing is hidden, and as wide whatever
+            // the count.
+            .child(
+                steady_chip(
+                    "view-hidden",
+                    format!("Hidden ({hidden})"),
+                    &["Hidden (000)"],
+                    ui.show_hidden,
+                    cx,
                 )
-            });
+                .shown_if(hidden > 0 || ui.show_hidden)
+                .on_click(
+                    cx.listener(|this, _, _, cx| this.dispatch(Command::ToggleShowHidden, cx)),
+                ),
+            );
+        // Stop before the count, so it stays put while the count grows.
         let scan = match self.scan {
             Some((found, true)) => Some(
                 div()
@@ -363,10 +366,10 @@ impl Workspace {
                     .gap_2()
                     .text_xs()
                     .text_color(color(cx, T::FgMuted))
-                    .child(format!("Scanning the folder… {found} found"))
                     .child(button("scan-stop", "Stop", cx).on_click(
                         cx.listener(|this, _, _, cx| this.dispatch(Command::CancelScan, cx)),
-                    )),
+                    ))
+                    .child(format!("Scanning the folder… {found} found")),
             ),
             _ => None,
         };
@@ -386,6 +389,9 @@ impl Workspace {
                 this.dispatch(Command::ToggleFilter(id.clone()), cx);
             }))
         });
+        // The fixed chips lead, those of a varying label next, and what
+        // comes and goes (the typed name filter, the scan) last: each chip
+        // keeps its place as the filter is typed or a scan counts.
         div()
             .flex()
             .flex_wrap()
@@ -400,11 +406,11 @@ impl Workspace {
                     .items_center()
                     .flex_wrap()
                     .gap_3()
-                    .children(name_filter)
-                    .child(div().flex().flex_wrap().gap_1().children(filters))
-                    .children(category_dropdown)
-                    .child(set_selector)
                     .child(view_chips)
+                    .child(div().flex().flex_wrap().gap_1().children(filters))
+                    .child(set_selector)
+                    .children(category_dropdown)
+                    .children(name_filter)
                     .children(scan),
             )
             .into_any_element()

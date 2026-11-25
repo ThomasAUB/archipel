@@ -32,7 +32,10 @@ use gpui_kit::{
 
 use crate::armed::Armed;
 use crate::theme::{color, radius};
-use crate::widgets::{ClickIf as _, button, check, check_box, chip, primary_button, section};
+use crate::widgets::{
+    ClickIf as _, Slot as _, button, check, check_box, chip, confirm_button, primary_button,
+    section, steady_button,
+};
 
 /// Which part of the panel is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1204,51 +1207,56 @@ impl ForgePanel {
         armed: bool,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        const WHEN: &str = "When CI passes";
+        const CANCEL: &str = "Cancel auto-merge";
         let number = pr.number;
-        if armed {
-            button(
+        let linked = if pr.from_fork {
+            Vec::new()
+        } else {
+            self.linked(&pr.source)
+        };
+        // Cancel takes the place of "When CI passes", as wide, and the
+        // linked button keeps its room while armed: arming moves nothing.
+        let first = if armed {
+            steady_button(
                 SharedString::from(format!("{id}-auto-cancel")),
-                "Cancel auto-merge",
+                CANCEL,
+                &[WHEN],
                 cx,
             )
             .on_click(cx.listener(move |p, _, window, cx| {
                 p.cancel_auto_merge(repo, number, window, cx);
             }))
-            .into_any_element()
         } else {
-            let linked = if pr.from_fork {
-                Vec::new()
-            } else {
-                self.linked(&pr.source)
-            };
-            div()
-                .flex()
-                .gap_1()
-                .child(
+            steady_button(
+                SharedString::from(format!("{id}-auto")),
+                WHEN,
+                &[CANCEL],
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, window, cx| {
+                p.arm_auto_merge(vec![(repo, number)], window, cx);
+            }))
+        };
+        div()
+            .flex()
+            .gap_1()
+            .child(first)
+            .when(linked.len() > 1, |d| {
+                let n = linked.len();
+                d.child(
                     button(
-                        SharedString::from(format!("{id}-auto")),
-                        "When CI passes",
+                        SharedString::from(format!("{id}-auto-linked")),
+                        format!("… in all {n} repos"),
                         cx,
                     )
+                    .shown_if(!armed)
                     .on_click(cx.listener(move |p, _, window, cx| {
-                        p.arm_auto_merge(vec![(repo, number)], window, cx);
+                        p.arm_auto_merge(linked.clone(), window, cx);
                     })),
                 )
-                .when(linked.len() > 1, |d| {
-                    let n = linked.len();
-                    d.child(
-                        button(
-                            SharedString::from(format!("{id}-auto-linked")),
-                            format!("… in all {n} repos"),
-                            cx,
-                        )
-                        .on_click(cx.listener(move |p, _, window, cx| {
-                            p.arm_auto_merge(linked.clone(), window, cx);
-                        })),
-                    )
-                })
-                .into_any_element()
-        }
+            })
+            .into_any_element()
     }
 
     /// One open pull request: title (opens it), details, merge state and
@@ -1290,15 +1298,13 @@ impl ForgePanel {
             (None, _) => (state, tone),
         };
         let auto = self.auto_merge_controls(&id, repo, pr, note.is_some(), cx);
-        let merge = if self.armed.is(&(repo, number)) {
-            primary_button(
-                SharedString::from(format!("{id}-merge")),
-                "Confirm merge",
-                cx,
-            )
-        } else {
-            button(SharedString::from(format!("{id}-merge")), "Merge", cx)
-        }
+        let merge = confirm_button(
+            SharedString::from(format!("{id}-merge")),
+            "Merge",
+            "Confirm merge",
+            self.armed.is(&(repo, number)),
+            cx,
+        )
         .on_click(cx.listener(move |p, _, window, cx| {
             p.click_merge(repo, number, window, cx);
         }));
@@ -1344,7 +1350,10 @@ impl ForgePanel {
                     .text_color(color(cx, tone))
                     .child(state),
             )
-            .when(!pr.draft, |d| d.child(auto).child(merge))
+            // A draft keeps their room, unpainted, so the buttons line up
+            // from row to row.
+            .child(div().flex_none().child(auto).shown_if(!pr.draft))
+            .child(merge.shown_if(!pr.draft))
     }
 
     fn render_create(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -1550,15 +1559,13 @@ impl ForgePanel {
             detail.push(relative_time(at, now));
         }
         let id = format!("f-issue-{ri}-{number}");
-        let close = if self.armed_close.is(&(repo, number)) {
-            primary_button(
-                SharedString::from(format!("{id}-close")),
-                "Confirm close",
-                cx,
-            )
-        } else {
-            button(SharedString::from(format!("{id}-close")), "Close", cx)
-        }
+        let close = confirm_button(
+            SharedString::from(format!("{id}-close")),
+            "Close",
+            "Confirm close",
+            self.armed_close.is(&(repo, number)),
+            cx,
+        )
         .on_click(cx.listener(move |p, _, window, cx| {
             p.click_close(repo, number, window, cx);
         }));

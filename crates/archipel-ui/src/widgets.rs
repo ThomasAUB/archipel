@@ -15,8 +15,49 @@ use gpui_kit::{
 
 use crate::theme::{color, radius, text_size, ui_font};
 
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod render_tests;
+
 /// A clickable text button.
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
+    button_frame(id, cx).child(label.into())
+}
+
+/// A [`button`] as wide as the widest of `label` and `others` (its other
+/// labels: an armed "Confirm …", a longer count), so a change of label
+/// moves nothing after it.
+pub fn steady_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    others: &[&str],
+    cx: &App,
+) -> Stateful<Div> {
+    button_frame(id, cx).child(steady_label(label, others))
+}
+
+/// A button asking for a second click: `label`, then `confirm` in the
+/// accent colors once `armed`, as wide either way.
+pub fn confirm_button(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    confirm: &'static str,
+    armed: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    if armed {
+        let hover = color(cx, T::AccentHover);
+        steady_button(id, confirm, &[label], cx)
+            .bg(color(cx, T::Accent))
+            .border_color(color(cx, T::Accent))
+            .text_color(color(cx, T::AccentFg))
+            .hover(move |s| s.bg(hover))
+    } else {
+        steady_button(id, label, &[confirm], cx)
+    }
+}
+
+fn button_frame(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
     let hover = color(cx, T::BgHover);
     div()
         .id(id)
@@ -29,8 +70,40 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, cx: &App
         .text_color(color(cx, T::FgDefault))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .child(label.into())
 }
+
+/// `label` in a box as wide as the widest of it and `others`, centered:
+/// the others are laid out, with no height and unpainted, only to size
+/// it. Keeps the controls after a label that changes (a count, an armed
+/// state, a mode) where they are, so they stay under the hand.
+pub fn steady_label(label: impl Into<SharedString>, others: &[&str]) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .whitespace_nowrap()
+        .child(label.into())
+        .children(others.iter().map(|other| {
+            div()
+                .h_0()
+                .overflow_hidden()
+                .invisible()
+                .child(SharedString::from(other.to_string()))
+        }))
+}
+
+/// Hides an element but keeps its room, unpainted and deaf to clicks:
+/// for a control shown only sometimes in a row of controls, so the ones
+/// after it don't move when it comes and goes.
+pub trait Slot: Styled + Sized {
+    /// Keeps the element when `shown`, an empty slot of its size otherwise.
+    #[must_use]
+    fn shown_if(self, shown: bool) -> Self {
+        if shown { self } else { self.invisible() }
+    }
+}
+
+impl<E: Styled> Slot for E {}
 
 /// A square icon button, its action named by a hover tooltip.
 pub fn icon_button(
@@ -345,6 +418,22 @@ pub fn chip(
     active: bool,
     cx: &App,
 ) -> Stateful<Div> {
+    chip_frame(id, active, cx).child(label.into())
+}
+
+/// A [`chip`] as wide as the widest of `label` and `others`, as
+/// [`steady_button`].
+pub fn steady_chip(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    others: &[&str],
+    active: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    chip_frame(id, active, cx).child(steady_label(label, others))
+}
+
+fn chip_frame(id: impl Into<ElementId>, active: bool, cx: &App) -> Stateful<Div> {
     let (bg, fg) = if active {
         (color(cx, T::AccentSubtle), color(cx, T::AccentText))
     } else {
@@ -367,7 +456,6 @@ pub fn chip(
         .text_xs()
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .child(label.into())
 }
 
 /// A hover tooltip of a few lines of text.
