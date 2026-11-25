@@ -219,6 +219,7 @@ fn main() {
         }
     };
     let _log = archipel_compose::init_logging(&dirs);
+    archipel_compose::install_panic_hook(&dirs);
     startup::mark("logging");
     let ControlFlow::Continue(listener) = claim_instance(&args, &dirs) else {
         return;

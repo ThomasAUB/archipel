@@ -230,6 +230,40 @@ pub fn init_logging(dirs: &AppDirs) -> Option<tracing_appender::non_blocking::Wo
     Some(guard)
 }
 
+/// Records every panic in `logs/panic.log` of the data directory, with its
+/// thread, location and backtrace, then runs the previous hook.
+///
+/// Written synchronously: a panic inside a window callback aborts the
+/// process at once, before the non-blocking log writer could flush, and the
+/// GUI has no console to print it on.
+pub fn install_panic_hook(dirs: &AppDirs) {
+    use std::io::Write;
+    let file = dirs.data.join("logs").join("panic.log");
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>");
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let since_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let text = format!(
+            "--- panic at unix time {since_epoch} (v{}) in thread '{name}': {info}\n{backtrace}\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        tracing::error!(thread = name, "panic: {info}");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+        {
+            let _ = f.write_all(text.as_bytes());
+            let _ = f.flush();
+        }
+        previous(info);
+    }));
+}
+
 /// Git ports for the chosen read backend; writes always use the CLI.
 #[must_use]
 pub fn git_ports(settings: &Settings, cli: &Arc<GitCli>) -> GitPorts {
