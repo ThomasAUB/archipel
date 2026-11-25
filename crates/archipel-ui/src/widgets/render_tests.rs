@@ -1,12 +1,17 @@
 //! Rendering tests of the steady widgets: a change of label must not move
 //! what comes after.
 
+use archipel_theme::ColorToken as T;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Context, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, WindowBounds, WindowOptions, div, px, rgb, size,
+    AnyWindowHandle, App, AppContext as _, Context, IntoElement, ParentElement as _, Render, Rgba,
+    Styled as _, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::diff_view::render_tests::context;
+use crate::theme::color;
+
+/// The marker's color: none of a button's.
+const MARKER: T = T::StatusError;
 
 /// Which button the row shows, with which label.
 #[derive(Clone, Copy)]
@@ -15,7 +20,7 @@ enum Kind {
     Steady(&'static str),
 }
 
-/// A button, then a pure red marker right after it.
+/// A button, then a marker right after it.
 struct Row(Kind);
 
 impl Render for Row {
@@ -35,9 +40,9 @@ impl Render for Row {
             .size_full()
             .flex()
             .items_start()
-            .bg(rgb(0x00_00_00))
+            .bg(color(cx, T::BgApp))
             .child(button)
-            .child(div().flex_none().size(px(8.)).bg(rgb(0xff_00_00)))
+            .child(div().flex_none().size(px(8.)).bg(color(cx, MARKER)))
     }
 }
 
@@ -65,9 +70,13 @@ fn marker_x(kind: Kind) -> u32 {
     let image = cx
         .capture_screenshot(handle)
         .expect("offscreen rendering must be available");
-    let red = |p: &image::Rgba<u8>| p[0] > 200 && p[1] < 50 && p[2] < 50;
+    let marker = cx.update(|cx| Rgba::from(color(cx, MARKER)));
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let byte = |v: f32| (v * 255.).round() as u8;
+    let want = [byte(marker.r), byte(marker.g), byte(marker.b)];
+    let is_marker = |p: &image::Rgba<u8>| (0..3).all(|i| p[i].abs_diff(want[i]) <= 8);
     (0..image.width())
-        .find(|&x| (0..image.height()).any(|y| red(image.get_pixel(x, y))))
+        .find(|&x| (0..image.height()).any(|y| is_marker(image.get_pixel(x, y))))
         .expect("the marker is drawn")
 }
 
