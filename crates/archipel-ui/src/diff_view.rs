@@ -44,7 +44,9 @@ use crate::merge_view;
 use crate::staging::{Staging, arm_discard};
 use crate::syntax::{self, LineHighlighter, Spans};
 use crate::theme::{code_row_height, color, mono_font};
-use crate::widgets::{button, context_menu, menu_item, popup_at, scroll_list, unmodified};
+use crate::widgets::{
+    button, context_menu, menu_item, popup_at, scroll_list, steady_button, steady_label, unmodified,
+};
 
 mod full;
 mod select;
@@ -1188,6 +1190,16 @@ pub(crate) fn render_open<V: Staging>(
             )
         })
         .child(div().flex_1().min_w_0().truncate().child(title.clone()))
+        // What comes and goes while working on the file (the line
+        // selection, the line endings, the note) right after the title,
+        // which gives way to it: the buttons after them stay put at the
+        // right edge.
+        .when_some(selection, |header, (side, (doc, (f, picks)))| {
+            header.child(selection_bar(v, side, &doc, f, picks, cx))
+        })
+        .when_some(endings, |header, endings| {
+            header.child(endings_bar(title.clone(), endings, cx))
+        })
         .when(!editing, |header| {
             header.child(
                 div()
@@ -1197,15 +1209,9 @@ pub(crate) fn render_open<V: Staging>(
                     .child(format!("{note} · {keys}")),
             )
         })
-        .when(!editing, |header| header.children(extra))
-        .when_some(selection, |header, (side, (doc, (f, picks)))| {
-            header.child(selection_bar(v, side, &doc, f, picks, cx))
-        })
         .when_some(svg, |header, shown| header.child(svg_button(shown, cx)))
         .when_some(full_file, |h, on| h.child(full_file_button(on, cx)))
-        .when_some(endings, |header, endings| {
-            header.child(endings_bar(title.clone(), endings, cx))
-        })
+        .when(!editing, |header| header.children(extra))
         .when_some(edit_at, |header, line| {
             header.child(button("diff-edit", "Edit", cx).on_click(cx.listener(
                 move |v: &mut V, _, window, cx| {
@@ -1335,24 +1341,36 @@ fn image_diff<V: Staging>(
 /// The button showing an SVG diff as images or as text (`shown`: as
 /// images).
 fn svg_button<V: Staging>(shown: bool, cx: &mut Context<V>) -> Stateful<Div> {
-    let label = if shown { "Text" } else { "Images" };
-    button("diff-svg-images", label, cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
-        let panel = v.panel();
-        panel.svg_images = !panel.svg_images;
-        cx.notify();
-    }))
+    let (label, other) = if shown {
+        ("Text", "Images")
+    } else {
+        ("Images", "Text")
+    };
+    steady_button("diff-svg-images", label, &[other], cx).on_click(cx.listener(
+        |v: &mut V, _, _, cx| {
+            let panel = v.panel();
+            panel.svg_images = !panel.svg_images;
+            cx.notify();
+        },
+    ))
 }
 
 /// The button showing the whole file or the changes only (`on`: the
 /// whole file).
 fn full_file_button<V: Staging>(on: bool, cx: &mut Context<V>) -> Stateful<Div> {
-    let label = if on { "Changes only" } else { "Full file" };
-    button("diff-full-file", label, cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
-        let panel = v.panel();
-        panel.full_file = !panel.full_file;
-        panel.full = None;
-        cx.notify();
-    }))
+    let (label, other) = if on {
+        ("Changes only", "Full file")
+    } else {
+        ("Full file", "Changes only")
+    };
+    steady_button("diff-full-file", label, &[other], cx).on_click(cx.listener(
+        |v: &mut V, _, _, cx| {
+            let panel = v.panel();
+            panel.full_file = !panel.full_file;
+            panel.full = None;
+            cx.notify();
+        },
+    ))
 }
 
 /// The file's line ending and a button converting it to the other one, in
@@ -1408,9 +1426,16 @@ fn selection_bar<V: Staging>(
             format!("{} lines", action.verb())
         };
         let (doc, picks, key) = (doc.clone(), picks.clone(), key.clone());
-        button(
+        // As wide armed or not, so arming Discard doesn't move Clear.
+        let others: &[&str] = if action == PartAction::Discard {
+            &["Discard lines?"]
+        } else {
+            &[]
+        };
+        steady_button(
             SharedString::from(format!("selection-{}", action.verb())),
             label,
+            others,
             cx,
         )
         .on_click(cx.listener(move |v: &mut V, _, _, cx| {
@@ -1430,10 +1455,11 @@ fn selection_bar<V: Staging>(
         .items_center()
         .gap_1()
         .text_xs()
+        // As wide up to a thousand lines, so the buttons don't move as the
+        // count grows a digit.
         .child(
-            div()
-                .text_color(color(cx, T::FgMuted))
-                .child(format!("{count} selected")),
+            steady_label(format!("{count} selected"), &["000 selected"])
+                .text_color(color(cx, T::FgMuted)),
         )
         .children(buttons)
         .child(clear)

@@ -913,11 +913,12 @@ impl RepoView {
             .border_b_1()
             .border_color(color(cx, T::BorderSubtle))
             .child(path_title(path.clone()))
+            // The mode buttons last, at the right edge, and what depends on
+            // the mode (the hint, the blame options, the toggles, Edit)
+            // before them, where coming and going it only gives way to the
+            // title: a mode button stays under the pointer once clicked.
             .when(!editing, |header| {
                 header.child(hint(file_note(at, editable && !rendered, mode), cx))
-            })
-            .when(!editing, |header| {
-                header.child(Self::mode_buttons(mode, history, cx))
             })
             .when(!editing && mode == FileMode::Blame, |header| {
                 header.child(blame_option_buttons(options, cx))
@@ -936,6 +937,9 @@ impl RepoView {
                 header.child(button("file-edit", "Edit", cx).on_click(
                     cx.listener(|v: &mut Self, _, window, cx| v.edit_open_file(window, cx)),
                 ))
+            })
+            .when(!editing, |header| {
+                header.child(Self::mode_buttons(mode, history, cx))
             })
             .children(bar);
         let body = if editing {

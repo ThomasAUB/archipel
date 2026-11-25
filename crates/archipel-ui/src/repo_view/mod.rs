@@ -416,8 +416,11 @@ impl RepoView {
         u32::from(!self.changes.is_empty())
     }
 
-    /// The repo name, the CI of the current branch and the repo actions,
-    /// above the panes so they stay put whatever is selected.
+    /// The repo actions, then the repo name, the CI of the current branch
+    /// and the badges, above the panes so they stay put whatever is
+    /// selected. The actions lead from the left edge and the name and
+    /// badges (of any width, some only sometimes) come after them, so each
+    /// button is at the same place in every repo tab.
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let actions = self.render_repo_actions(cx);
         div()
@@ -430,19 +433,6 @@ impl RepoView {
             .border_b_1()
             .border_color(color(cx, T::BorderSubtle))
             .child(
-                div()
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .child(self.name.clone()),
-            )
-            .children(self.render_worktree_chip(cx))
-            .children(self.render_ci(cx))
-            .children(crate::forecast_badge::forecast_badge(
-                "repo-forecast",
-                &self.forecast,
-                self.staging.summary(),
-                cx,
-            ))
-            .child(
                 staging::small(button("r-files", "Files", cx))
                     .when(self.browser.is_some(), |b| b.bg(color(cx, T::BgSelected)))
                     .tooltip(|_, cx| {
@@ -451,6 +441,30 @@ impl RepoView {
                     .on_click(cx.listener(|v, _, window, cx| v.toggle_browser(window, cx))),
             )
             .child(actions)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_3()
+                    .children(self.render_worktree_chip(cx))
+                    .children(self.render_ci(cx))
+                    .children(crate::forecast_badge::forecast_badge(
+                        "repo-forecast",
+                        &self.forecast,
+                        self.staging.summary(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child(self.name.clone()),
+                    ),
+            )
     }
 
     /// The CI badge, as the dashboard "CI" cell: jobs on hover, click opens
