@@ -94,6 +94,28 @@ pub trait PullRequestApi: Send + Sync {
             "this forge has no auto-merge".into(),
         ))
     }
+    /// The logins a pull request can be assigned to, sorted. Unsupported
+    /// by default.
+    fn assignable_users(&self, at: &Endpoint, repo: &str) -> Result<Vec<String>, ForgeError> {
+        let _ = (at, repo);
+        Err(no_assignees())
+    }
+    /// Replaces the assignees of a pull request; returns them as the forge
+    /// kept them. Unsupported by default.
+    fn set_assignees(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        let _ = (at, repo, number, assignees);
+        Err(no_assignees())
+    }
+}
+
+fn no_assignees() -> ForgeError {
+    ForgeError::Unsupported("this forge cannot assign pull requests".into())
 }
 
 /// CI of branches.

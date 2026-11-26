@@ -27,6 +27,9 @@ pub trait PullRequestReader: Send + Sync {
     /// Every open pull request of the repo (bounded number of pages), with
     /// CI, review and merge state.
     fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError>;
+    /// The logins a pull request of the repo can be assigned to, sorted.
+    /// Empty when the token may not list them (no push access).
+    fn assignable_users(&self, repo: &ForgeRepo) -> Result<Vec<String>, ForgeError>;
 }
 
 /// Reads the CI of a branch head (dashboard "CI" column).
@@ -83,6 +86,16 @@ pub trait PullRequestWriter: Send + Sync {
     ) -> Result<AutoMergeReport, ForgeError>;
     /// Disarms the forge's auto-merge of a pull request.
     fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError>;
+    /// Replaces the assignees of a pull request (empty: unassigns all).
+    /// Returns the assignees as the forge kept them: GitHub silently drops
+    /// a login that cannot be assigned. A token without write access fails
+    /// with a message naming the scope to add.
+    fn set_pull_request_assignees(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError>;
 }
 
 /// Reads issues. A forge or a repo without issues (disabled on the repo,

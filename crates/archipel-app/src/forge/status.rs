@@ -718,6 +718,7 @@ mod tests {
             merge: MergeState::Unknown,
             from_fork: false,
             auto_merge: false,
+            assignees: Vec::new(),
         }
     }
 

@@ -63,6 +63,8 @@ struct MergeRequest {
     /// `opened`, `merged`…
     #[serde(default)]
     state: String,
+    #[serde(default)]
+    assignees: Vec<User>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +216,9 @@ fn check_issues(api: &Api<'_>, repo: &str) -> Result<(), ForgeError> {
     }
 }
 
+/// What a token needs to assign a merge request.
+const ASSIGN_SCOPE: &str = "the token needs the api scope, and the Developer role on the project";
+
 /// What a token needs to create a project.
 const CREATE_SCOPE: &str = "the token needs the api scope, and in a group a role allowed to \
                             create projects there";
@@ -312,7 +317,41 @@ fn status(api: &Api<'_>, base: &str, iid: u64) -> Result<PullRequestStatus, Forg
             (Some(s), Some(t)) if s != t
         ),
         auto_merge: mr.merge_when_pipeline_succeeds,
+        assignees: mr.assignees.into_iter().map(|u| u.username).collect(),
     })
+}
+
+/// The logins issues and merge requests of `base` can be assigned to (the
+/// project's members, inherited ones included), sorted; empty when the
+/// token may not list them.
+fn assignable(api: &Api<'_>, base: &str) -> Result<Vec<String>, ForgeError> {
+    let members: Vec<Member> =
+        optional(api.get_pages(&format!("{base}/members/all?per_page=100"), "members"))?
+            .unwrap_or_default();
+    let mut logins: Vec<String> = members.into_iter().map(|m| m.username).collect();
+    logins.sort_by_key(|l| l.to_lowercase());
+    logins.dedup();
+    Ok(logins)
+}
+
+/// The user ids of `logins` (GitLab assigns by id).
+fn user_ids(api: &Api<'_>, host: &str, logins: &[String]) -> Result<Vec<u64>, ForgeError> {
+    let mut ids = Vec::new();
+    for login in logins {
+        let found: Vec<Member> = api.get(
+            &format!("/users?username={}", encode(login)),
+            &format!("user {login}"),
+        )?;
+        let user = found
+            .into_iter()
+            .find(|u| u.username == *login)
+            .ok_or_else(|| ForgeError::NotFound {
+                host: host.to_owned(),
+                what: format!("user {login}"),
+            })?;
+        ids.push(user.id);
+    }
+    Ok(ids)
 }
 
 /// The body of the merge endpoint for `options`. GitLab rebases according
@@ -505,6 +544,34 @@ impl PullRequestApi for GitLab {
             &format!("cancel the auto-merge of {what}"),
         )
     }
+
+    fn assignable_users(&self, at: &Endpoint, repo: &str) -> Result<Vec<String>, ForgeError> {
+        assignable(&api(at), &project(repo))
+    }
+
+    fn set_assignees(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        let api = api(at);
+        // An empty list unassigns everyone. GitLab Free keeps the first
+        // assignee only: the answer says what was kept.
+        let ids = user_ids(&api, at.host, assignees)?;
+        let mr: MergeRequest = scoped(
+            api.write(
+                Method::Put,
+                &format!("{}/merge_requests/{number}", project(repo)),
+                json!({ "assignee_ids": ids }),
+                &format!("merge request !{number}"),
+            ),
+            "assign the merge request",
+            ASSIGN_SCOPE,
+        )?;
+        Ok(mr.assignees.into_iter().map(|u| u.username).collect())
+    }
 }
 
 impl CiApi for GitLab {
@@ -617,16 +684,11 @@ impl IssueApi for GitLab {
         let labels: Vec<Label> =
             optional(api.get_pages(&format!("{base}/labels?per_page=100"), "labels"))?
                 .unwrap_or_default();
-        let members: Vec<Member> =
-            optional(api.get_pages(&format!("{base}/members/all?per_page=100"), "members"))?
-                .unwrap_or_default();
         let mut choices = IssueChoices {
             labels: labels.into_iter().map(|l| l.name).collect(),
-            assignees: members.into_iter().map(|m| m.username).collect(),
+            assignees: assignable(&api, &base)?,
         };
         choices.labels.sort_by_key(|l| l.to_lowercase());
-        choices.assignees.sort_by_key(|l| l.to_lowercase());
-        choices.assignees.dedup();
         Ok(choices)
     }
 
@@ -643,23 +705,7 @@ impl IssueApi for GitLab {
             body["labels"] = json!(draft.labels.join(","));
         }
         if !draft.assignees.is_empty() {
-            // GitLab assigns by user id.
-            let mut ids = Vec::new();
-            for login in &draft.assignees {
-                let found: Vec<Member> = api.get(
-                    &format!("/users?username={}", encode(login)),
-                    &format!("user {login}"),
-                )?;
-                let user = found
-                    .into_iter()
-                    .find(|u| u.username == *login)
-                    .ok_or_else(|| ForgeError::NotFound {
-                        host: at.host.to_owned(),
-                        what: format!("user {login}"),
-                    })?;
-                ids.push(user.id);
-            }
-            body["assignee_ids"] = json!(ids);
+            body["assignee_ids"] = json!(user_ids(&api, at.host, &draft.assignees)?);
         }
         let created: Created = scoped(
             api.write(

@@ -214,7 +214,8 @@ impl FakeForge {
         });
     }
 
-    /// Declares the labels and assignees of repo `path`.
+    /// Declares the labels and assignees of repo `path` (the assignees
+    /// are also those its pull requests can be assigned to).
     pub fn with_issue_choices(&self, path: &str, choices: IssueChoices) {
         lock(&self.state).issue_choices.insert(path.into(), choices);
     }
@@ -311,6 +312,15 @@ impl PullRequestReader for FakeForge {
         open.sort_by_key(|pr| pr.number);
         Ok(open)
     }
+
+    fn assignable_users(&self, repo: &ForgeRepo) -> Result<Vec<String>, ForgeError> {
+        self.check(repo)?;
+        Ok(lock(&self.state)
+            .issue_choices
+            .get(&repo.path)
+            .map(|c| c.assignees.clone())
+            .unwrap_or_default())
+    }
 }
 
 impl CiReader for FakeForge {
@@ -381,6 +391,7 @@ impl PullRequestWriter for FakeForge {
                 merge: MergeState::Unknown,
                 from_fork: false,
                 auto_merge: false,
+                assignees: Vec::new(),
             },
         );
         Ok(PullRequestRef { number, url })
@@ -499,6 +510,39 @@ impl PullRequestWriter for FakeForge {
         }
         s.auto_merges.remove(&(repo.path.clone(), number));
         Ok(())
+    }
+
+    /// Keeps the logins the repo can be assigned to and drops the others,
+    /// as GitHub does.
+    fn set_pull_request_assignees(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        self.check(repo)?;
+        let mut s = lock(&self.state);
+        let assignable = s
+            .issue_choices
+            .get(&repo.path)
+            .map(|c| c.assignees.clone())
+            .unwrap_or_default();
+        let kept: Vec<String> = assignees
+            .iter()
+            .filter(|a| assignable.contains(a))
+            .cloned()
+            .collect();
+        let pr = s
+            .open
+            .iter_mut()
+            .find(|((path, _), pr)| *path == repo.path && pr.number == number)
+            .map(|(_, pr)| pr)
+            .ok_or_else(|| ForgeError::NotFound {
+                host: repo.account.host.clone(),
+                what: format!("pull request {number}"),
+            })?;
+        pr.assignees.clone_from(&kept);
+        Ok(kept)
     }
 }
 

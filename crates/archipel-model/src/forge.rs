@@ -288,6 +288,9 @@ pub struct PullRequestStatus {
     /// once its required checks pass.
     #[serde(default)]
     pub auto_merge: bool,
+    /// Logins of the assignees.
+    #[serde(default)]
+    pub assignees: Vec<String>,
 }
 
 /// How a pull request is merged.
