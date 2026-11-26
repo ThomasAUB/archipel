@@ -38,8 +38,8 @@ use crate::image_view::compare::ImageDiff;
 use crate::merge_view::MergeEdit;
 use crate::theme::{color, row_height};
 use crate::widgets::{
-    ClickIf as _, Slot as _, TextTooltip, button, check, icon_button, list_row, primary_button,
-    section, steady_button,
+    ClickIf as _, Slot as _, TextTooltip, button, check, icon_button, icon_text_button, list_row,
+    primary_button, section, steady_button, steady_icon_button,
 };
 
 /// Height of the branch switcher list before it scrolls.
@@ -831,21 +831,22 @@ pub fn small(b: Stateful<Div>) -> Stateful<Div> {
 
 const PUSH: &str = "Push";
 const FORCE_PUSH: &str = "Force push?";
+const PUSH_ICON: IconName = IconName::ArrowUpFromLine;
 
 /// Push, or once armed on a branch behind its upstream a red "Force push?" like the
 /// armed Discard buttons, explained by its tooltip. As wide either way, so
 /// arming it moves nothing.
 fn push_button<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Stateful<Div> {
-    let label = match v.panel().force_push.get() {
-        Some(force) => {
-            let danger = color(cx, T::StatusError);
-            let explanation = force.explanation();
-            steady_button("st-push", FORCE_PUSH, &[PUSH], cx)
-                .text_color(danger)
-                .border_color(danger)
-                .tooltip(move |_, cx| TextTooltip::view(&explanation, cx))
-        }
-        None => steady_button("st-push", PUSH, &[FORCE_PUSH], cx),
+    let label = if let Some(force) = v.panel().force_push.get() {
+        let danger = color(cx, T::StatusError);
+        let explanation = force.explanation();
+        steady_icon_button("st-push", PUSH_ICON, danger, FORCE_PUSH, &[PUSH], cx)
+            .text_color(danger)
+            .border_color(danger)
+            .tooltip(move |_, cx| TextTooltip::view(&explanation, cx))
+    } else {
+        let muted = color(cx, T::FgMuted);
+        steady_icon_button("st-push", PUSH_ICON, muted, PUSH, &[FORCE_PUSH], cx)
     };
     small(label).on_click(cx.listener(|v: &mut V, _, window, cx| push(v, window, cx)))
 }
@@ -865,21 +866,33 @@ fn pull_request_button<V: Staging>(v: &V, cx: &mut Context<V>) -> Stateful<Div> 
         }
         Some(_) => (CREATE.to_owned(), Some(ForgeTab::Create(vec![id]))),
     };
+    let icon = match &tab {
+        Some(ForgeTab::Open(_)) => IconName::GitPullRequest,
+        _ => IconName::GitPullRequestCreate,
+    };
     let tooltip = if tab.is_some() {
         "Review the pull request of the branch, or open one"
     } else {
         "No forge known for this repository"
     };
-    small(steady_button("st-pr", label, &[CREATE, "PR #00000"], cx))
-        .tooltip(move |_, cx| TextTooltip::view(&[tooltip.into()], cx))
-        .on_click_if(
-            tab.is_some(),
-            cx.listener(move |_: &mut V, _, _, cx| {
-                if let Some(tab) = &tab {
-                    cx.emit(StagingEvent::OpenForge(tab.clone()));
-                }
-            }),
-        )
+    let muted = color(cx, T::FgMuted);
+    small(steady_icon_button(
+        "st-pr",
+        icon,
+        muted,
+        label,
+        &[CREATE, "PR #00000"],
+        cx,
+    ))
+    .tooltip(move |_, cx| TextTooltip::view(&[tooltip.into()], cx))
+    .on_click_if(
+        tab.is_some(),
+        cx.listener(move |_: &mut V, _, _, cx| {
+            if let Some(tab) = &tab {
+                cx.emit(StagingEvent::OpenForge(tab.clone()));
+            }
+        }),
+    )
 }
 
 /// Fetch, pull, push, pull request, stash, pop, undo, redo, after `lead`
@@ -893,13 +906,16 @@ pub fn render_actions<V: Staging>(
     let id = v.repo_path().id();
     let stashes = v.panel().summary.as_ref().map_or(0, |s| s.stash_count);
     let job = |eid: &'static str,
+               icon: IconName,
                label: &'static str,
                class: OpClass,
                cx: &mut Context<V>,
                job: fn(&RepoActions, &RepoPath, &OpContext) -> Result<(), OpError>| {
-        small(button(eid, label, cx)).on_click(cx.listener(move |v: &mut V, _, _, cx| {
-            v.run_job_as(class, label.into(), cx, Box::new(job));
-        }))
+        small(icon_text_button(eid, icon, label, cx)).on_click(cx.listener(
+            move |v: &mut V, _, _, cx| {
+                v.run_job_as(class, label.into(), cx, Box::new(job));
+            },
+        ))
     };
     let (write, network) = (OpClass::Write, OpClass::Network);
     div()
@@ -907,25 +923,40 @@ pub fn render_actions<V: Staging>(
         .flex_wrap()
         .gap_1()
         .children(lead)
-        .child(job("st-fetch", "Fetch", network, cx, |a, p, op| {
-            a.fetch(p, &FetchRequest::default(), op, op.cancel())
-        }))
-        .child(job("st-pull", "Pull", network, cx, |a, p, op| {
-            a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None)
-        }))
+        .child(job(
+            "st-fetch",
+            IconName::CloudDownload,
+            "Fetch",
+            network,
+            cx,
+            |a, p, op| a.fetch(p, &FetchRequest::default(), op, op.cancel()),
+        ))
+        .child(job(
+            "st-pull",
+            IconName::ArrowDownToLine,
+            "Pull",
+            network,
+            cx,
+            |a, p, op| a.pull(p, PullMode::FastForwardOnly, op, op.cancel(), None),
+        ))
         .child(push_button(v, cx))
         .child(pull_request_button(v, cx))
-        .child(job("st-stash", "Stash", write, cx, |a, p, _| {
-            a.stash_push(p, &StashRequest::default()).map(drop)
-        }))
+        .child(job(
+            "st-stash",
+            IconName::Archive,
+            "Stash",
+            write,
+            cx,
+            |a, p, _| a.stash_push(p, &StashRequest::default()).map(drop),
+        ))
         .child(pop_button(stashes > 0, cx))
         .child(
-            small(button("st-undo", "Undo", cx)).on_click(
+            small(icon_text_button("st-undo", IconName::Undo2, "Undo", cx)).on_click(
                 cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Undo(id), cx)),
             ),
         )
         .child(
-            small(button("st-redo", "Redo", cx)).on_click(
+            small(icon_text_button("st-redo", IconName::Redo2, "Redo", cx)).on_click(
                 cx.listener(move |v: &mut V, _, _, cx| history(v, Command::Redo(id), cx)),
             ),
         )
@@ -938,7 +969,13 @@ pub fn render_actions<V: Staging>(
 
 /// Pop of the last stash, disabled (not removed) without one.
 fn pop_button<V: Staging>(enabled: bool, cx: &mut Context<V>) -> Stateful<Div> {
-    small(button("st-pop", "Pop", cx)).on_click_if(
+    small(icon_text_button(
+        "st-pop",
+        IconName::ArchiveRestore,
+        "Pop",
+        cx,
+    ))
+    .on_click_if(
         enabled,
         cx.listener(|v: &mut V, _, _, cx| {
             v.run_job_as(

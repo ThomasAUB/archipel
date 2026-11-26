@@ -32,6 +32,7 @@ mod file_edit;
 mod fonts;
 mod forecast_badge;
 mod forge_panel;
+mod icons;
 mod ignore;
 mod image_view;
 mod instance;
@@ -236,7 +237,7 @@ fn main() {
     startup::mark("gpui platform created");
     let open_requests = jump_list::on_open_urls(&application);
     application
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(icons::AppAssets)
         .run(move |cx: &mut App| {
             startup::mark("gpui running");
             gpui_kit::init(cx);
