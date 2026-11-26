@@ -43,6 +43,7 @@ use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::{Oid, RepoPath};
 use archipel_ops::OpClass;
 use archipel_theme::ColorToken as T;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -56,7 +57,8 @@ use crate::latest::Latest;
 use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, staging_surface, tone};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, button, condense_status, resize_pane, splitter, unmodified,
+    Pane, PaneDrag, TextTooltip, condense_status, icon_text_button, resize_pane, splitter,
+    unmodified,
 };
 use crate::working_copy::{self, WorkingCopy, WorktreeDiff};
 
@@ -433,12 +435,15 @@ impl RepoView {
             .border_b_1()
             .border_color(color(cx, T::BorderSubtle))
             .child(
-                staging::small(button("r-files", "Files", cx))
-                    .when(self.browser.is_some(), |b| b.bg(color(cx, T::BgSelected)))
-                    .tooltip(|_, cx| {
-                        TextTooltip::view(&["Browse the repository's files".into()], cx)
-                    })
-                    .on_click(cx.listener(|v, _, window, cx| v.toggle_browser(window, cx))),
+                staging::small(icon_text_button(
+                    "r-files",
+                    IconName::FolderTree,
+                    "Files",
+                    cx,
+                ))
+                .when(self.browser.is_some(), |b| b.bg(color(cx, T::BgSelected)))
+                .tooltip(|_, cx| TextTooltip::view(&["Browse the repository's files".into()], cx))
+                .on_click(cx.listener(|v, _, window, cx| v.toggle_browser(window, cx))),
             )
             .child(actions)
             .child(

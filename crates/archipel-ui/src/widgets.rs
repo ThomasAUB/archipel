@@ -36,6 +36,46 @@ pub fn steady_button(
     button_frame(id, cx).child(steady_label(label, others))
 }
 
+/// A [`button`] led by `icon`.
+pub fn icon_text_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Stateful<Div> {
+    button_frame(id, cx).child(with_icon(icon, color(cx, T::FgMuted), label.into()))
+}
+
+/// A [`steady_button`] led by `icon` in `icon_color` (muted, or the
+/// color of an armed state).
+pub fn steady_icon_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    icon_color: Hsla,
+    label: impl Into<SharedString>,
+    others: &[&str],
+    cx: &App,
+) -> Stateful<Div> {
+    button_frame(id, cx).child(with_icon(icon, icon_color, steady_label(label, others)))
+}
+
+/// `label` after `icon`, a little smaller than the text so it sits on its
+/// line without growing the button.
+fn with_icon(icon: IconName, icon_color: Hsla, label: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(
+            svg()
+                .path(icon.path())
+                .flex_none()
+                .size(px(12.0))
+                .text_color(icon_color),
+        )
+        .child(label)
+}
+
 /// A button asking for a second click: `label`, then `confirm` in the
 /// accent colors once `armed`, as wide either way.
 pub fn confirm_button(

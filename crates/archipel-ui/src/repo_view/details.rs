@@ -9,6 +9,7 @@ use archipel_model::diff::FileDiff;
 use archipel_model::requests::StashApplyMode;
 use archipel_model::{Oid, Timestamp};
 use archipel_theme::ColorToken as T;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, ClickEvent, Context, SharedString, div, px, uniform_list};
@@ -16,7 +17,7 @@ use gpui_kit::{AnyElement, ClickEvent, Context, SharedString, div, px, uniform_l
 use crate::diff_view::DiffDoc;
 use crate::staging::{self};
 use crate::theme::{color, mono_font, row_height};
-use crate::widgets::{SHORT_OID, button, list_row, scroll_list, section};
+use crate::widgets::{SHORT_OID, button, icon_text_button, list_row, scroll_list, section};
 
 use super::dialogs::NameForm;
 use super::{OpenDiff, RepoView};
@@ -47,15 +48,20 @@ impl RepoView {
 
     /// The Repo Actions Bar of the toolbar, led by the Branch button.
     pub(super) fn render_repo_actions(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let branch = staging::small(button("r-branch", "Branch", cx))
-            .on_click(cx.listener(|v, _, window, cx| {
-                let form = match v.name_form {
-                    Some(_) => None,
-                    None => Some(NameForm::Branch(None)),
-                };
-                v.open_name_form(form, window, cx);
-            }))
-            .into_any_element();
+        let branch = staging::small(icon_text_button(
+            "r-branch",
+            IconName::GitBranchPlus,
+            "Branch",
+            cx,
+        ))
+        .on_click(cx.listener(|v, _, window, cx| {
+            let form = match v.name_form {
+                Some(_) => None,
+                None => Some(NameForm::Branch(None)),
+            };
+            v.open_name_form(form, window, cx);
+        }))
+        .into_any_element();
         staging::render_actions(self, Some(branch), cx)
     }
 
