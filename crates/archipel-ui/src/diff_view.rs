@@ -1225,12 +1225,9 @@ pub(crate) fn render_open<V: Staging>(
     let body = match (doc, image) {
         _ if editing => file_edit::render_body(v, cx),
         (_, Some(image)) => image.into_any_element(),
+        (Some(doc), None) if doc.rows.is_empty() => body_note(empty_note(side), cx),
         (Some(doc), None) => diff_list(id, doc, side, None, cx),
-        (None, None) => div()
-            .p_3()
-            .text_color(color(cx, T::FgMuted))
-            .child("Loading diff…")
-            .into_any_element(),
+        (None, None) => body_note("Loading diff…", cx),
     };
     div()
         .flex_1()
@@ -1241,6 +1238,30 @@ pub(crate) fn render_open<V: Staging>(
         .child(header)
         .child(body)
         .into_any_element()
+}
+
+/// A muted note in place of an open diff's lines.
+fn body_note<V>(note: &'static str, cx: &mut Context<V>) -> AnyElement {
+    div()
+        .p_3()
+        .text_color(color(cx, T::FgMuted))
+        .child(note)
+        .into_any_element()
+}
+
+/// What an open diff with no lines says in their place. Git can list a
+/// working-copy file as modified while its content matches the index: the
+/// index keeps a stale size for it (say, from before its line endings were
+/// converted back), so `git status` takes it as changed without reading it,
+/// while `git diff` reads it and finds nothing. Staging the file rewrites
+/// that entry with the same content and clears it.
+fn empty_note(side: Option<DiffSide>) -> &'static str {
+    match side {
+        Some(DiffSide::Unstaged) => {
+            "No changes in content: Git's index holds stale file info for it. Staging the file clears it."
+        }
+        _ => "No changes",
+    }
 }
 
 /// The whole file in place of the changes only, when asked and `offered`
