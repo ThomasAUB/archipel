@@ -94,6 +94,9 @@ impl PullRequestReader for NoForge {
     fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError> {
         Err(refused(&repo.account.host))
     }
+    fn assignable_users(&self, repo: &ForgeRepo) -> Result<Vec<String>, ForgeError> {
+        Err(refused(&repo.account.host))
+    }
 }
 
 impl CiReader for NoForge {
@@ -144,6 +147,14 @@ impl PullRequestWriter for NoForge {
         Err(refused(&repo.account.host))
     }
     fn disable_auto_merge(&self, repo: &ForgeRepo, _number: u64) -> Result<(), ForgeError> {
+        Err(refused(&repo.account.host))
+    }
+    fn set_pull_request_assignees(
+        &self,
+        repo: &ForgeRepo,
+        _number: u64,
+        _assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
         Err(refused(&repo.account.host))
     }
 }

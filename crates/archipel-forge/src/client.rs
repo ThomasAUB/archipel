@@ -103,6 +103,10 @@ impl PullRequestReader for ForgeClient {
     fn open_pull_requests(&self, repo: &ForgeRepo) -> Result<Vec<PullRequestStatus>, ForgeError> {
         self.with(&repo.account, |p, at| p.list_open(at, &repo.path))
     }
+
+    fn assignable_users(&self, repo: &ForgeRepo) -> Result<Vec<String>, ForgeError> {
+        self.with(&repo.account, |p, at| p.assignable_users(at, &repo.path))
+    }
 }
 
 impl CiReader for ForgeClient {
@@ -177,6 +181,17 @@ impl PullRequestWriter for ForgeClient {
     fn disable_auto_merge(&self, repo: &ForgeRepo, number: u64) -> Result<(), ForgeError> {
         self.with(&repo.account, |p, at| {
             p.disable_auto_merge(at, &repo.path, number)
+        })
+    }
+
+    fn set_pull_request_assignees(
+        &self,
+        repo: &ForgeRepo,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        self.with(&repo.account, |p, at| {
+            p.set_assignees(at, &repo.path, number, assignees)
         })
     }
 }

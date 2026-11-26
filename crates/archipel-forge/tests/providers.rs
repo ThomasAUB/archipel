@@ -1736,3 +1736,113 @@ fn gitlab_disabled_issues_say_so() {
         assert!(matches!(e, ForgeError::Unsupported(_)), "{e:?}");
     }
 }
+
+#[test]
+fn github_lists_assignable_users_and_assigns_pull_requests() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(
+        Method::Get,
+        "/repos/octo/app/assignees",
+        200,
+        json!([{"login": "zed"}, {"login": "Ann"}]),
+    );
+    // GitHub drops a login it cannot assign: the answer says what it kept.
+    http.on(
+        Method::Patch,
+        "/repos/octo/app/issues/12",
+        200,
+        json!({"number": 12, "assignees": [{"login": "Ann"}]}),
+    );
+    let c = client(&http, &["github.com"]);
+    let repo = github_repo();
+    assert_eq!(
+        c.assignable_users(&repo).unwrap(),
+        vec!["Ann".to_owned(), "zed".to_owned()]
+    );
+    let kept = c
+        .set_pull_request_assignees(&repo, 12, &["Ann".into(), "ghost".into()])
+        .unwrap();
+    assert_eq!(kept, vec!["Ann".to_owned()]);
+    let seen = http.seen();
+    let patch = seen.iter().find(|r| r.method == Method::Patch).unwrap();
+    assert_eq!(body(patch), json!({"assignees": ["Ann", "ghost"]}));
+}
+
+#[test]
+fn github_assigning_without_push_access_names_the_scope() {
+    let http = Arc::new(FakeHttp::default());
+    http.on(Method::Patch, "/repos/octo/app/issues/12", 403, json!({}));
+    let c = client(&http, &["github.com"]);
+    let e = c
+        .set_pull_request_assignees(&github_repo(), 12, &["ann".into()])
+        .unwrap_err();
+    assert!(e.to_string().contains("assign the pull request"), "{e}");
+    assert!(
+        e.to_string().contains("Pull requests: read and write"),
+        "{e}"
+    );
+}
+
+#[test]
+fn gitlab_assigns_merge_requests_by_user_id() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/projects/team%2Fsub%2Fapp";
+    http.on(
+        Method::Get,
+        &format!("{base}/members/all"),
+        200,
+        json!([{"id": 9, "username": "bob"}, {"id": 4, "username": "ann"},
+               {"id": 4, "username": "ann"}]),
+    );
+    http.on(
+        Method::Get,
+        "/users?username=ann",
+        200,
+        json!([{"id": 4, "username": "ann"}]),
+    );
+    http.on(
+        Method::Put,
+        &format!("{base}/merge_requests/3"),
+        200,
+        json!({"iid": 3, "title": "x", "web_url": "u", "target_branch": "main",
+               "assignees": [{"username": "ann"}]}),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let repo = gitlab_repo();
+    assert_eq!(
+        c.assignable_users(&repo).unwrap(),
+        vec!["ann".to_owned(), "bob".to_owned()]
+    );
+    let kept = c
+        .set_pull_request_assignees(&repo, 3, &["ann".into()])
+        .unwrap();
+    assert_eq!(kept, vec!["ann".to_owned()]);
+    // Unassigning everyone sends an empty list.
+    c.set_pull_request_assignees(&repo, 3, &[]).unwrap();
+    let seen = http.seen();
+    let puts: Vec<_> = seen.iter().filter(|r| r.method == Method::Put).collect();
+    assert_eq!(body(puts[0]), json!({"assignee_ids": [4]}));
+    assert_eq!(body(puts[1]), json!({"assignee_ids": []}));
+}
+
+#[test]
+fn pull_requests_read_their_assignees() {
+    let http = Arc::new(FakeHttp::default());
+    let base = "/projects/team%2Fsub%2Fapp";
+    http.on(
+        Method::Get,
+        &format!("{base}/merge_requests/3"),
+        200,
+        json!({"iid": 3, "title": "x", "web_url": "u", "target_branch": "main",
+               "assignees": [{"username": "ann"}, {"username": "bob"}]}),
+    );
+    http.on(
+        Method::Get,
+        &format!("{base}/merge_requests?state=opened"),
+        200,
+        json!([{"iid": 3, "title": "x", "web_url": "u", "target_branch": "main"}]),
+    );
+    let c = client(&http, &["git.corp.example"]);
+    let open = c.open_pull_requests(&gitlab_repo()).unwrap();
+    assert_eq!(open[0].assignees, vec!["ann".to_owned(), "bob".to_owned()]);
+}

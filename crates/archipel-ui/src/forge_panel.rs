@@ -1,5 +1,6 @@
 //! The forge panel (spec §8): accounts (sign in with a personal access
-//! token, sign out), open pull requests of the selected repos (merge them),
+//! token, sign out), open pull requests of the selected repos (assign and
+//! merge them),
 //! new pull requests for the selected repos (one per repo, linked), open
 //! issues of the selected repos (close, reopen), a new issue, and clone:
 //! from URLs (no account needed) or from an account / organization / group.
@@ -7,6 +8,7 @@
 //! Every forge call runs on the app runtime (scheduler network pool); the
 //! panel only awaits the results.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -99,6 +101,13 @@ pub struct ForgePanel {
     delete_branch: bool,
     /// The Merge button clicked once: `(repo, number)`.
     armed: Armed<(RepoId, u64)>,
+    /// The pull request whose assignees are being edited: `(repo, number)`.
+    assigning: Option<(RepoId, u64)>,
+    /// The assignees picked in that editor.
+    assign_picks: Vec<String>,
+    /// Who the pull requests of each repo can be assigned to (read once
+    /// per listing), or why it could not be read.
+    assignable: HashMap<RepoId, Result<Vec<String>, String>>,
     // New pull requests.
     plan: Option<PullRequestPlan>,
     title: Entity<InputState>,
@@ -222,6 +231,9 @@ impl ForgePanel {
             method: MergeMethod::default(),
             delete_branch: true,
             armed: Armed::default(),
+            assigning: None,
+            assign_picks: Vec::new(),
+            assignable: HashMap::new(),
             plan: None,
             title,
             description,
@@ -372,6 +384,8 @@ impl ForgePanel {
 
     fn list_open(&mut self, ids: Vec<RepoId>, window: &mut Window, cx: &mut Context<Self>) {
         self.armed.disarm();
+        self.assigning = None;
+        self.assignable.clear();
         let core = self.core.clone();
         self.run(
             async move { core.open_pull_requests(&ids).await },
@@ -575,6 +589,175 @@ impl ForgePanel {
                 }
             }
         }
+    }
+
+    /// Opens the assignee editor of a listed pull request, or closes it
+    /// when it is the one open. Who can be assigned is read on first use.
+    fn edit_assignees(
+        &mut self,
+        repo: RepoId,
+        number: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.assigning == Some((repo, number)) {
+            self.assigning = None;
+            cx.notify();
+            return;
+        }
+        let Some((forge, pr)) = self.listed(repo, number) else {
+            return;
+        };
+        self.assigning = Some((repo, number));
+        self.assign_picks = pr.assignees;
+        if !self.assignable.contains_key(&repo) {
+            let core = self.core.clone();
+            self.run(
+                async move { core.assignable_users(repo, &forge).await },
+                window,
+                cx,
+                move |p, result, _, _| {
+                    p.assignable.insert(repo, result.map_err(|e| e.to_string()));
+                },
+            );
+        }
+        cx.notify();
+    }
+
+    /// Sends the picked assignees of the pull request being edited.
+    fn save_assignees(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((repo, number)) = self.assigning else {
+            return;
+        };
+        let Some((forge, _)) = self.listed(repo, number) else {
+            return;
+        };
+        let label = format!("{} {}", forge.path, pr_ref(Some(&forge), number));
+        let asked = self.assign_picks.clone();
+        let wanted = asked.clone();
+        let core = self.core.clone();
+        self.run(
+            async move {
+                core.set_pull_request_assignees(repo, &forge, number, wanted)
+                    .await
+            },
+            window,
+            cx,
+            move |p, result, _, cx| match result {
+                Ok(kept) => {
+                    for r in p.open.iter_mut().filter(|r| r.repo == repo) {
+                        if let Ok(prs) = &mut r.result {
+                            for pr in prs.iter_mut().filter(|pr| pr.number == number) {
+                                pr.assignees.clone_from(&kept);
+                            }
+                        }
+                    }
+                    p.assigning = None;
+                    let dropped: Vec<&str> = asked
+                        .iter()
+                        .filter(|a| !kept.contains(a))
+                        .map(String::as_str)
+                        .collect();
+                    let mut text = if kept.is_empty() {
+                        format!("{label}: no one assigned")
+                    } else {
+                        format!("{label} assigned to {}", kept.join(", "))
+                    };
+                    if !dropped.is_empty() {
+                        text = format!("{text} ({} not kept by the forge)", dropped.join(", "));
+                    }
+                    p.report = vec![(text.clone(), None, !dropped.is_empty())];
+                    cx.emit(ForgePanelEvent::Notice(text));
+                }
+                Err(e) => p.error = Some(format!("{label}: {e}")),
+            },
+        );
+    }
+
+    /// The assignee editor under a pull request row: a chip per user who
+    /// can be assigned (and per current assignee), Save and Cancel.
+    fn assign_editor(
+        &self,
+        id: &str,
+        repo: RepoId,
+        current: &[String],
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let known = self.assignable.get(&repo);
+        let mut users: Vec<String> = match known {
+            Some(Ok(list)) => list.clone(),
+            _ => Vec::new(),
+        };
+        for login in current.iter().chain(&self.assign_picks) {
+            if !users.contains(login) {
+                users.push(login.clone());
+            }
+        }
+        let (note, tone) = match known {
+            None => (Some("Reading who can be assigned…".to_owned()), T::FgSubtle),
+            Some(Err(e)) => (Some(e.clone()), T::StatusError),
+            Some(Ok(list)) if list.is_empty() => (
+                Some(
+                    "No one to choose from: listing who can be assigned needs write access \
+                     to the repository"
+                        .to_owned(),
+                ),
+                T::FgSubtle,
+            ),
+            Some(Ok(_)) => (None, T::FgSubtle),
+        };
+        let chips = users.into_iter().enumerate().map(|(i, login)| {
+            let on = self.assign_picks.contains(&login);
+            chip(
+                SharedString::from(format!("{id}-user-{i}")),
+                login.clone(),
+                on,
+                cx,
+            )
+            .on_click(cx.listener(move |p, _, _, cx| {
+                toggle(&mut p.assign_picks, &login);
+                cx.notify();
+            }))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .ml_4()
+            .mr_2()
+            .mb_1()
+            .px_2()
+            .py_1()
+            .rounded(radius(cx))
+            .border_1()
+            .border_color(color(cx, T::Border))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(color(cx, T::FgSubtle))
+                    .child("ASSIGNEES (click to pick or drop)"),
+            )
+            .child(div().flex().flex_wrap().gap_1().children(chips))
+            .children(note.map(|note| div().text_xs().text_color(color(cx, tone)).child(note)))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .justify_end()
+                    .child(
+                        button(SharedString::from(format!("{id}-cancel")), "Cancel", cx).on_click(
+                            cx.listener(|p, _, _, cx| {
+                                p.assigning = None;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        primary_button(SharedString::from(format!("{id}-save")), "Save", cx)
+                            .on_click(cx.listener(|p, _, window, cx| p.save_assignees(window, cx))),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// Removes a merged pull request from the list.
@@ -1179,6 +1362,10 @@ impl ForgePanel {
             };
             for pr in prs {
                 list = list.child(self.open_row(ri, r, pr, cx));
+                if self.assigning == Some((r.repo, pr.number)) {
+                    let id = format!("f-assign-{ri}-{}", pr.number);
+                    list = list.child(self.assign_editor(&id, r.repo, &pr.assignees, cx));
+                }
             }
         }
         div()
@@ -1187,7 +1374,8 @@ impl ForgePanel {
             .gap_2()
             .child(options)
             .child(div().text_xs().text_color(color(cx, T::FgSubtle)).child(
-                "Click a title to open it on the forge. Merge asks for a second click, and is \
+                "Click a title to open it on the forge. Assign picks who it is assigned to. \
+                 Merge asks for a second click, and is \
                  refused if the branch moved since this list was read. When CI passes arms the \
                  forge's auto-merge with the same choices (merged even with Archipel closed); \
                  when the forge refuses it, Archipel merges once the CI passes, only while it \
@@ -1280,6 +1468,9 @@ impl ForgePanel {
         if pr.draft {
             detail.push_str(" · draft");
         }
+        if !pr.assignees.is_empty() {
+            detail = format!("{detail} · → {}", pr.assignees.join(", "));
+        }
         let (state, tone) = match &pr.merge {
             MergeState::Unknown => (String::new(), T::FgMuted),
             MergeState::Mergeable => ("mergeable".to_owned(), T::StatusSuccess),
@@ -1298,6 +1489,15 @@ impl ForgePanel {
             (None, _) => (state, tone),
         };
         let auto = self.auto_merge_controls(&id, repo, pr, note.is_some(), cx);
+        let assign = chip(
+            SharedString::from(format!("{id}-assign")),
+            "Assign",
+            self.assigning == Some((repo, number)),
+            cx,
+        )
+        .on_click(cx.listener(move |p, _, window, cx| {
+            p.edit_assignees(repo, number, window, cx);
+        }));
         let merge = confirm_button(
             SharedString::from(format!("{id}-merge")),
             "Merge",
@@ -1350,6 +1550,7 @@ impl ForgePanel {
                     .text_color(color(cx, tone))
                     .child(state),
             )
+            .child(div().flex_none().child(assign))
             // A draft keeps their room, unpainted, so the buttons line up
             // from row to row.
             .child(div().flex_none().child(auto).shown_if(!pr.draft))

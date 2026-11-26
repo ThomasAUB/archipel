@@ -1151,6 +1151,59 @@ impl App {
         Ok(report)
     }
 
+    /// The logins a pull request of `forge_repo` (the forge repository of
+    /// `repo`) can be assigned to, sorted; empty when the token may not
+    /// list them.
+    pub async fn assignable_users(
+        &self,
+        repo: RepoId,
+        forge_repo: &ForgeRepo,
+    ) -> Result<Vec<String>, AppError> {
+        let forge = self.services.forge.clone();
+        let target = forge_repo.clone();
+        let spec = OpSpec::new(
+            Some(repo),
+            OpClass::Network,
+            format!("Read the assignable users of {}", forge_repo.path),
+        );
+        Ok(self
+            .scheduler
+            .submit(spec, move |_| {
+                Ok(forge.pull_requests.assignable_users(&target)?)
+            })
+            .wait()
+            .await?)
+    }
+
+    /// Replaces the assignees of pull request `number` of `forge_repo`
+    /// (empty: unassigns all). Returns them as the forge kept them, which
+    /// may be fewer than asked (GitHub drops a login it cannot assign,
+    /// GitLab Free keeps one assignee).
+    pub async fn set_pull_request_assignees(
+        &self,
+        repo: RepoId,
+        forge_repo: &ForgeRepo,
+        number: u64,
+        assignees: Vec<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let forge = self.services.forge.clone();
+        let target = forge_repo.clone();
+        let spec = OpSpec::new(
+            Some(repo),
+            OpClass::Network,
+            format!("Assign pull request {} #{number}", forge_repo.path),
+        );
+        Ok(self
+            .scheduler
+            .submit(spec, move |_| {
+                Ok(forge
+                    .pull_request_writer
+                    .set_pull_request_assignees(&target, number, &assignees)?)
+            })
+            .wait()
+            .await?)
+    }
+
     // ----- CI logs and reruns -------------------------------------------------
 
     /// The error excerpt of a job's log, if it was already read.

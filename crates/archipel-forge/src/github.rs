@@ -74,6 +74,15 @@ struct Pull {
     /// The armed auto-merge request, if any.
     #[serde(default)]
     auto_merge: Option<serde_json::Value>,
+    #[serde(default)]
+    assignees: Vec<User>,
+}
+
+/// The assignees of an issue or pull request, as the forge kept them.
+#[derive(Deserialize)]
+struct Assigned {
+    #[serde(default)]
+    assignees: Vec<User>,
 }
 
 /// The repository settings the auto-merge needs.
@@ -244,6 +253,9 @@ const ISSUE_SCOPE: &str = "the token needs the repo scope (public_repo for a pub
                            repository) on a classic token, or Issues: read and write on a \
                            fine-grained token";
 
+/// What a token needs to assign a pull request.
+const ASSIGN_SCOPE: &str = "the token needs the repo scope (public_repo for a public                             repository) on a classic token, or Pull requests: read and write on                             a fine-grained token, and push access to the repository";
+
 /// GitHub answers 410 Gone on the issues of a repository that disabled them.
 fn issues_disabled<T>(result: Result<T, ForgeError>, repo: &str) -> Result<T, ForgeError> {
     match result {
@@ -409,7 +421,20 @@ fn status(api: &Api<'_>, base: &str, pull: Pull) -> Result<PullRequestStatus, Fo
         merge: merge_state(pull.mergeable_state.as_deref()),
         from_fork,
         auto_merge: pull.auto_merge.is_some(),
+        assignees: pull.assignees.into_iter().map(|u| u.login).collect(),
     })
+}
+
+/// The logins issues and pull requests of `base` can be assigned to,
+/// sorted. Only users with push access may list (and set) them: empty
+/// otherwise.
+fn assignable(api: &Api<'_>, base: &str) -> Result<Vec<String>, ForgeError> {
+    let users: Vec<User> =
+        optional(api.get_pages(&format!("{base}/assignees?per_page=100"), "assignees"))?
+            .unwrap_or_default();
+    let mut logins: Vec<String> = users.into_iter().map(|u| u.login).collect();
+    logins.sort_by_key(|l| l.to_lowercase());
+    Ok(logins)
 }
 
 /// The GraphQL endpoint next to a REST API base (`https://api.github.com`,
@@ -676,6 +701,31 @@ impl PullRequestApi for GitHub {
             &what,
         )
     }
+
+    fn assignable_users(&self, at: &Endpoint, repo: &str) -> Result<Vec<String>, ForgeError> {
+        assignable(&api(at), &format!("/repos/{}", encode_path(repo)))
+    }
+
+    fn set_assignees(
+        &self,
+        at: &Endpoint,
+        repo: &str,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        // A pull request is an issue: its assignees are set there.
+        let kept: Assigned = scoped(
+            api(at).write(
+                Method::Patch,
+                &format!("/repos/{}/issues/{number}", encode_path(repo)),
+                json!({ "assignees": assignees }),
+                &format!("pull request #{number}"),
+            ),
+            "assign the pull request",
+            ASSIGN_SCOPE,
+        )?;
+        Ok(kept.assignees.into_iter().map(|u| u.login).collect())
+    }
 }
 
 impl CiApi for GitHub {
@@ -793,16 +843,11 @@ impl IssueApi for GitHub {
         let labels: Vec<Label> =
             optional(api.get_pages(&format!("{base}/labels?per_page=100"), "labels"))?
                 .unwrap_or_default();
-        // Only users with push access may list (and set) assignees.
-        let assignees: Vec<User> =
-            optional(api.get_pages(&format!("{base}/assignees?per_page=100"), "assignees"))?
-                .unwrap_or_default();
         let mut choices = IssueChoices {
             labels: labels.into_iter().map(|l| l.name).collect(),
-            assignees: assignees.into_iter().map(|u| u.login).collect(),
+            assignees: assignable(&api, &base)?,
         };
         choices.labels.sort_by_key(|l| l.to_lowercase());
-        choices.assignees.sort_by_key(|l| l.to_lowercase());
         Ok(choices)
     }
 

@@ -84,6 +84,7 @@ fn env_with(settings: Settings) -> Env {
             merge: MergeState::Mergeable,
             from_fork: false,
             auto_merge: false,
+            assignees: Vec::new(),
         },
     );
     forge.with_ci(
@@ -1347,6 +1348,7 @@ fn reopen_r0(e: &Env, ci: CiState, auto_merge: bool) {
             merge: MergeState::Mergeable,
             from_fork: false,
             auto_merge,
+            assignees: Vec::new(),
         },
     );
 }
@@ -1472,4 +1474,45 @@ fn cancelled_watch_does_not_merge() {
     reopen_r0(&e, CiState::Success, false);
     std::thread::sleep(Duration::from_millis(2500));
     assert!(e.forge.merged().is_empty());
+}
+
+#[test]
+fn pull_request_assignees_are_listed_and_replaced() {
+    let e = env();
+    sign_in(&e);
+    e.forge.with_issue_choices(
+        "acme/r0",
+        IssueChoices {
+            labels: Vec::new(),
+            assignees: vec!["ann".into(), "bob".into()],
+        },
+    );
+    wait_until("status", || matches!(forge_of(&e, 0), ForgeStatus::Open(_)));
+    let (repo, forge_repo, pr) = listed_pr(&e);
+    assert!(pr.assignees.is_empty());
+    let (app, fr) = (e.app.clone(), forge_repo.clone());
+    let users =
+        e.rt.block_on(async move { app.assignable_users(repo, &fr).await })
+            .unwrap();
+    assert_eq!(users, ["ann", "bob"]);
+    // A login the repo cannot be assigned to is dropped, as GitHub does.
+    let (app, fr) = (e.app.clone(), forge_repo.clone());
+    let kept =
+        e.rt.block_on(async move {
+            app.set_pull_request_assignees(repo, &fr, pr.number, vec!["bob".into(), "eve".into()])
+                .await
+        })
+        .unwrap();
+    assert_eq!(kept, ["bob"]);
+    assert_eq!(listed_pr(&e).2.assignees, ["bob"]);
+    // Empty unassigns everyone.
+    let (app, fr) = (e.app.clone(), forge_repo);
+    let kept =
+        e.rt.block_on(async move {
+            app.set_pull_request_assignees(repo, &fr, 7, Vec::new())
+                .await
+        })
+        .unwrap();
+    assert!(kept.is_empty());
+    assert!(listed_pr(&e).2.assignees.is_empty());
 }
