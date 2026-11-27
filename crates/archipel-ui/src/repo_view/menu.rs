@@ -3,7 +3,9 @@
 
 use archipel_app::forge::pick_remote;
 use archipel_model::refs::{RefKind, RefTip};
-use archipel_model::requests::{CheckoutTarget, DeleteMode, MergeMode, ResetMode, StashApplyMode};
+use archipel_model::requests::{
+    CheckoutTarget, DeleteMode, LocalCounterpart, MergeMode, ResetMode, StashApplyMode,
+};
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::ui_state::GraphColumn;
 use archipel_model::{Oid, RepoId, RepoPath};
@@ -166,11 +168,11 @@ fn danger(label: impl Into<String>, action: MenuAction) -> MenuEntry {
 }
 
 /// The entries of the menu on `target`. `current`: the checked-out branch;
-/// `has_local`: whether a local branch has this name.
+/// `local`: the local branch of this name, if any.
 fn menu_entries(
     target: &MenuTarget,
     current: Option<&str>,
-    has_local: impl Fn(&str) -> bool,
+    local: impl Fn(&str) -> Option<LocalCounterpart>,
 ) -> Vec<MenuEntry> {
     match target {
         MenuTarget::Commit {
@@ -182,9 +184,9 @@ fn menu_entries(
             oid,
             refs,
             focus: Some(tip),
-        } => badge_entries(*oid, refs, tip, current, has_local),
+        } => badge_entries(*oid, refs, tip, current, local),
         MenuTarget::Commits(oids) => commits_entries(oids),
-        MenuTarget::Ref(tip) => ref_entries(tip, current, has_local),
+        MenuTarget::Ref(tip) => ref_entries(tip, current, local),
         MenuTarget::Stash(oid) => stash_entries(*oid),
         MenuTarget::Drop { source, target } => drop_entries(source, target, current),
         MenuTarget::Submodule(sub) => submodule_entries(sub),
@@ -281,7 +283,7 @@ fn badge_entries(
     refs: &[RefTip],
     tip: &RefTip,
     current: Option<&str>,
-    has_local: impl Fn(&str) -> bool,
+    local: impl Fn(&str) -> Option<LocalCounterpart>,
 ) -> Vec<MenuEntry> {
     let is_copy = |e: &MenuEntry| {
         matches!(
@@ -302,7 +304,7 @@ fn badge_entries(
         }),
         MenuEntry::Separator => false,
     };
-    let reference = ref_entries(tip, current, has_local);
+    let reference = ref_entries(tip, current, local);
     let (copies, reference): (Vec<_>, Vec<_>) = reference
         .into_iter()
         .filter(|e| !in_commit(e))
@@ -351,19 +353,52 @@ fn commits_entries(oids: &[Oid]) -> Vec<MenuEntry> {
     ]
 }
 
+/// The checkouts offered for a remote branch whose local counterpart
+/// tracks another branch (`fork/main` while `main` tracks `origin/main`):
+/// that local branch (unless checked out), the remote one detached, or a new
+/// branch tracking it. None for any other ref.
+fn diverted_checkouts(
+    tip: &RefTip,
+    current: Option<&str>,
+    local: impl Fn(&str) -> Option<LocalCounterpart>,
+) -> Vec<MenuEntry> {
+    use MenuAction as A;
+    let Some((branch, upstream)) = CheckoutTarget::diverted(tip, local) else {
+        return Vec::new();
+    };
+    let name = &tip.name;
+    let mut out = Vec::new();
+    if current != Some(branch.as_str()) {
+        out.push(item(
+            format!("Checkout {branch} (tracks {upstream})"),
+            A::Checkout(CheckoutTarget::Branch(branch)),
+        ));
+    }
+    out.push(item(
+        format!("Checkout {name} (detached)"),
+        A::Checkout(CheckoutTarget::Detached(tip.target)),
+    ));
+    out.push(item(
+        format!("New branch tracking {name}…"),
+        A::Name(NameForm::Tracking(name.clone())),
+    ));
+    out
+}
+
 /// The menu of a branch or tag.
 fn ref_entries(
     tip: &RefTip,
     current: Option<&str>,
-    has_local: impl Fn(&str) -> bool,
+    local: impl Fn(&str) -> Option<LocalCounterpart>,
 ) -> Vec<MenuEntry> {
     use MenuAction as A;
     let mut out = Vec::new();
     let name = &tip.name;
     let is_current = tip.kind == RefKind::LocalBranch && Some(name.as_str()) == current;
-    if !is_current && let Some(t) = CheckoutTarget::for_ref(tip, &has_local) {
+    if !is_current && let Some(t) = CheckoutTarget::for_ref(tip, &local) {
         out.push(item(format!("Checkout {name}"), A::Checkout(t)));
     }
+    out.extend(diverted_checkouts(tip, current, &local));
     if matches!(tip.kind, RefKind::LocalBranch | RefKind::RemoteBranch) && !is_current {
         let into = current.unwrap_or("HEAD");
         out.push(item(
@@ -830,7 +865,7 @@ impl RepoView {
     pub(super) fn render_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (target, position) = self.menu.as_ref()?;
         let position = *position;
-        let entries = menu_entries(target, self.current_branch(), |b| self.has_local(b));
+        let entries = menu_entries(target, self.current_branch(), |b| self.local(b));
         let entries = with_worktrees(
             target,
             entries,
@@ -912,7 +947,9 @@ mod tests {
 
     #[test]
     fn column_menu_ticks_the_shown_columns() {
-        let entries = menu_entries(&MenuTarget::Columns(vec![GraphColumn::Age]), None, |_| true);
+        let entries = menu_entries(&MenuTarget::Columns(vec![GraphColumn::Age]), None, |_| {
+            Some(LocalCounterpart::default())
+        });
         let ticks: Vec<(&str, Option<bool>)> = entries
             .iter()
             .filter_map(|e| match e {
@@ -945,14 +982,18 @@ mod tests {
             pinned: None,
             checked_out: None,
         };
-        let entries = menu_entries(&MenuTarget::Submodule(sub(true)), None, |_| true);
+        let entries = menu_entries(&MenuTarget::Submodule(sub(true)), None, |_| {
+            Some(LocalCounterpart::default())
+        });
         let initialized = actions(&entries);
         assert!(initialized.contains(&&MenuAction::OpenSubmodule(sub(true).path)));
         assert!(initialized.contains(&&MenuAction::UpdateSubmodule {
             name: "libs/foo".into(),
             init: false
         }));
-        let entries = menu_entries(&MenuTarget::Submodule(sub(false)), None, |_| true);
+        let entries = menu_entries(&MenuTarget::Submodule(sub(false)), None, |_| {
+            Some(LocalCounterpart::default())
+        });
         let uninitialized = actions(&entries);
         assert!(
             !uninitialized
@@ -965,7 +1006,9 @@ mod tests {
         }));
         // Both can be removed, after a confirmation.
         for sub in [sub(true), sub(false)] {
-            let entries = menu_entries(&MenuTarget::Submodule(sub), None, |_| true);
+            let entries = menu_entries(&MenuTarget::Submodule(sub), None, |_| {
+                Some(LocalCounterpart::default())
+            });
             assert!(actions(&entries).contains(&&MenuAction::RemoveSubmodule("libs/foo".into())));
         }
         assert!(
@@ -991,7 +1034,7 @@ mod tests {
                 focus: None,
             },
             Some("main"),
-            |_| true,
+            |_| Some(LocalCounterpart::default()),
         );
         let actions = actions(&entries);
         assert!(actions.contains(&&MenuAction::Name(NameForm::Branch(Some(oid)))));
@@ -1020,7 +1063,7 @@ mod tests {
                     focus: None,
                 },
                 Some("main"),
-                |_| true,
+                |_| Some(LocalCounterpart::default()),
             );
             actions(&entries)
                 .into_iter()
@@ -1050,7 +1093,9 @@ mod tests {
             Oid::from_bytes(&[5; 20]).unwrap(),
             Oid::from_bytes(&[6; 20]).unwrap(),
         ];
-        let entries = menu_entries(&MenuTarget::Commits(oids.clone()), Some("main"), |_| true);
+        let entries = menu_entries(&MenuTarget::Commits(oids.clone()), Some("main"), |_| {
+            Some(LocalCounterpart::default())
+        });
         let actions = actions(&entries);
         // Cherry-picked oldest first.
         assert_eq!(actions[0], &MenuAction::CherryPick(vec![oids[1], oids[0]]));
@@ -1069,7 +1114,7 @@ mod tests {
                 focus: Some(feat),
             },
             Some("main"),
-            |_| true,
+            |_| Some(LocalCounterpart::default()),
         );
         let acts = actions(&entries);
         // Branch actions first.
@@ -1108,7 +1153,7 @@ mod tests {
         let entries = menu_entries(
             &MenuTarget::Ref(tip("main", RefKind::LocalBranch)),
             Some("main"),
-            |_| true,
+            |_| Some(LocalCounterpart::default()),
         );
         for a in actions(&entries) {
             assert!(
@@ -1130,7 +1175,7 @@ mod tests {
         let entries = menu_entries(
             &MenuTarget::Ref(tip("feat", RefKind::LocalBranch)),
             Some("main"),
-            |_| true,
+            |_| Some(LocalCounterpart::default()),
         );
         let actions = actions(&entries);
         assert!(
@@ -1198,7 +1243,7 @@ mod tests {
 
     #[test]
     fn tag_and_remote_menus() {
-        let tag = menu_entries(&MenuTarget::Ref(tip("v1", RefKind::Tag)), None, |_| false);
+        let tag = menu_entries(&MenuTarget::Ref(tip("v1", RefKind::Tag)), None, |_| None);
         let tag = actions(&tag);
         assert!(tag.contains(&&MenuAction::PushTag("v1".into())));
         assert!(tag.contains(&&MenuAction::DeleteTag("v1".into())));
@@ -1206,7 +1251,7 @@ mod tests {
         let remote = menu_entries(
             &MenuTarget::Ref(tip("origin/feat", RefKind::RemoteBranch)),
             Some("main"),
-            |_| false,
+            |_| None,
         );
         let remote = actions(&remote);
         assert!(
@@ -1216,7 +1261,7 @@ mod tests {
         );
         assert!(remote.contains(&&MenuAction::DeleteRemoteBranch("origin/feat".into())));
         assert!(remote.contains(&&MenuAction::ChangeRemoteUrl(Some("origin/feat".into()))));
-        let header = menu_entries(&MenuTarget::Remotes, Some("main"), |_| false);
+        let header = menu_entries(&MenuTarget::Remotes, Some("main"), |_| None);
         assert_eq!(actions(&header), [&MenuAction::ChangeRemoteUrl(None)]);
     }
 
@@ -1253,6 +1298,54 @@ mod tests {
             MenuAction::DeleteRemoteTag("v1".into())
                 .confirmation()
                 .is_some()
+        );
+    }
+    #[test]
+    fn a_remote_branch_whose_local_namesake_tracks_another_offers_choices() {
+        // `main` (checked out) tracks `origin/main`; `fork/main` is another
+        // remote's branch of the same name.
+        let local = |b: &str| {
+            (b == "main").then(|| LocalCounterpart {
+                upstream: Some("origin/main".into()),
+            })
+        };
+        let fork = tip("fork/main", RefKind::RemoteBranch);
+        let entries = menu_entries(&MenuTarget::Ref(fork.clone()), Some("main"), local);
+        let acts = actions(&entries);
+        // No checkout of `main` (already there, and not `fork/main`).
+        assert!(
+            !acts.contains(&&MenuAction::Checkout(CheckoutTarget::Branch(
+                "main".into()
+            )))
+        );
+        assert!(
+            acts.contains(&&MenuAction::Checkout(CheckoutTarget::Detached(
+                fork.target
+            )))
+        );
+        assert!(acts.contains(&&MenuAction::Name(NameForm::Tracking("fork/main".into()))));
+        // On another branch, `main` itself is offered, named as tracking
+        // `origin/main`.
+        let entries = menu_entries(&MenuTarget::Ref(fork), Some("dev"), local);
+        assert!(entries.iter().any(|e| matches!(
+            e,
+            MenuEntry::Item { label, action: MenuAction::Checkout(CheckoutTarget::Branch(b)), .. }
+                if b == "main" && label.contains("tracks origin/main")
+        )));
+        // `origin/main` still goes through `main`, with no extra choices.
+        let entries = menu_entries(
+            &MenuTarget::Ref(tip("origin/main", RefKind::RemoteBranch)),
+            Some("dev"),
+            local,
+        );
+        let acts = actions(&entries);
+        assert!(acts.contains(&&MenuAction::Checkout(CheckoutTarget::Branch(
+            "main".into()
+        ))));
+        assert!(
+            !acts
+                .iter()
+                .any(|a| matches!(a, MenuAction::Name(NameForm::Tracking(_))))
         );
     }
 }

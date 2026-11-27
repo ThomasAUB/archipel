@@ -44,40 +44,73 @@ pub enum CheckoutTarget {
     Detached(Oid),
 }
 
+/// A local branch, as checking out a remote branch through it needs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LocalCounterpart {
+    /// The branch it tracks (`origin/main`), if any.
+    pub upstream: Option<String>,
+}
+
+/// The local branch named after remote branch `remote` (`origin/x` → `x`).
+fn local_name(remote: &str) -> &str {
+    remote.split_once('/').map_or(remote, |(_, b)| b)
+}
+
 impl CheckoutTarget {
     /// What checking out `tip` means: a local branch is switched to; a
-    /// remote branch through its local counterpart, created to track it
-    /// when `has_local` says there is none; a tag detaches at its commit.
-    /// `None` for `HEAD` (already there) and stashes.
+    /// remote branch through its local counterpart (`local` gives it by
+    /// name), created to track it when there is none; a tag detaches at its
+    /// commit. `None` for `HEAD` (already there), stashes, and a remote
+    /// branch whose counterpart tracks another branch (see
+    /// [`Self::diverted`]).
     #[must_use]
-    pub fn for_ref(tip: &RefTip, has_local: impl Fn(&str) -> bool) -> Option<Self> {
+    pub fn for_ref(tip: &RefTip, local: impl Fn(&str) -> Option<LocalCounterpart>) -> Option<Self> {
         match tip.kind {
             RefKind::LocalBranch => Some(Self::Branch(tip.name.clone())),
             RefKind::RemoteBranch => {
-                let local = tip
-                    .name
-                    .split_once('/')
-                    .map_or(tip.name.as_str(), |(_, b)| b);
-                Some(if has_local(local) {
-                    Self::Branch(local.to_owned())
-                } else {
-                    Self::TrackRemote(tip.name.clone())
-                })
+                let name = local_name(&tip.name);
+                match local(name) {
+                    None => Some(Self::TrackRemote(tip.name.clone())),
+                    Some(l) if l.upstream.as_ref().is_some_and(|u| *u != tip.name) => None,
+                    Some(_) => Some(Self::Branch(name.to_owned())),
+                }
             }
             RefKind::Tag => Some(Self::Detached(tip.target)),
             RefKind::Head | RefKind::Stash => None,
         }
     }
 
+    /// For a remote branch whose local counterpart tracks another branch
+    /// (`fork/main` while `main` tracks `origin/main`): that local branch
+    /// and its upstream. Switching to it would not check out the remote
+    /// branch, so there is no implicit target: the user picks (that local
+    /// branch, the remote one detached, or a new branch tracking it).
+    #[must_use]
+    pub fn diverted(
+        tip: &RefTip,
+        local: impl Fn(&str) -> Option<LocalCounterpart>,
+    ) -> Option<(String, String)> {
+        if tip.kind != RefKind::RemoteBranch {
+            return None;
+        }
+        let name = local_name(&tip.name);
+        let upstream = local(name)?.upstream?;
+        (upstream != tip.name).then(|| (name.to_owned(), upstream))
+    }
+
     /// What checking out commit `oid` means, given the refs pointing at it:
     /// its first local branch, else its first remote branch (see
     /// [`Self::for_ref`]), else the commit itself, detached.
     #[must_use]
-    pub fn for_commit(oid: Oid, tips: &[RefTip], has_local: impl Fn(&str) -> bool) -> Self {
+    pub fn for_commit(
+        oid: Oid,
+        tips: &[RefTip],
+        local: impl Fn(&str) -> Option<LocalCounterpart>,
+    ) -> Self {
         [RefKind::LocalBranch, RefKind::RemoteBranch]
             .iter()
             .find_map(|kind| tips.iter().find(|t| t.kind == *kind))
-            .and_then(|t| Self::for_ref(t, has_local))
+            .and_then(|t| Self::for_ref(t, local))
             .unwrap_or(Self::Detached(oid))
     }
 }
@@ -245,10 +278,25 @@ mod tests {
         }
     }
 
+    fn none(_: &str) -> Option<LocalCounterpart> {
+        None
+    }
+
+    /// Local branches `feat/x` (no upstream) and `main` (tracks
+    /// `origin/main`).
+    fn locals(name: &str) -> Option<LocalCounterpart> {
+        match name {
+            "feat/x" => Some(LocalCounterpart::default()),
+            "main" => Some(LocalCounterpart {
+                upstream: Some("origin/main".into()),
+            }),
+            _ => None,
+        }
+    }
+
     #[test]
     fn ref_checkout_targets() {
         let oid = Oid::from_bytes(&[7; 20]).unwrap();
-        let none = |_: &str| false;
         let local = tip("main", RefKind::LocalBranch, oid);
         assert_eq!(
             CheckoutTarget::for_ref(&local, none),
@@ -260,9 +308,10 @@ mod tests {
             Some(CheckoutTarget::TrackRemote("origin/feat/x".into()))
         );
         assert_eq!(
-            CheckoutTarget::for_ref(&remote, |b| b == "feat/x"),
+            CheckoutTarget::for_ref(&remote, locals),
             Some(CheckoutTarget::Branch("feat/x".into()))
         );
+        assert_eq!(CheckoutTarget::diverted(&remote, locals), None);
         let tag = tip("v1.0", RefKind::Tag, oid);
         assert_eq!(
             CheckoutTarget::for_ref(&tag, none),
@@ -279,9 +328,34 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_branch_is_not_checked_out_through_a_local_branch_tracking_another() {
+        let oid = Oid::from_bytes(&[5; 20]).unwrap();
+        // `main` tracks `origin/main`: checking out `origin/main` goes
+        // through it, `fork/main` does not.
+        let origin = tip("origin/main", RefKind::RemoteBranch, oid);
+        assert_eq!(
+            CheckoutTarget::for_ref(&origin, locals),
+            Some(CheckoutTarget::Branch("main".into()))
+        );
+        assert_eq!(CheckoutTarget::diverted(&origin, locals), None);
+        let fork = tip("fork/main", RefKind::RemoteBranch, oid);
+        assert_eq!(CheckoutTarget::for_ref(&fork, locals), None);
+        assert_eq!(
+            CheckoutTarget::diverted(&fork, locals),
+            Some(("main".into(), "origin/main".into()))
+        );
+        // A commit only `fork/main` points at: checked out detached.
+        assert_eq!(
+            CheckoutTarget::for_commit(oid, &[fork], locals),
+            CheckoutTarget::Detached(oid)
+        );
+        let local = tip("main", RefKind::LocalBranch, oid);
+        assert_eq!(CheckoutTarget::diverted(&local, locals), None);
+    }
+
+    #[test]
     fn commit_checkout_prefers_local_then_remote_branches() {
         let oid = Oid::from_bytes(&[3; 20]).unwrap();
-        let none = |_: &str| false;
         let head = tip("HEAD", RefKind::Head, oid);
         let tag = tip("v2", RefKind::Tag, oid);
         let remote = tip("origin/dev", RefKind::RemoteBranch, oid);

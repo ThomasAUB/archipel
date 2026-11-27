@@ -260,7 +260,10 @@ impl RepoView {
             tags.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| a.name.cmp(&b.name)));
             let (remote, local): (Vec<_>, Vec<_>) = branches.into_iter().partition(|b| b.is_remote);
             let mut list = RefList {
-                locals: local.iter().map(|b| b.name.clone()).collect(),
+                locals: local
+                    .iter()
+                    .map(|b| (b.name.clone(), b.upstream.as_ref().map(|u| u.name.clone())))
+                    .collect(),
                 ..RefList::default()
             };
             for (title, kind, branches) in [
