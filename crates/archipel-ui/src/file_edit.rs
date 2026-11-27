@@ -13,11 +13,15 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, KeyDownEvent, SharedString, Window, div};
 
 use crate::staging::Staging;
-use crate::theme::{color, mono_font};
+use crate::theme::{color, mono_font, radius};
 use crate::widgets::{button, primary_button, unmodified};
 
 /// Files above this size are not opened in the editor.
 const MAX_EDIT_BYTES: usize = 4 * 1024 * 1024;
+
+/// The editor's language until the file's own is switched on: no parser,
+/// so the first frame is cheap.
+const PLAIN_TEXT: &str = "text";
 
 /// The file being edited, kept in the staging panel's state.
 pub(crate) struct FileEdit {
@@ -77,15 +81,23 @@ pub(crate) fn open<V: Staging>(
                 .and_then(|bytes| editable_text(&file, bytes));
             match loaded {
                 Ok((bytes, text, crlf)) => {
-                    let language = language_of(&file);
+                    // Opened as plain text, so the editor shows at once
+                    // (a few ms); the syntax highlighting, whose first
+                    // render takes ~0.2 s on a 1500-line file, is switched
+                    // on once that frame is drawn.
                     let editor = cx.new(|cx| {
                         EditorState::new(window, cx)
-                            .language(language)
+                            .language(PLAIN_TEXT)
                             .line_number(true)
                             .default_value(text)
                     });
                     editor.update(cx, |e, cx| {
                         e.set_cursor_position(Position::new(line.saturating_sub(1), 0), window, cx);
+                    });
+                    let language = language_of(&file);
+                    let highlighted = editor.clone();
+                    window.on_next_frame(move |_, cx| {
+                        highlighted.update(cx, |e, cx| e.set_highlighter(language, cx));
                     });
                     if let Some(edit) = &mut v.panel().edit {
                         edit.editor = Some(editor);
@@ -296,8 +308,15 @@ pub(crate) fn current<V: Staging>(v: &mut V, file: Option<&str>, cx: &gpui_kit::
     }
 }
 
-/// The header's buttons and note while editing.
+/// The color marking edit mode: the header's "EDIT MODE" label and the
+/// frame around the editor, so the editor is not mistaken for the diff.
+fn edit_mode_color<V>(cx: &Context<V>) -> gpui_kit::Hsla {
+    color(cx, T::StatusWarning)
+}
+
+/// The header's "EDIT MODE" label, buttons and note while editing.
 pub(crate) fn render_bar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<AnyElement> {
+    let mode = edit_mode_color(cx);
     let edit = v.panel().edit.as_ref()?;
     let save_key = crate::keys::fixed_label("ctrl-s");
     let note = if edit.armed_close {
@@ -314,6 +333,18 @@ pub(crate) fn render_bar<V: Staging>(v: &mut V, cx: &mut Context<V>) -> Option<A
             .items_center()
             .gap_1()
             .text_xs()
+            .child(
+                div()
+                    .flex_none()
+                    .px_1()
+                    .rounded(radius(cx))
+                    .border_1()
+                    .border_color(mode)
+                    .bg(mode.opacity(0.18))
+                    .text_color(mode)
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child("EDIT MODE"),
+            )
             .child(
                 div()
                     .text_color(color(
@@ -361,6 +392,8 @@ pub(crate) fn render_body<V: Staging>(v: &mut V, cx: &mut Context<V>) -> AnyElem
         }));
     match editor {
         Some(editor) => body
+            .border_2()
+            .border_color(edit_mode_color(cx))
             .child(
                 Editor::new(&editor)
                     .bordered(false)
