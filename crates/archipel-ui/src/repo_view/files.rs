@@ -972,6 +972,7 @@ impl RepoView {
                 doc.clone(),
                 None,
                 None,
+                false,
                 cx,
             ),
             Content::Blame(doc) => file_history::render_blame(doc, &key, cx),

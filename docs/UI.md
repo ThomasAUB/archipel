@@ -198,7 +198,7 @@ Repo Toolbar instead (`render_body`). [staging.rs](../crates/archipel-ui/src/sta
 
 ### Diff View
 
-A diff rendered as virtualized rows, scrolling sideways (horizontal scrollbar) when lines are wider than the view. [diff_view.rs](../crates/archipel-ui/src/diff_view.rs).
+A diff rendered as virtualized rows, scrolling sideways (horizontal scrollbar) when lines are wider than the view, or with **Wrap** in the open diff's header wrapping them at its width (rows as tall as their lines, in a variable-height list). [diff_view.rs](../crates/archipel-ui/src/diff_view.rs).
 Shown as the Open Diff (Repo View) and as the Quick Edit Diff (Dashboard).
 
 | Name | What it is |

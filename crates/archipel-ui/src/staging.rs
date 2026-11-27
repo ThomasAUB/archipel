@@ -86,6 +86,7 @@ pub(crate) fn submit_job<V: 'static>(
 }
 
 /// The panel's own state, held by each view showing it.
+#[allow(clippy::struct_excessive_bools)] // independent toggles of the panel and its diff
 pub struct Panel {
     /// The commit message, subject then body; Ctrl+Enter commits.
     message: Entity<TextareaState>,
@@ -113,6 +114,9 @@ pub struct Panel {
     pub(crate) svg_images: bool,
     /// Diffs show the whole file: the unchanged lines around the hunks.
     pub(crate) full_file: bool,
+    /// Diffs wrap long lines at the view's width instead of scrolling
+    /// sideways.
+    pub(crate) wrap: bool,
     /// The whole-file version of the open diff: the diff it is read for,
     /// and it once read.
     pub(crate) full: Option<(Arc<DiffDoc>, Option<Arc<DiffDoc>>)>,
@@ -184,6 +188,7 @@ impl Panel {
             image: None,
             svg_images: false,
             full_file: false,
+            wrap: false,
             full: None,
             ignore: None,
             force_push: Armed::default(),
