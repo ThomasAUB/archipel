@@ -878,20 +878,22 @@ impl RepoView {
             .as_ref()
             .map(|b| (b.mode, b.blame_options, b.history.is_some()))
             .unwrap_or_default();
-        // At a commit, Edit goes to the working-copy file (see
-        // `edit_open_file`).
-        let editable = (viewer.is_some() || rendered || was_editing)
-            && mode == FileMode::Content
-            && self.browser.as_ref().is_some_and(|b| {
-                b.files.as_ref().is_some_and(|f| {
-                    f.iter().any(|e| {
-                        e.path == path && matches!(e.kind, EntryKind::File | EntryKind::Executable)
-                    })
-                })
-            });
+        // Without the browser, the working-copy file is open only for the
+        // editor (see `edit_working_file`).
+        let just_edited = self.browser.is_none() && at.is_none();
+        let editable = just_edited
+            || (viewer.is_some() || rendered || was_editing)
+                && mode == FileMode::Content
+                && self.lists_file(&path);
         let editing = editable && at.is_none() && file_edit::current(self, Some(&path), cx);
         if let Some(OpenDiff::File(open)) = &mut self.open_diff {
             open.editing = editing;
+        }
+        if just_edited && !editing {
+            // Saved, cancelled or unreadable: back to the changes.
+            self.open_diff = None;
+            cx.notify();
+            return div().into_any_element();
         }
         if was_editing && !editing {
             // Saved or cancelled: show the file as it is on disk now.
@@ -1141,10 +1143,24 @@ impl RepoView {
         file_edit::open(self, path, line, window, cx);
     }
 
+    /// Whether the browser lists `path` as a file, which can be edited (at
+    /// a commit, Edit goes to the working-copy file: see `edit_open_file`).
+    fn lists_file(&self, path: &str) -> bool {
+        self.browser.as_ref().is_some_and(|b| {
+            b.files.as_ref().is_some_and(|f| {
+                f.iter().any(|e| {
+                    e.path == path && matches!(e.kind, EntryKind::File | EntryKind::Executable)
+                })
+            })
+        })
+    }
+
     /// Opens the editor on `path` as it is in the working copy, at `line`,
     /// from a commit's diff (the diff view, or the browser's Change mode):
-    /// the uncommitted-changes row is selected and the file shown in the
-    /// browser, as Edit does from a file opened at a commit.
+    /// the uncommitted-changes row is selected and the file opened in place
+    /// of the graph, as Edit does from a file opened at a commit. **Files**
+    /// is left as it was: with the browser off, the file is opened just for
+    /// the editor and closes with it.
     pub(super) fn edit_working_file(
         &mut self,
         path: String,
@@ -1152,15 +1168,22 @@ impl RepoView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.browser.is_none() {
-            self.toggle_browser(window, cx);
-        }
         if let Some(b) = &mut self.browser {
             b.mode = FileMode::Content;
             b.open = Some(path.clone());
+            // Reopens `path`, from the working copy, in the browser.
+            self.select_wip(cx);
+        } else {
+            self.select_wip(cx);
+            self.open_diff = Some(OpenDiff::File(OpenFile {
+                path: path.clone(),
+                at: None,
+                content: Content::Loading,
+                editing: false,
+                anchor: None,
+                cancel: CancelToken::new(),
+            }));
         }
-        // Reopens `path`, from the working copy, in the browser.
-        self.select_wip(cx);
         file_edit::open(self, path, line, window, cx);
     }
 }
