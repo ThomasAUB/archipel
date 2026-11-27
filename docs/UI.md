@@ -154,7 +154,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 | **Drop Menu** | Shown when a branch is dropped on another: merge, rebase, fast-forward. Never a silent action. |
 | **Confirm Dialog** | Modal asking before an action that may lose work. (`render_confirm`) |
 | **Squash Dialog** | Modal opened from the Graph Menu once the commits to squash are checked: the combined messages to edit, Squash / Cancel. (`render_squash`) |
-| **Repo Status Line** | Last operation result under the panes; long messages are condensed, click dismisses. |
+| **Repo Status Line** | Last operation result under the panes, git's hard-wrapped lines joined back across the width; long messages are condensed to a few lines with **Show all** / **Less**, **Copy** copies the whole message, a click on the text dismisses it. |
 
 ## 6. Shared panels
 

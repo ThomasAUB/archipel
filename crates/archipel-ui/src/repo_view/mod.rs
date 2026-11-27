@@ -47,8 +47,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle, KeyDownEvent, Pixels,
-    Point, SharedString, Subscription, UniformListScrollHandle, Window, div, px,
+    AnyElement, ClipboardItem, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
+    KeyDownEvent, Pixels, Point, SharedString, Subscription, UniformListScrollHandle, Window, div,
+    px,
 };
 
 use crate::ci_tooltip::CiTooltip;
@@ -57,8 +58,8 @@ use crate::latest::Latest;
 use crate::staging::{self, Staging, StagingEvent};
 use crate::theme::{color, radius, staging_surface, tone};
 use crate::widgets::{
-    Pane, PaneDrag, TextTooltip, condense_status, icon_text_button, resize_pane, splitter,
-    unmodified,
+    Pane, PaneDrag, TextTooltip, button, condense_status, icon_text_button, reflow_status,
+    resize_pane, splitter, unmodified,
 };
 use crate::working_copy::{self, WorkingCopy, WorktreeDiff};
 
@@ -217,6 +218,8 @@ pub struct RepoView {
     search: Option<search::GraphSearch>,
     prompt_focus: FocusHandle,
     status: Option<String>,
+    /// The status shown whole (**Show all**): the one it was asked for.
+    status_whole: Option<String>,
     refs: Arc<RefList>,
     /// Submodules, listed under the tags in the refs panel.
     submodules: Arc<Vec<SubmoduleInfo>>,
@@ -304,6 +307,7 @@ impl RepoView {
             search: None,
             prompt_focus: cx.focus_handle(),
             status: None,
+            status_whole: None,
             refs: Arc::default(),
             submodules: Arc::default(),
             refs_state: None,
@@ -648,6 +652,71 @@ impl WorkingCopy for RepoView {
     }
 }
 
+impl RepoView {
+    /// The status line under the view: `status` with git's wrapped lines
+    /// joined back across the width, a long one shortened to a few lines
+    /// with **Show all** / **Less**, and **Copy** for the whole message. A
+    /// click on the text dismisses it.
+    fn render_status(&self, status: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let text = reflow_status(&status);
+        let short = condense_status(&text);
+        let shortened = short != text;
+        let whole = shortened && self.status_whole.as_deref() == Some(status.as_str());
+        let shown = if shortened && !whole { short } else { text };
+        let toggle = shortened.then(|| {
+            let asked = status.clone();
+            staging::small(button(
+                "status-whole",
+                if whole { "Less" } else { "Show all" },
+                cx,
+            ))
+            .on_click(cx.listener(move |v, _, _, cx| {
+                cx.stop_propagation();
+                v.status_whole = (!whole).then(|| asked.clone());
+                cx.notify();
+            }))
+        });
+        let copy = staging::small(button("status-copy", "Copy", cx)).on_click(cx.listener(
+            move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.write_to_clipboard(ClipboardItem::new_string(status.clone()));
+            },
+        ));
+        div()
+            .flex_none()
+            .flex()
+            .items_start()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .text_xs()
+            .text_color(color(cx, T::FgMuted))
+            .child(
+                div()
+                    .id("status")
+                    .flex_1()
+                    .min_w_0()
+                    .max_h(px(if whole { 320.0 } else { 120.0 }))
+                    .overflow_y_scroll()
+                    .cursor_pointer()
+                    .tooltip(|_, cx| TextTooltip::view(&["Click to dismiss".into()], cx))
+                    .on_click(cx.listener(|v, _, _, cx| {
+                        v.status = None;
+                        cx.notify();
+                    }))
+                    .child(shown),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap_1()
+                    .children(toggle)
+                    .child(copy),
+            )
+    }
+}
+
 impl Render for RepoView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = self.core.ui_state().unwrap_or_default();
@@ -719,24 +788,7 @@ impl Render for RepoView {
             .child(self.render_toolbar(cx))
             .children(name_form)
             .child(body)
-            .children(self.status.as_deref().map(|s| {
-                div()
-                    .id("status")
-                    .flex_none()
-                    .px_3()
-                    .py_1()
-                    .max_h(px(120.0))
-                    .overflow_hidden()
-                    .text_xs()
-                    .text_color(color(cx, T::FgMuted))
-                    .cursor_pointer()
-                    .tooltip(|_, cx| TextTooltip::view(&["Click to dismiss".into()], cx))
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.status = None;
-                        cx.notify();
-                    }))
-                    .child(condense_status(s))
-            }))
+            .children(self.status.clone().map(|s| self.render_status(s, cx)))
             .children(confirm)
             .children(worktree_prompt)
             .children(squash)
