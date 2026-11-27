@@ -16,6 +16,9 @@
 //! menu, which also copies as a patch, a line or a hunk (see [`select`]).
 //! On a working-copy diff a click still picks lines and a double-click
 //! still edits: only a drag selects text there.
+//!
+//! Long lines scroll sideways, or, with **Wrap**, wrap at the view's width
+//! (rows then take the height of their lines).
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
@@ -28,13 +31,15 @@ use archipel_model::ports::DiffSide;
 use archipel_model::requests::PatchDirection;
 use archipel_ops::patch::selection_patch;
 use archipel_theme::ColorToken as T;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, DispatchPhase, Div, Entity,
-    EntityId, HighlightStyle, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
+    EntityId, HighlightStyle, ImageFormat, KeyDownEvent, ListAlignment,
+    ListHorizontalSizingBehavior, ListOffset, ListState, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy, SharedString, Stateful,
-    StyledText, TextLayout, UniformList, UniformListScrollHandle, Window, canvas, div, point, px,
-    uniform_list,
+    StyledText, TextLayout, UniformList, UniformListScrollHandle, Window, canvas, div, list, point,
+    px, uniform_list,
 };
 
 use crate::file_edit::{self, LineEnding};
@@ -116,6 +121,9 @@ pub(crate) struct DiffDoc {
     scroll_to: Mutex<Option<usize>>,
     /// Digits of the largest line number, so the gutter has one width.
     lineno_width: usize,
+    /// The row with the longest line: the list measures it for the width
+    /// it scrolls horizontally over.
+    widest: usize,
     /// Per file, the line ending of its new side (from its added and
     /// context lines), with whether the change is only line endings.
     endings: Vec<Option<Endings>>,
@@ -126,8 +134,6 @@ pub(crate) struct DiffDoc {
     text: Mutex<TextSelection>,
     /// The right-click menu: where it opened, on which row.
     menu: Mutex<Option<(Point<Pixels>, usize)>>,
-    /// Where the list was last drawn, for drags past its edges.
-    view: Mutex<Option<Bounds<Pixels>>>,
     /// Syntax colors, per hunk or gap, computed as its lines are first
     /// shown; `None` for a file shown as plain text.
     colors: Mutex<HashMap<Block, Option<HunkColors>>>,
@@ -311,7 +317,7 @@ impl DiffDoc {
                     .flatten()
             })
             .collect();
-        Self {
+        let mut doc = Self {
             files,
             revs: None,
             rows,
@@ -319,13 +325,17 @@ impl DiffDoc {
             // A few lines before the first change stay in sight.
             scroll_to: Mutex::new(scroll_to),
             lineno_width: max_lineno.to_string().len(),
+            widest: 0,
             endings,
             selection: Mutex::default(),
             text: Mutex::default(),
             menu: Mutex::default(),
-            view: Mutex::default(),
             colors: Mutex::default(),
-        }
+        };
+        doc.widest = (0..doc.rows.len())
+            .max_by_key(|&row| text_columns(doc.row_text(row)))
+            .unwrap_or(0);
+        doc
     }
 
     /// This diff, of the commits `revs`.
@@ -537,39 +547,85 @@ fn run_part<V: Staging>(
     }
 }
 
+/// Columns `text` takes in the monospace font, a tab counted as 4.
+fn text_columns(text: &str) -> usize {
+    text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum()
+}
+
 /// A virtualized diff: only the visible rows are built each frame. With
 /// `side`, hunk headers get stage / unstage / discard buttons and changed
 /// lines can be selected; with `scroll`, the list can be scrolled from
-/// outside.
+/// outside. Lines longer than the view scroll horizontally (the list is as
+/// wide as its longest line), or with `wrap` wrap at its width, each row as
+/// tall as its line.
 pub(crate) fn diff_list<V: Staging>(
     id: SharedString,
     doc: Arc<DiffDoc>,
     side: Option<DiffSide>,
     scroll: Option<&UniformListScrollHandle>,
+    wrap: bool,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let count = doc.rows.len();
     let scroll_id = SharedString::from(format!("{id}-scroll"));
     let rows_doc = doc.clone();
-    let list = uniform_list(
-        id,
-        count,
-        cx.processor(move |this: &mut V, range: Range<usize>, _window, cx| {
-            let armed = this.panel().armed().map(str::to_owned);
-            range
-                .filter_map(|i| doc.rows.get(i).map(|&row| (i, row)))
-                .map(|(i, row)| render_diff_row(&doc, i, row, side, armed.as_deref(), cx))
-                .collect()
-        }),
-    );
+    let widest = doc.widest;
+    let rows = if wrap {
+        let view = cx.entity();
+        Rows::Wrapped(Box::new(move |i, _window, cx| {
+            view.update(cx, |this, cx| {
+                let armed = this.panel().armed().map(str::to_owned);
+                doc.rows.get(i).map_or_else(
+                    || div().into_any_element(),
+                    |&row| render_diff_row(&doc, i, row, side, armed.as_deref(), true, cx),
+                )
+            })
+        }))
+    } else {
+        Rows::Uniform(Box::new(
+            uniform_list(
+                id,
+                count,
+                cx.processor(move |this: &mut V, range: Range<usize>, _window, cx| {
+                    let armed = this.panel().armed().map(str::to_owned);
+                    range
+                        .filter_map(|i| doc.rows.get(i).map(|&row| (i, row)))
+                        .map(|(i, row)| {
+                            render_diff_row(&doc, i, row, side, armed.as_deref(), false, cx)
+                        })
+                        .collect()
+                }),
+            )
+            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+            .with_width_from_item(Some(widest)),
+        ))
+    };
     SelectableList {
         scroll_id,
-        list,
+        rows,
         scroll: scroll.cloned(),
         doc: rows_doc,
         view: cx.entity_id(),
     }
     .into_any_element()
+}
+
+/// Renders the row at an index of a wrapped diff.
+type RenderRow = Box<dyn FnMut(usize, &mut Window, &mut App) -> AnyElement>;
+
+/// A diff's rows, one line high or wrapped.
+enum Rows {
+    /// One line a row: the list is as wide as its longest line.
+    Uniform(Box<UniformList>),
+    /// Lines wrapped at the list's width, each row as tall as its line.
+    Wrapped(RenderRow),
+}
+
+/// What scrolls a diff's list, per [`Rows`].
+#[derive(Clone)]
+enum Scroller {
+    Uniform(UniformListScrollHandle),
+    Wrapped(ListState),
 }
 
 /// A diff's list with what selecting its text needs around it: a scroll
@@ -578,7 +634,7 @@ pub(crate) fn diff_list<V: Staging>(
 #[derive(IntoElement)]
 struct SelectableList {
     scroll_id: SharedString,
-    list: UniformList,
+    rows: Rows,
     scroll: Option<UniformListScrollHandle>,
     doc: Arc<DiffDoc>,
     /// The view drawing the list, redrawn as the selection changes.
@@ -587,29 +643,57 @@ struct SelectableList {
 
 impl RenderOnce for SelectableList {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let handle = self.scroll.unwrap_or_else(|| {
-            window
-                .use_keyed_state(
-                    SharedString::from(format!("{}-handle", self.scroll_id)),
-                    cx,
-                    |_, _| UniformListScrollHandle::new(),
-                )
-                .read(cx)
-                .clone()
-        });
         let (doc, view) = (self.doc, self.view);
-        if let Some(row) = doc.take_scroll_to() {
-            handle.scroll_to_item(row, ScrollStrategy::Top);
-        }
+        let (body, scroller) = match self.rows {
+            Rows::Uniform(list) => {
+                let handle = self.scroll.unwrap_or_else(|| {
+                    window
+                        .use_keyed_state(
+                            SharedString::from(format!("{}-handle", self.scroll_id)),
+                            cx,
+                            |_, _| UniformListScrollHandle::new(),
+                        )
+                        .read(cx)
+                        .clone()
+                });
+                if let Some(row) = doc.take_scroll_to() {
+                    handle.scroll_to_item(row, ScrollStrategy::Top);
+                }
+                let body = scroll_list(self.scroll_id, *list)
+                    .handle(&handle)
+                    .horizontal()
+                    .into_any_element();
+                (body, Scroller::Uniform(handle))
+            }
+            Rows::Wrapped(render) => {
+                let state = wrapped_state(&self.scroll_id, &doc, window, cx);
+                if let Some(row) = doc.take_scroll_to() {
+                    state.scroll_to(ListOffset {
+                        item_ix: row,
+                        offset_in_item: px(0.0),
+                    });
+                }
+                let body = div()
+                    .id(self.scroll_id)
+                    .relative()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(list(state.clone(), render).flex_1())
+                    .vertical_scrollbar(&state)
+                    .into_any_element();
+                (body, Scroller::Wrapped(state))
+            }
+        };
         let menu = doc
             .menu()
             .map(|(at, row)| render_menu(&doc, at, row, view, cx));
         let edges = {
-            let (doc, handle) = (doc.clone(), handle.clone());
+            let (doc, handle) = (doc.clone(), scroller);
             canvas(
                 |_, _, _| (),
                 move |bounds, (), window, cx| {
-                    doc.set_view_bounds(bounds);
                     if !doc.text_selection().dragging {
                         return;
                     }
@@ -644,15 +728,101 @@ impl RenderOnce for SelectableList {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(scroll_list(self.scroll_id, self.list).handle(&handle))
+            .child(body)
             .child(edges)
             .children(menu)
     }
 }
 
+/// The scroll state of the wrapped list kept under `id`, for `doc`. A new
+/// doc (the diff reloaded once lines are staged, say) is measured again
+/// but keeps the place scrolled to.
+fn wrapped_state(
+    id: &SharedString,
+    doc: &Arc<DiffDoc>,
+    window: &mut Window,
+    cx: &mut App,
+) -> ListState {
+    let shows = (Arc::as_ptr(doc).addr(), doc.rows.len());
+    let row_h = code_row_height(cx);
+    let kept = window.use_keyed_state(SharedString::from(format!("{id}-wrapped")), cx, |_, _| {
+        (None, ListState::new(0, ListAlignment::Top, px(400.0)))
+    });
+    kept.update(cx, |(shown, state), _| {
+        if *shown != Some(shows) {
+            let top = state.logical_scroll_top();
+            // Unmeasured rows count one line high, for the scrollbar.
+            state.reset_with_uniform_height(shows.1, row_h);
+            state.scroll_to(top);
+            *shown = Some(shows);
+        }
+        state.clone()
+    })
+}
+
 /// A drag held above or below the list scrolls it that way, the
-/// selection following to the first or last row shown. Whether it did.
+/// selection following to the first or last row shown; held left or right
+/// of a list one line a row, it scrolls sideways (the selection follows as
+/// the pointer comes back over the text). Whether it did.
 fn drag_past_edge(
+    doc: &DiffDoc,
+    scroller: &Scroller,
+    bounds: Bounds<Pixels>,
+    row_h: Pixels,
+    at: Point<Pixels>,
+) -> bool {
+    match scroller {
+        Scroller::Uniform(handle) => drag_past_uniform(doc, handle, bounds, row_h, at),
+        Scroller::Wrapped(state) => drag_past_wrapped(doc, state, bounds, row_h, at),
+    }
+}
+
+/// [`drag_past_edge`] on a wrapped list, whose rows are as tall as their
+/// lines: the last row shown is found from where the list laid them out.
+fn drag_past_wrapped(
+    doc: &DiffDoc,
+    state: &ListState,
+    bounds: Bounds<Pixels>,
+    row_h: Pixels,
+    at: Point<Pixels>,
+) -> bool {
+    let rows = doc.rows.len();
+    if rows == 0 {
+        return false;
+    }
+    // Faster the further past the edge, up to three lines a move.
+    let step = if at.y < bounds.top() {
+        -(bounds.top() - at.y).min(row_h * 3.0)
+    } else if at.y > bounds.bottom() {
+        (at.y - bounds.bottom()).min(row_h * 3.0)
+    } else {
+        return false;
+    };
+    // Within the list: scrolling past its end would leave a blank.
+    let scrolled = -state.scroll_px_offset_for_scrollbar().y;
+    let max = state.max_offset_for_scrollbar().y;
+    let step = step.max(-scrolled).min((max - scrolled).max(px(0.0)));
+    let before = state.logical_scroll_top();
+    state.scroll_by(step);
+    let top = state.logical_scroll_top();
+    let caret = if at.y < bounds.top() {
+        Caret::new(top.item_ix.min(rows - 1), 0)
+    } else {
+        let mut last = top.item_ix.min(rows - 1);
+        while last + 1 < rows
+            && let Some(b) = state.bounds_for_item(last + 1)
+            && b.top() < bounds.bottom()
+        {
+            last += 1;
+        }
+        Caret::new(last, doc.row_text(last).len())
+    };
+    let moved = doc.drag_to(caret);
+    moved || top != before
+}
+
+/// [`drag_past_edge`] on a list one line a row.
+fn drag_past_uniform(
     doc: &DiffDoc,
     handle: &UniformListScrollHandle,
     bounds: Bounds<Pixels>,
@@ -665,6 +835,18 @@ fn drag_past_edge(
     }
     let scroll = handle.0.borrow().base_handle.clone();
     let offset = scroll.offset();
+    // Sideways, at the same pace.
+    let x = if at.x < bounds.left() {
+        (offset.x + (bounds.left() - at.x).min(row_h * 3.0)).min(px(0.0))
+    } else if at.x > bounds.right() {
+        (offset.x - (at.x - bounds.right()).min(row_h * 3.0)).max(-scroll.max_offset().x)
+    } else {
+        offset.x
+    };
+    if x != offset.x && (bounds.top()..=bounds.bottom()).contains(&at.y) {
+        scroll.set_offset(point(x, offset.y));
+        return true;
+    }
     let row_at = |y: Pixels| {
         // Rows are counted from the top; a fraction is the row it is in.
         let i = (y / row_h).floor().max(0.0);
@@ -684,27 +866,22 @@ fn drag_past_edge(
     } else {
         return false;
     };
-    scroll.set_offset(point(offset.x, y));
+    scroll.set_offset(point(x, y));
     doc.drag_to(caret);
     true
 }
 
 /// The text position under `at` on the line of `row`, laid out as
-/// `layout`. Past the list's right edge, where long lines are cut, it is
-/// the line's end, so a drag there takes whole lines.
+/// `layout`. Past the list's right edge it is the end of what is shown
+/// there; the list scrolls horizontally for the rest.
 fn caret_at(doc: &DiffDoc, row: usize, layout: &TextLayout, at: Point<Pixels>) -> Caret {
     let len = doc.row_text(row).len();
-    let past_edge = doc
-        .view_bounds()
-        .is_some_and(|b| at.x >= b.right() - px(24.0));
-    let col = if past_edge {
-        len
-    } else {
-        // On the text's own line, whatever the height in the row.
-        let y = layout.bounds().center().y;
-        match layout.index_for_position(point(at.x, y)) {
-            Ok(i) | Err(i) => i,
-        }
+    // On the text itself, whatever the height in the row; a wrapped line
+    // spans several.
+    let text = layout.bounds();
+    let y = at.y.min(text.bottom() - px(1.0)).max(text.top());
+    let col = match layout.index_for_position(point(at.x, y)) {
+        Ok(i) | Err(i) => i,
     };
     Caret::new(row, col.min(len))
 }
@@ -801,13 +978,15 @@ pub(crate) fn on_key<V: Staging>(
     used
 }
 
-/// Renders one row of a flattened diff (all rows share one height).
+/// Renders one row of a flattened diff: one line high, or with `wrap` a
+/// line's row as tall as its wrapped line.
 fn render_diff_row<V: Staging>(
     doc: &Arc<DiffDoc>,
     index: usize,
     row: DiffRow,
     side: Option<DiffSide>,
     armed: Option<&str>,
+    wrap: bool,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let base = div()
@@ -842,7 +1021,7 @@ fn render_diff_row<V: Staging>(
             .child(note)
             .into_any_element(),
         DiffRow::Hunk(f, h) => render_hunk_header(base, doc, index, (f, h), side, armed, cx),
-        DiffRow::Line(..) | DiffRow::Gap(..) => render_line_row(doc, index, row, side, cx),
+        DiffRow::Line(..) | DiffRow::Gap(..) => render_line_row(doc, index, row, side, wrap, cx),
     }
 }
 
@@ -854,6 +1033,7 @@ fn render_line_row<V: Staging>(
     index: usize,
     row: DiffRow,
     side: Option<DiffSide>,
+    wrap: bool,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let (block, l) = match row {
@@ -877,7 +1057,7 @@ fn render_line_row<V: Staging>(
     let text = doc
         .text_selection()
         .on_row(index, doc.row_text(index).len());
-    let (row, layout) = diff_line_row(line, &spans, doc.lineno_width, selected, text, cx);
+    let (row, layout) = diff_line_row(line, &spans, doc.lineno_width, selected, text, wrap, cx);
     // A commit's diff edits the file as it is in the working copy.
     let editable = doc.editable(f);
     let row = text_handlers(
@@ -1032,22 +1212,25 @@ fn text_handlers<V: Staging>(
 /// One line of a hunk: line-number gutter, +/- marker, then the file's
 /// text, colored by `spans`, with the `text` selected on it (and whether
 /// its line break is) drawn over them, and the text's layout. A
-/// `selected` line has its gutter in the accent color.
+/// `selected` line has its gutter in the accent color. With `wrap` the
+/// text wraps at the row's width, the row growing as tall as it.
 fn diff_line_row(
     line: &DiffLine,
     spans: &[(Range<usize>, T)],
     lineno_width: usize,
     selected: bool,
     text: Option<(Range<usize>, bool)>,
+    wrap: bool,
     cx: &App,
 ) -> (Div, TextLayout) {
+    let row_h = code_row_height(cx);
     let base = div()
         .w_full()
-        .h(code_row_height(cx))
-        .line_height(code_row_height(cx))
+        .min_h(row_h)
+        .line_height(row_h)
         .flex()
-        .items_center()
-        .whitespace_nowrap()
+        // Wrapped, the gutter stretches down along the line.
+        .when(!wrap, |row| row.h(row_h).items_center().whitespace_nowrap())
         .overflow_hidden();
     let (marker, marker_fg, bg) = match line.origin {
         LineOrigin::Added => ("+", T::DiffAddFg, Some(color(cx, T::DiffAddBg))),
@@ -1083,9 +1266,9 @@ fn diff_line_row(
         .child(
             div()
                 .flex_none()
-                .h_full()
+                .when(!wrap, |gutter| gutter.h_full().items_center())
                 .flex()
-                .items_center()
+                .whitespace_nowrap()
                 .gap_2()
                 .px_2()
                 .bg(color(cx, if selected { T::Accent } else { T::BgPanel }))
@@ -1103,7 +1286,15 @@ fn diff_line_row(
                         .child(marker),
                 ),
         )
-        .child(div().pl_2().cursor_text().child(styled))
+        // Wrapped, the text gives way to the row's width (the line-break
+        // mark still follows it).
+        .child(
+            div()
+                .pl_2()
+                .when(wrap, Styled::min_w_0)
+                .cursor_text()
+                .child(styled),
+        )
         .when(text.is_some_and(|(_, line_break)| line_break), |row| {
             row.child(
                 div()
@@ -1140,6 +1331,9 @@ pub(crate) fn render_open<V: Staging>(
     let (image, svg) = image_part(v, side, doc.as_ref(), editing, cx);
     let (id, doc, full_file) = whole_file(v, id, doc, side, !editing && image.is_none(), cx);
     let keys = keys_hint(side, image.is_some());
+    // Wrap, while the diff shows as lines.
+    let wrap = (!editing && image.is_none() && doc.as_ref().is_some_and(|d| !d.rows.is_empty()))
+        .then_some(v.panel().wrap);
     let selection = side.filter(|_| !editing).zip(
         doc.as_ref()
             .and_then(|d| d.selected().map(|s| (d.clone(), s))),
@@ -1213,6 +1407,7 @@ pub(crate) fn render_open<V: Staging>(
         })
         .when_some(svg, |header, shown| header.child(svg_button(shown, cx)))
         .when_some(full_file, |h, on| h.child(full_file_button(on, cx)))
+        .when_some(wrap, |h, on| h.child(wrap_button(on, cx)))
         .when(!editing, |header| header.children(extra))
         .when_some(edit_at, |header, line| {
             header.child(button("diff-edit", "Edit", cx).on_click(cx.listener(
@@ -1226,7 +1421,7 @@ pub(crate) fn render_open<V: Staging>(
         _ if editing => file_edit::render_body(v, cx),
         (_, Some(image)) => image.into_any_element(),
         (Some(doc), None) if doc.rows.is_empty() => body_note(empty_note(side), cx),
-        (Some(doc), None) => diff_list(id, doc, side, None, cx),
+        (Some(doc), None) => diff_list(id, doc, side, None, v.panel().wrap, cx),
         (None, None) => body_note("Loading diff…", cx),
     };
     div()
@@ -1394,6 +1589,21 @@ fn full_file_button<V: Staging>(on: bool, cx: &mut Context<V>) -> Stateful<Div> 
             cx.notify();
         },
     ))
+}
+
+/// The button wrapping long lines at the view's width or scrolling them
+/// sideways (`on`: wrapped).
+fn wrap_button<V: Staging>(on: bool, cx: &mut Context<V>) -> Stateful<Div> {
+    let (label, other) = if on {
+        ("No wrap", "Wrap")
+    } else {
+        ("Wrap", "No wrap")
+    };
+    steady_button("diff-wrap", label, &[other], cx).on_click(cx.listener(|v: &mut V, _, _, cx| {
+        let panel = v.panel();
+        panel.wrap = !panel.wrap;
+        cx.notify();
+    }))
 }
 
 /// The file's line ending and a button converting it to the other one, in

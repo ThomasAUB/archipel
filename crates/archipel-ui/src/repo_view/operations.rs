@@ -47,9 +47,20 @@ impl RepoView {
 
     /// Checks out a ref (double click on a badge or in the refs panel).
     /// A remote branch with a local counterpart checks out that local
-    /// branch, fast-forwarded to the remote tip when behind.
+    /// branch, fast-forwarded to the remote tip when behind; when that local
+    /// branch tracks another branch, nothing is checked out and the status
+    /// points to the ref's menu, which offers the choices.
     pub(super) fn checkout_ref(&mut self, tip: &RefTip, cx: &mut Context<Self>) {
-        match CheckoutTarget::for_ref(tip, |b| self.has_local(b)) {
+        if let Some((branch, upstream)) = CheckoutTarget::diverted(tip, |b| self.local(b)) {
+            self.status = Some(format!(
+                "{branch} tracks {upstream}, not {}: right-click {} to check it out detached \
+                 or as a new branch",
+                tip.name, tip.name
+            ));
+            cx.notify();
+            return;
+        }
+        match CheckoutTarget::for_ref(tip, |b| self.local(b)) {
             Some(CheckoutTarget::Branch(branch)) if tip.kind == RefKind::RemoteBranch => {
                 self.checkout_updated(branch, tip.target, cx);
             }
@@ -101,8 +112,7 @@ impl RepoView {
             self.checkout_ref(&remote, cx);
             return;
         }
-        let target =
-            CheckoutTarget::for_commit(graph_row.oid, &graph_row.refs, |b| self.has_local(b));
+        let target = CheckoutTarget::for_commit(graph_row.oid, &graph_row.refs, |b| self.local(b));
         self.checkout(target, cx);
     }
 

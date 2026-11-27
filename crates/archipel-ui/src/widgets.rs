@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use archipel_model::ui_state::UiState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarAxis};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext, Bounds, ClickEvent, Context, Deferred, Div, ElementId,
@@ -531,8 +531,9 @@ impl Render for TextTooltip {
 }
 
 /// A virtualized list filling its parent, with a vertical scrollbar while
-/// its rows overflow. It scrolls through the handle given with
-/// [`ScrollList::handle`], else through one kept under `id`.
+/// its rows overflow (and a horizontal one with [`ScrollList::horizontal`],
+/// for a list wider than its view). It scrolls through the handle given
+/// with [`ScrollList::handle`], else through one kept under `id`.
 ///
 /// `id` also scopes the scrollbar: its hover and drag state is keyed by
 /// where it is built, here, so two lists without an `id`-carrying ancestor
@@ -543,6 +544,7 @@ pub struct ScrollList {
     id: ElementId,
     list: UniformList,
     handle: Option<UniformListScrollHandle>,
+    horizontal: bool,
 }
 
 pub fn scroll_list(id: impl Into<ElementId>, list: UniformList) -> ScrollList {
@@ -550,6 +552,7 @@ pub fn scroll_list(id: impl Into<ElementId>, list: UniformList) -> ScrollList {
         id: id.into(),
         list,
         handle: None,
+        horizontal: false,
     }
 }
 
@@ -557,6 +560,13 @@ impl ScrollList {
     /// Scrolls through `handle`, for a list also scrolled from outside.
     pub fn handle(mut self, handle: &UniformListScrollHandle) -> Self {
         self.handle = Some(handle.clone());
+        self
+    }
+
+    /// Adds a horizontal scrollbar, for a list whose rows may be wider than
+    /// the view (`ListHorizontalSizingBehavior::Unconstrained`).
+    pub fn horizontal(mut self) -> Self {
+        self.horizontal = true;
         self
     }
 }
@@ -577,7 +587,14 @@ impl RenderOnce for ScrollList {
             .flex_col()
             .overflow_hidden()
             .child(self.list.track_scroll(&handle).flex_1())
-            .vertical_scrollbar(&handle)
+            .scrollbar(
+                &handle,
+                if self.horizontal {
+                    ScrollbarAxis::Both
+                } else {
+                    ScrollbarAxis::Vertical
+                },
+            )
     }
 }
 
@@ -664,6 +681,52 @@ pub fn resize_pane(ui: &mut UiState, pane: Pane, x: Pixels, bounds: Bounds<Pixel
     } = width;
 }
 
+/// A status message with git's hard-wrapped lines joined back: git wraps
+/// its messages (`fatal:`, `hint:`, advice) at about 70 columns, which
+/// leaves most of a wide status line empty. A line joins the one before
+/// it unless either is blank, it is indented (a command to run, a file of
+/// a list), the one before ends a sentence (`.`, `:`, `?`, `!`), or it
+/// starts with another tag than the one before (`hint: `, `error: `);
+/// the same tag repeated is dropped as the lines join. Blank lines are
+/// dropped too, each paragraph keeping a line of its own.
+pub fn reflow_status(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    // Whether the next line may join the last one, and the last line's tag.
+    let (mut joinable, mut last_tag) = (false, None);
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            joinable = false;
+            continue;
+        }
+        let indented = line.starts_with([' ', '\t']);
+        let line_tag = tag(line);
+        match out.last_mut() {
+            Some(last) if joinable && !indented && (line_tag.is_none() || line_tag == last_tag) => {
+                let rest = line_tag.map_or(line, |t| &line[t.len()..]);
+                last.push(' ');
+                last.push_str(rest.trim_start());
+            }
+            _ => {
+                out.push(line.to_owned());
+                last_tag = line_tag;
+            }
+        }
+        let last = out.last().map_or("", String::as_str);
+        joinable = !indented && !last.ends_with(['.', ':', '?', '!']);
+    }
+    out.join("\n")
+}
+
+/// The tag git starts a message line with (`hint: `, `fatal: `), if any:
+/// one lowercase word and a colon.
+fn tag(line: &str) -> Option<&str> {
+    let end = line.find(": ")?;
+    let word = &line[..end];
+    (!word.is_empty() && word.len() <= 10 && word.bytes().all(|b| b.is_ascii_lowercase()))
+        .then(|| &line[..end + 2])
+}
+
 /// Shortens a status message to a few lines: git errors can list thousands
 /// of files, which would push the whole view out of the window. Keeps the
 /// first lines and the last two (git's hint, "Aborting"), and counts the
@@ -700,6 +763,33 @@ mod tests {
         assert_eq!(ListMove::First.apply(Some(3), 5), Some(0));
         assert_eq!(down.apply(None, 0), None);
         assert_eq!(ListMove::from_key("a"), None);
+    }
+
+    #[test]
+    fn reflow_status_joins_git_wrapped_lines() {
+        let push = "Push failed: fatal: The upstream branch of your current branch \
+does not match\nthe name of your current branch.  To push to the upstream branch\n\
+on the remote, use\n\n    git push origin HEAD:main\n\n\
+To avoid automatically configuring an upstream branch when its name\n\
+won't match the local branch, see option 'simple' of branch.autoSetupMerge\n\
+in 'git help config'.\n";
+        assert_eq!(
+            reflow_status(push),
+            "Push failed: fatal: The upstream branch of your current branch does not match \
+the name of your current branch.  To push to the upstream branch on the remote, use\n    \
+git push origin HEAD:main\nTo avoid automatically configuring an upstream branch when its \
+name won't match the local branch, see option 'simple' of branch.autoSetupMerge in \
+'git help config'."
+        );
+        // Lists, sentences and other tags keep their lines; a tag repeated
+        // joins without it.
+        let checkout = "error: Your local changes would be overwritten by checkout:\n\
+\ta.txt\n\tb.txt\nPlease commit your changes or stash them.\nAborting\nhint: one\nhint: two";
+        assert_eq!(
+            reflow_status(checkout),
+            "error: Your local changes would be overwritten by checkout:\n\ta.txt\n\tb.txt\n\
+Please commit your changes or stash them.\nAborting\nhint: one two"
+        );
     }
 
     #[test]

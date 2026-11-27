@@ -1,12 +1,13 @@
 //! The refs panel: branches, tags and submodules, virtualized, and the
 //! drag and drop of branches onto each other.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
 use archipel_app::forge::{BranchCiMark, branch_ci_mark};
 use archipel_model::refs::{RefKind, RefTip};
+use archipel_model::requests::LocalCounterpart;
 use archipel_model::submodule::SubmoduleInfo;
 use archipel_model::ui_state::UiState;
 use archipel_model::{Oid, RepoId};
@@ -39,9 +40,9 @@ pub(super) enum RefRow {
 #[derive(Default)]
 pub(super) struct RefList {
     pub(super) rows: Vec<RefRow>,
-    /// Local branch names, to check out a remote branch through its local
-    /// counterpart when it exists.
-    pub(super) locals: HashSet<String>,
+    /// Local branches and their upstreams, to check out a remote branch
+    /// through its local counterpart when it exists.
+    pub(super) locals: HashMap<String, Option<String>>,
 }
 
 /// Drag payload of a branch badge or a refs panel branch row.
@@ -70,8 +71,14 @@ impl Render for BranchGhost {
 }
 
 impl RepoView {
-    pub(super) fn has_local(&self, branch: &str) -> bool {
-        self.refs.locals.contains(branch)
+    /// The local branch named `branch`, if any.
+    pub(super) fn local(&self, branch: &str) -> Option<LocalCounterpart> {
+        self.refs
+            .locals
+            .get(branch)
+            .map(|upstream| LocalCounterpart {
+                upstream: upstream.clone(),
+            })
     }
 
     /// The checked-out branch, from the refs panel.

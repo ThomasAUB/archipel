@@ -24,6 +24,9 @@ pub(super) enum NameForm {
     Tag(Oid),
     /// A new name for a local branch.
     Rename(String),
+    /// A branch tracking this remote branch, then checked out (when the
+    /// local branch of the same name tracks another one).
+    Tracking(String),
 }
 
 /// An action waiting for confirmation in a dialog.
@@ -43,6 +46,8 @@ impl RepoView {
     ) {
         let initial = match &form {
             Some(NameForm::Rename(old)) => old.clone(),
+            // `fork/main` → `fork-main`.
+            Some(NameForm::Tracking(remote)) => remote.replace('/', "-"),
             _ => String::new(),
         };
         self.name_input
@@ -88,6 +93,17 @@ impl RepoView {
                     a.create_tag(p, &request, None)
                 });
             }
+            NameForm::Tracking(remote) => {
+                self.run(
+                    format!("Create branch {name} tracking {remote}"),
+                    cx,
+                    move |a, p, _| {
+                        a.create_branch(p, &name, Some(&remote), None)?;
+                        a.set_upstream(p, &name, Some(&remote))?;
+                        a.checkout(p, &CheckoutTarget::Branch(name), None)
+                    },
+                );
+            }
             NameForm::Rename(old) if old == name => {}
             NameForm::Rename(old) => {
                 self.run(format!("Rename {old} → {name}"), cx, move |a, p, _| {
@@ -117,6 +133,7 @@ impl RepoView {
             }
             NameForm::Tag(oid) => (format!("New tag at {}", oid.short(SHORT_OID)), "Create"),
             NameForm::Rename(old) => (format!("Rename {old} to"), "Rename"),
+            NameForm::Tracking(remote) => (format!("New branch tracking {remote}"), "Create"),
         };
         Some(
             div()

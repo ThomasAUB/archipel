@@ -68,11 +68,9 @@ impl Render for Lines {
             .flex_col()
             .bg(color(cx, T::BgApp))
             .text_color(color(cx, T::FgDefault))
-            .children(
-                self.0
-                    .iter()
-                    .map(|(l, sel)| diff_line_row(l, &[], LINENO_WIDTH, false, sel.clone(), cx).0),
-            )
+            .children(self.0.iter().map(|(l, sel)| {
+                diff_line_row(l, &[], LINENO_WIDTH, false, sel.clone(), false, cx).0
+            }))
     }
 }
 

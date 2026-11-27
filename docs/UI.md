@@ -154,7 +154,7 @@ What a Repo Tab shows (spec §5). [repo_view.rs](../crates/archipel-ui/src/repo_
 | **Drop Menu** | Shown when a branch is dropped on another: merge, rebase, fast-forward. Never a silent action. |
 | **Confirm Dialog** | Modal asking before an action that may lose work. (`render_confirm`) |
 | **Squash Dialog** | Modal opened from the Graph Menu once the commits to squash are checked: the combined messages to edit, Squash / Cancel. (`render_squash`) |
-| **Repo Status Line** | Last operation result under the panes; long messages are condensed, click dismisses. |
+| **Repo Status Line** | Last operation result under the panes, git's hard-wrapped lines joined back across the width; long messages are condensed to a few lines with **Show all** / **Less**, **Copy** copies the whole message, a click on the text dismisses it. |
 
 ## 6. Shared panels
 
@@ -198,7 +198,7 @@ Repo Toolbar instead (`render_body`). [staging.rs](../crates/archipel-ui/src/sta
 
 ### Diff View
 
-A diff rendered as virtualized rows. [diff_view.rs](../crates/archipel-ui/src/diff_view.rs).
+A diff rendered as virtualized rows, scrolling sideways (horizontal scrollbar) when lines are wider than the view, or with **Wrap** in the open diff's header wrapping them at its width (rows as tall as their lines, in a variable-height list). [diff_view.rs](../crates/archipel-ui/src/diff_view.rs).
 Shown as the Open Diff (Repo View) and as the Quick Edit Diff (Dashboard).
 
 | Name | What it is |
@@ -206,9 +206,9 @@ Shown as the Open Diff (Repo View) and as the Quick Edit Diff (Dashboard).
 | **Diff Header** | File name, side (**Staged** / **Unstaged**), and **Edit** on a working-copy diff. |
 | **Hunk Buttons** | Stage / Unstage / Discard on each hunk of a working-copy diff. |
 | **Line Selection** | Changed lines picked with click, Ctrl+click, Shift+click; a **Selection Bar** offers Stage / Unstage / Discard lines and Clear. |
-| **Text Selection** | Code selected with the mouse: drag, double-click a word, triple-click a line, Shift+click extends; a drag past the top or bottom edge scrolls, past the right edge takes the lines whole. On a working-copy diff a click still picks lines and a double-click still edits, so only a drag (or Shift+click once text is selected) selects text there. Drawn over the syntax colors. `Ctrl+C` copies the code alone (no line numbers, `+` / `-` markers or hunk headers), `Ctrl+Shift+C` as a patch; `Esc` drops it. ([select.rs](../crates/archipel-ui/src/diff_view/select.rs)) |
+| **Text Selection** | Code selected with the mouse: drag, double-click a word, triple-click a line, Shift+click extends; a drag past an edge scrolls that way. On a working-copy diff a click still picks lines and a double-click still edits, so only a drag (or Shift+click once text is selected) selects text there. Drawn over the syntax colors. `Ctrl+C` copies the code alone (no line numbers, `+` / `-` markers or hunk headers), `Ctrl+Shift+C` as a patch; `Esc` drops it. ([select.rs](../crates/archipel-ui/src/diff_view/select.rs)) |
 | **Diff Menu** | Right-click on a line or hunk header: **Copy** and **Copy as patch** (with text selected), **Copy line**, **Copy hunk** (as a patch). |
-| **File Editor** | Replaces the Diff View to edit the file in place (Edit or double-click a line): Save (`Ctrl+S`), Cancel (`Esc`). ([file_edit.rs](../crates/archipel-ui/src/file_edit.rs)) |
+| **File Editor** | Replaces the Diff View to edit the file in place (Edit or double-click a line): Save (`Ctrl+S`), Cancel (`Esc`). An **EDIT MODE** label leads the header and the editor is framed in the same (warning) color. ([file_edit.rs](../crates/archipel-ui/src/file_edit.rs)) |
 | **Image Diff** | Replaces the Diff View of a binary image (or of an SVG on **Images**): a bar with the **Compare Modes** chips (**Side by side**, **Swipe**, **Onion skin**, **Blink**, **Difference**), the mode's controls (opacity slider; **Hold for before** and **Auto**; **Amplify ×4** and the changed-pixel count) and the zoom with **Fit**; then the images, zoomed and dragged around together, each labelled with its size, format and weight. ([compare.rs](../crates/archipel-ui/src/image_view/compare.rs)) |
 | **Merge View** | Replaces the Diff View of a conflicted file: **Ours** / **Theirs** panes above the editable **Result**, their conflicting lines picked with the mouse (click, drag, Shift+click, double-click or the block's box for the whole block), the Result rebuilt on release; conflicts tinted, picked lines barred, the current conflict framed; a **Conflict Bar** (Conflict n of m · k left, ↑ ↓, Ours / Theirs / Both / ⇅ / Base / None, All left: Ours / Theirs) and **Mark resolved** (`Ctrl+Enter`, then the next conflicted file); `Ctrl+S` saves. A binary or deleted-side conflict is resolved whole. ([merge_view.rs](../crates/archipel-ui/src/merge_view.rs)) |
 
