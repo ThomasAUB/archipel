@@ -31,10 +31,10 @@ use archipel_theme::ColorToken as T;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, DispatchPhase, Div, Entity,
-    EntityId, HighlightStyle, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy, SharedString, Stateful,
-    StyledText, TextLayout, UniformList, UniformListScrollHandle, Window, canvas, div, point, px,
-    uniform_list,
+    EntityId, HighlightStyle, ImageFormat, KeyDownEvent, ListHorizontalSizingBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollStrategy, SharedString,
+    Stateful, StyledText, TextLayout, UniformList, UniformListScrollHandle, Window, canvas, div,
+    point, px, uniform_list,
 };
 
 use crate::file_edit::{self, LineEnding};
@@ -116,6 +116,9 @@ pub(crate) struct DiffDoc {
     scroll_to: Mutex<Option<usize>>,
     /// Digits of the largest line number, so the gutter has one width.
     lineno_width: usize,
+    /// The row with the longest line: the list measures it for the width
+    /// it scrolls horizontally over.
+    widest: usize,
     /// Per file, the line ending of its new side (from its added and
     /// context lines), with whether the change is only line endings.
     endings: Vec<Option<Endings>>,
@@ -126,8 +129,6 @@ pub(crate) struct DiffDoc {
     text: Mutex<TextSelection>,
     /// The right-click menu: where it opened, on which row.
     menu: Mutex<Option<(Point<Pixels>, usize)>>,
-    /// Where the list was last drawn, for drags past its edges.
-    view: Mutex<Option<Bounds<Pixels>>>,
     /// Syntax colors, per hunk or gap, computed as its lines are first
     /// shown; `None` for a file shown as plain text.
     colors: Mutex<HashMap<Block, Option<HunkColors>>>,
@@ -311,7 +312,7 @@ impl DiffDoc {
                     .flatten()
             })
             .collect();
-        Self {
+        let mut doc = Self {
             files,
             revs: None,
             rows,
@@ -319,13 +320,17 @@ impl DiffDoc {
             // A few lines before the first change stay in sight.
             scroll_to: Mutex::new(scroll_to),
             lineno_width: max_lineno.to_string().len(),
+            widest: 0,
             endings,
             selection: Mutex::default(),
             text: Mutex::default(),
             menu: Mutex::default(),
-            view: Mutex::default(),
             colors: Mutex::default(),
-        }
+        };
+        doc.widest = (0..doc.rows.len())
+            .max_by_key(|&row| text_columns(doc.row_text(row)))
+            .unwrap_or(0);
+        doc
     }
 
     /// This diff, of the commits `revs`.
@@ -537,10 +542,16 @@ fn run_part<V: Staging>(
     }
 }
 
+/// Columns `text` takes in the monospace font, a tab counted as 4.
+fn text_columns(text: &str) -> usize {
+    text.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum()
+}
+
 /// A virtualized diff: only the visible rows are built each frame. With
 /// `side`, hunk headers get stage / unstage / discard buttons and changed
 /// lines can be selected; with `scroll`, the list can be scrolled from
-/// outside.
+/// outside. Lines longer than the view scroll horizontally: the list is as
+/// wide as its longest line.
 pub(crate) fn diff_list<V: Staging>(
     id: SharedString,
     doc: Arc<DiffDoc>,
@@ -551,6 +562,7 @@ pub(crate) fn diff_list<V: Staging>(
     let count = doc.rows.len();
     let scroll_id = SharedString::from(format!("{id}-scroll"));
     let rows_doc = doc.clone();
+    let widest = doc.widest;
     let list = uniform_list(
         id,
         count,
@@ -561,7 +573,9 @@ pub(crate) fn diff_list<V: Staging>(
                 .map(|(i, row)| render_diff_row(&doc, i, row, side, armed.as_deref(), cx))
                 .collect()
         }),
-    );
+    )
+    .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+    .with_width_from_item(Some(widest));
     SelectableList {
         scroll_id,
         list,
@@ -609,7 +623,6 @@ impl RenderOnce for SelectableList {
             canvas(
                 |_, _, _| (),
                 move |bounds, (), window, cx| {
-                    doc.set_view_bounds(bounds);
                     if !doc.text_selection().dragging {
                         return;
                     }
@@ -644,14 +657,20 @@ impl RenderOnce for SelectableList {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(scroll_list(self.scroll_id, self.list).handle(&handle))
+            .child(
+                scroll_list(self.scroll_id, self.list)
+                    .handle(&handle)
+                    .horizontal(),
+            )
             .child(edges)
             .children(menu)
     }
 }
 
 /// A drag held above or below the list scrolls it that way, the
-/// selection following to the first or last row shown. Whether it did.
+/// selection following to the first or last row shown; held left or right
+/// of it, the list scrolls sideways (the selection follows as the pointer
+/// comes back over the text). Whether it did.
 fn drag_past_edge(
     doc: &DiffDoc,
     handle: &UniformListScrollHandle,
@@ -665,6 +684,18 @@ fn drag_past_edge(
     }
     let scroll = handle.0.borrow().base_handle.clone();
     let offset = scroll.offset();
+    // Sideways, at the same pace.
+    let x = if at.x < bounds.left() {
+        (offset.x + (bounds.left() - at.x).min(row_h * 3.0)).min(px(0.0))
+    } else if at.x > bounds.right() {
+        (offset.x - (at.x - bounds.right()).min(row_h * 3.0)).max(-scroll.max_offset().x)
+    } else {
+        offset.x
+    };
+    if x != offset.x && (bounds.top()..=bounds.bottom()).contains(&at.y) {
+        scroll.set_offset(point(x, offset.y));
+        return true;
+    }
     let row_at = |y: Pixels| {
         // Rows are counted from the top; a fraction is the row it is in.
         let i = (y / row_h).floor().max(0.0);
@@ -684,27 +715,20 @@ fn drag_past_edge(
     } else {
         return false;
     };
-    scroll.set_offset(point(offset.x, y));
+    scroll.set_offset(point(x, y));
     doc.drag_to(caret);
     true
 }
 
 /// The text position under `at` on the line of `row`, laid out as
-/// `layout`. Past the list's right edge, where long lines are cut, it is
-/// the line's end, so a drag there takes whole lines.
+/// `layout`. Past the list's right edge it is the end of what is shown
+/// there; the list scrolls horizontally for the rest.
 fn caret_at(doc: &DiffDoc, row: usize, layout: &TextLayout, at: Point<Pixels>) -> Caret {
     let len = doc.row_text(row).len();
-    let past_edge = doc
-        .view_bounds()
-        .is_some_and(|b| at.x >= b.right() - px(24.0));
-    let col = if past_edge {
-        len
-    } else {
-        // On the text's own line, whatever the height in the row.
-        let y = layout.bounds().center().y;
-        match layout.index_for_position(point(at.x, y)) {
-            Ok(i) | Err(i) => i,
-        }
+    // On the text's own line, whatever the height in the row.
+    let y = layout.bounds().center().y;
+    let col = match layout.index_for_position(point(at.x, y)) {
+        Ok(i) | Err(i) => i,
     };
     Caret::new(row, col.min(len))
 }

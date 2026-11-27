@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use archipel_model::ui_state::UiState;
 use archipel_theme::ColorToken as T;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarAxis};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext, Bounds, ClickEvent, Context, Deferred, Div, ElementId,
@@ -531,8 +531,9 @@ impl Render for TextTooltip {
 }
 
 /// A virtualized list filling its parent, with a vertical scrollbar while
-/// its rows overflow. It scrolls through the handle given with
-/// [`ScrollList::handle`], else through one kept under `id`.
+/// its rows overflow (and a horizontal one with [`ScrollList::horizontal`],
+/// for a list wider than its view). It scrolls through the handle given
+/// with [`ScrollList::handle`], else through one kept under `id`.
 ///
 /// `id` also scopes the scrollbar: its hover and drag state is keyed by
 /// where it is built, here, so two lists without an `id`-carrying ancestor
@@ -543,6 +544,7 @@ pub struct ScrollList {
     id: ElementId,
     list: UniformList,
     handle: Option<UniformListScrollHandle>,
+    horizontal: bool,
 }
 
 pub fn scroll_list(id: impl Into<ElementId>, list: UniformList) -> ScrollList {
@@ -550,6 +552,7 @@ pub fn scroll_list(id: impl Into<ElementId>, list: UniformList) -> ScrollList {
         id: id.into(),
         list,
         handle: None,
+        horizontal: false,
     }
 }
 
@@ -557,6 +560,13 @@ impl ScrollList {
     /// Scrolls through `handle`, for a list also scrolled from outside.
     pub fn handle(mut self, handle: &UniformListScrollHandle) -> Self {
         self.handle = Some(handle.clone());
+        self
+    }
+
+    /// Adds a horizontal scrollbar, for a list whose rows may be wider than
+    /// the view (`ListHorizontalSizingBehavior::Unconstrained`).
+    pub fn horizontal(mut self) -> Self {
+        self.horizontal = true;
         self
     }
 }
@@ -577,7 +587,14 @@ impl RenderOnce for ScrollList {
             .flex_col()
             .overflow_hidden()
             .child(self.list.track_scroll(&handle).flex_1())
-            .vertical_scrollbar(&handle)
+            .scrollbar(
+                &handle,
+                if self.horizontal {
+                    ScrollbarAxis::Both
+                } else {
+                    ScrollbarAxis::Vertical
+                },
+            )
     }
 }
 
