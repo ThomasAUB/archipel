@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::ops::Range;
 
 use archipel_model::diff::{DiffLine, LineOrigin};
-use gpui_kit::{Bounds, Pixels, Point};
+use gpui_kit::{Pixels, Point};
 
 use super::{DiffDoc, DiffRow};
 
@@ -280,21 +280,6 @@ impl DiffDoc {
         self.menu
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// The bounds the list was last drawn in.
-    pub(crate) fn view_bounds(&self) -> Option<Bounds<Pixels>> {
-        *self
-            .view
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    pub(crate) fn set_view_bounds(&self, bounds: Bounds<Pixels>) {
-        *self
-            .view
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bounds);
     }
 
     /// The selected rows as a patch, see [`Self::patch_text`].
@@ -600,5 +585,19 @@ mod tests {
         assert_eq!(word_bounds("a   b", 2), 1..4);
         assert_eq!(word_bounds("héllo wörld", 8), 7..13);
         assert_eq!(word_bounds("abc", 3), 3..3);
+    }
+
+    #[test]
+    fn the_widest_row_is_the_longest_line_tabs_counted_wide() {
+        // Rows 0 (file) and 1 (hunk), then the lines from row 2.
+        let d = doc(&[
+            (Context, "short"),
+            (Added, "a line longer than the tabbed one"),
+            // 9 tabs: 37 columns, wider than the 33 of the line above.
+            (Removed, "\t\t\t\t\t\t\t\t\tx"),
+        ]);
+        assert_eq!(d.widest, 4);
+        let d = doc(&[(Context, "short"), (Added, "much longer line")]);
+        assert_eq!(d.widest, 3);
     }
 }
