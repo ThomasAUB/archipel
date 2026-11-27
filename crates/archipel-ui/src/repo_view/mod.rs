@@ -441,7 +441,14 @@ impl RepoView {
                     "Files",
                     cx,
                 ))
-                .when(self.browser.is_some(), |b| b.bg(color(cx, T::BgSelected)))
+                // On, it stands out (accent border, tinted, accent text):
+                // the details pane then lists every file, not the changes.
+                .when(self.browser.is_some(), |b| {
+                    let accent = color(cx, T::Accent);
+                    b.border_color(accent)
+                        .bg(accent.opacity(0.18))
+                        .text_color(accent)
+                })
                 .tooltip(|_, cx| TextTooltip::view(&["Browse the repository's files".into()], cx))
                 .on_click(cx.listener(|v, _, window, cx| v.toggle_browser(window, cx))),
             )
